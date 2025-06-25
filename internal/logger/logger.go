@@ -355,4 +355,21 @@ func Close() {
 	if Logger != nil {
 		Logger.Sync()
 	}
+}
+
+// GetLogger 获取全局日志器实例
+func GetLogger() *zap.Logger {
+	if Logger == nil {
+		// 如果Logger未初始化，使用默认配置初始化
+		if err := InitLogger(DefaultLogConfig); err != nil {
+			// 如果初始化失败，返回一个开发环境的logger
+			Logger, _ = zap.NewDevelopment()
+		}
+	}
+	return Logger
+}
+
+// GetSugaredLogger 获取全局糖化日志器实例
+func GetSugaredLogger() *zap.SugaredLogger {
+	return GetLogger().Sugar()
 } 
