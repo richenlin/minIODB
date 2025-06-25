@@ -1,249 +1,587 @@
-# 基于MinIO、DuckDB和Redis的分布式OLAP系统
+# MinIODB - 基于MinIO、DuckDB和Redis的分布式OLAP系统
 
-## 1. 系统概述
+[![Go Version](https://img.shields.io/badge/Go-1.23+-blue.svg)](https://golang.org/)
+[![Docker](https://img.shields.io/badge/Docker-Supported-blue.svg)]()
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-blue.svg)]()
 
-本项目旨在构建一个极致轻量化、高性能、可水平扩展的分布式对象存储与OLAP查询分析系统。系统以MinIO作为其分布式存储底座，保证数据的可靠性和扩展性；利用DuckDB作为高性能的OLAP查询引擎，实现对TB级数据的快速分析；并采用Redis作为核心元数据中心，负责服务发现、节点管理以及数据分片的索引。
+## 🚀 项目简介
 
-该系统的核心目标是提供一个部署简单（支持单机单节点）、资源占用少、服务健壮、具备高可用和数据备份能力、并能通过增加节点线性提升处理能力的现代化数据分析平台。
+MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象存储与OLAP查询分析系统。系统采用存算分离架构，以MinIO作为分布式存储底座，DuckDB作为高性能OLAP查询引擎，Redis作为元数据中心，提供企业级的数据分析能力。
 
-## 2. 核心设计理念
+### 🎯 核心目标
 
-*   **存算分离**: 系统的核心是存储与计算的分离。MinIO负责"存储"，提供一个无限扩展的S3兼容对象存储池。DuckDB负责"计算"，它不持久化存储数据，而是在查询时直接从MinIO中流式读取数据进行分析。这种架构带来了极致的弹性和扩展性。
-*   **轻量化与高性能**: 所有组件（MinIO, DuckDB, Redis）都是以高性能和低资源占用著称的。DuckDB尤其擅长直接查询Parquet等列式存储格式，无需数据导入，极大地提升了查询效率。主要满足资源受限场景下的OLAP分析场景。
-*   **元数据驱动**: 系统的分布式协调能力完全由Redis中的元数据驱动。无论是新节点加入、数据分片位置，还是查询路由，都通过查询Redis完成，使得整个系统逻辑清晰，易于管理。
-*   **自动化与自愈**: 通过服务注册与心跳机制，系统能自动感知节点的加入与离开。通过一致性哈希进行数据分片，节点扩展后新数据能自动路由到新节点，实现自动化的水平扩展。
-*   **数据安全与备份**: 系统将每个存储实例视为独立节点。为了防止单点故障，内置了灵活的数据备份机制，支持将数据自动或手动备份到独立的备份存储中，确保数据安全。
-  
-## 3. 特性
+- **部署简单** - 支持单机单节点部署，开箱即用
+- **资源占用少** - 轻量化设计，适合资源受限环境
+- **服务健壮** - 内置故障恢复和自动重试机制
+- **高可用** - 支持数据备份和灾难恢复
+- **线性扩展** - 通过增加节点线性提升处理能力
 
-1.  **MinIO+DuckDB**: 已作为核心组件进行设计。
-2.  **Redis服务发现与索引**: 已在元数据管理层详细说明。
-3.  **轻量化与单节点**: 所有组件均可单机部署，资源占用小。DuckDB的高效查询能力确保单节点也能处理TB级数据（只要内存足够执行计算）。
-4.  **横向扩展与自动分片**: 通过一致性哈希和节点自注册，实现了简单的、对使用者透明的横向扩展能力。
-5.  **ID+时间管理**: 数据在MinIO中的物理路径和在Redis中的索引键都严格遵循此规则。
-6.  **双API接口**: 提供了Restful和gRPC的设计范例。
-7.  **健壮与低资源**: 存算分离架构和心跳机制保证了系统的健壮性；所选组件均为业界公认的轻量高效方案。
-8.  **集成开源组件**: 完全基于成熟的开源项目构建，最小化自研组件，降低了开发和维护成本。
-9.  **数据安全**: 内置可配置的自动和手动备份机制，防止单点故障导致的数据丢失。
+## ✨ 核心特性
 
-## 4. 架构设计
+### 🏗️ 架构特性
+- **存算分离** - MinIO负责存储，DuckDB负责计算，实现极致弹性
+- **元数据驱动** - Redis管理服务发现、节点状态和数据索引
+- **自动分片** - 基于一致性哈希的透明数据分片
+- **水平扩展** - 支持动态节点加入和数据重分布
 
-### 4.1. 整体架构图
+### 💾 存储特性
+- **列式存储** - 使用Apache Parquet格式，压缩率高
+- **多级缓存** - 内存缓冲区 + 磁盘存储的多级架构
+- **数据备份** - 支持自动和手动备份机制
+- **灾难恢复** - 基于时间范围和ID的数据恢复
 
-```
-+----------------+      +----------------+
-|   gRPC Client  |      |  RESTful Client|
-+----------------+      +----------------+
-        |                      |
-        v                      v
-+------------------------------------------+
-|          API Gateway / Query Node (Go)   |  <-- (任意一个节点都可以扮演此角色)
-|                                          |
-|  - Request Parsing & Validation          |
-|  - Query Coordination                    |
-|  - Result Aggregation                    |
-+------------------------------------------+
-      ^   |   ^   |
-      |   |   |   |  (Service Discovery & Query Planning)
-      |   v   |   v
-+----------------+      +---------------------------------+
-|   Redis        |      |      Worker Nodes (Go Service)  |
-|----------------|      |---------------------------------|
-| - Service Reg. |----->| - Heartbeat & Registration      |
-| - Data Index   |----->| - DuckDB Instance (embedded)    |
-| - Hash Ring    |      | - Data Ingestion & Buffering    |
-|                |      | - Parquet File Generation       |
-+----------------+      | - Read/Write to MinIO           |
-                        +---------------------------------+
-                                 ^         |
-                                 |         | (S3 API)
-                                 v         v
-                       +-------------------------+
-                       |   MinIO Cluster         |
-                       | (Distributed Object     |
-                       |      Storage)           |
-                       +-------------------------+
+### 🔌 接口特性
+- **双协议支持** - 同时提供gRPC和RESTful API
+- **多语言客户端** - 支持Go、Java、Node.js等多种语言
+- **标准SQL** - 支持标准SQL查询语法
+- **流式处理** - 支持大数据量的流式读写
+
+### 🛡️ 安全特性
+- **JWT认证** - 支持JWT令牌认证
+- **TLS加密** - 支持传输层加密
+- **API密钥** - 支持API密钥认证
+
+### 📊 运维特性
+- **健康检查** - 内置健康检查接口
+- **指标监控** - 集成Prometheus指标
+- **日志管理** - 结构化日志输出
+- **性能统计** - 详细的性能指标统计
+
+## 🚀 快速开始
+
+### 前置要求
+
+- Go 1.24+
+- Redis 6.0+
+- MinIO Server
+- 8GB+ 内存推荐
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/your-org/minIODB.git
+cd minIODB
 ```
 
-### 4.2. 模块拆解
+### 2. 安装依赖
 
-#### a. 数据接入与查询协调层 (Go Service)
+```bash
+go mod download
+```
 
-这是系统的入口。它可以是集群中的任何一个节点。
-*   **API接口**: 提供Restful和gRPC两种标准接口，接收数据写入和查询请求。
-*   **查询协调器 (Query Coordinator)**:
-    1.  接收到查询请求后，根据查询条件（如ID范围、时间范围）访问Redis的`数据分片索引`。
-    2.  获取所有相关的MinIO对象存储路径（即Parquet文件列表）。
-    3.  访问Redis的`服务注册信息`，获取当前所有健康的Worker节点列表。
-    4.  将文件列表分配给各个Worker节点，下发子查询任务。
-    5.  等待所有Worker节点返回部分结果，并将结果聚合，最终返回给客户端。
-*   **写入协调器 (Write Coordinator)**:
-    1.  接收到写入请求。
-    2.  根据数据中的`ID`，使用**一致性哈希算法**（存储在Redis中）来决定这条数据应该由哪个Worker节点处理。
-    3.  将数据请求转发给目标Worker节点。
+### 3. 配置文件
 
-#### b. Worker节点 (Go Service with Embedded DuckDB)
+复制并编辑配置文件：
 
-这是系统的工作负载核心，可以水平扩展。
-*   **服务注册与心跳**: 启动时，向Redis注册自己的地址和端口。并定时发送心跳，更新其在Redis中的TTL（存活时间），表明自己处于健康状态。
-*   **数据缓冲与写入**:
-    1.  接收来自协调器的数据写入请求。
-    2.  数据不会立即写入MinIO，而是在内存中进行缓冲和聚合（例如使用Go Channel和Ticker）。
-    3.  当数据达到一定阈值（如大小或时间间隔），将缓冲的数据批量转换为**Apache Parquet**格式。
-    4.  生成一个唯一的文件名（如 `ID/YYYY-MM-DD/timestamp_nanoseconds.parquet`），并将其上传到MinIO。
-    5.  上传成功后，在Redis的`数据分片索引`中添加一条记录，例如：`HSET index:ID:12345:2023-10-27 file_path_in_minio 1`。
-*   **查询执行**:
-    1.  接收协调器下发的子查询任务（包含一组MinIO上的Parquet文件路径）。
-    2.  调用内嵌的DuckDB Go客户端。
-    3.  执行SQL查询，DuckDB会直接通过S3协议从MinIO读取这些Parquet文件进行分析。
-    4.  将查询结果返回给协调器。
+```bash
+cp config.yaml config.local.yaml
+# 编辑config.local.yaml中的Redis和MinIO连接信息
+```
 
-#### c. 元数据管理层 (Redis)
+### 4. 启动服务
 
-Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
-*   **服务注册与发现**:
-    *   **Key**: `nodes:services`
-    *   **Type**: `HASH`
-    *   **Usage**: 存储所有健康节点的地址。`Key`为节点ID，`Value`为`IP:Port`。节点通过心跳定时刷新这个Key的TTL。协调器通过`HGETALL`获取所有可用节点。
-*   **数据分片索引**:
-    *   **Key**: `index:id:{ID}:{YYYY-MM-DD}`
-    *   **Type**: `HASH` or `SET`
-    *   **Usage**: 存储每个ID每天对应的数据文件。`Key`包含了ID和天。`Value`是存储在MinIO上的Parquet文件路径集合。查询时可以通过`SMEMBERS`或`HGETALL`快速定位文件。
-*   **一致性哈希环**:
-    *   **Key**: `cluster:hash_ring`
-    *   **Type**: `Sorted Set` or `String`
-    *   **Usage**: 存储一致性哈希环的信息，用于写入时的分片路由。当节点增加或减少时，只需更新此数据结构。
+```bash
+# 开发模式
+go run cmd/server/main.go
 
-#### d. 分布式存储层 (MinIO)
+# 或者构建后运行
+go build -o miniodb cmd/server/main.go
+./miniodb
+```
 
-*   **角色**: 最终的数据湖（Data Lake），提供可靠、高可用的S3兼容对象存储。
-*   **数据格式**: **Apache Parquet**。这是一个列式存储格式，压缩率高，非常适合OLAP场景。DuckDB对其有原生的高性能支持。
-*   **数据组织**:
-    *   **Bucket**: 可以按业务或租户划分，例如 `main-data`。
-    *   **Object Key (路径)**: 严格按照 `ID/YYYY-MM-DD/` 的格式组织。这不仅符合需求，还能在某些查询场景下利用MinIO本身的前缀查询能力进行初步过滤。
+### 5. 验证服务
 
-## 5. 核心流程分析
+```bash
+# 健康检查
+curl http://localhost:8081/v1/health
 
-### 5.1. 节点注册与发现
-1.  一个新的Go服务实例（Worker Node）启动。
-2.  它连接到Redis，并在`nodes:services`哈希表中添加自己的`NodeID`和`IP:Port`，并设置一个TTL（如60秒）。
-3.  该节点启动一个定时任务（如每30秒），重复上一步，以刷新TTL，这作为心跳机制。
-4.  查询协调器需要查找可用节点时，只需从`nodes:services`读取所有成员即可。如果一个节点没有在TTL内续期，它会自动从哈希表中消失。
+# 查看服务状态
+curl http://localhost:8081/v1/stats
+```
 
-### 5.2. 数据写入与分片
-1.  客户端向任意一个节点的API网关发送写入请求 `(ID, Time, DataPayload)`。
-2.  该节点（作为协调器）从Redis获取`cluster:hash_ring`，根据数据的`ID`计算出应该处理此数据的Worker Node。
-3.  协调器将请求转发给目标Worker Node。
-4.  Worker Node在内存中缓冲数据。
-5.  当缓冲区满或达到时间阈值，Worker Node将这批数据（例如，属于同一个ID和同一天）聚合并生成一个Parquet文件。
-6.  Worker Node将Parquet文件上传到MinIO，路径为 `bucket-name/ID/YYYY-MM-DD/nanotimestamp.parquet`。
-7.  上传成功后，Worker Node更新Redis索引：`SADD index:id:{ID}:{YYYY-MM-DD} "bucket-name/ID/YYYY-MM-DD/nanotimestamp.parquet"`。
+## 📦 部署方式
 
-### 5.3. 数据查询
-1.  客户端向任意一个节点的API网关发送查询请求（例如，查询ID为X，时间在T1到T2之间的数据）。
-2.  协调器解析请求，生成需要查询的`{ID}`和`{YYYY-MM-DD}`的组合。
-3.  协调器并发地向Redis查询所有匹配的Key（如 `KEYS index:id:X:*`），并获取所有相关的Parquet文件路径列表。
-4.  协调器获取`nodes:services`中的所有健康Worker节点，并制定查询计划（例如，平均分配文件列表）。
-5.  协调器向每个Worker Node下发子查询任务，包含文件列表和要执行的SQL语句。
-6.  每个Worker Node的DuckDB实例执行查询 `SELECT * FROM 's3://<bucket>/path/to/file1.parquet', 's3://<bucket>/path/to/file2.parquet' WHERE ...`。DuckDB会自动处理S3认证和数据读取。
-7.  Worker Node将部分结果返回给协调器。
-8.  协调器聚合所有结果，并返回给客户端。
+### 🐳 Docker Compose（推荐新手）
 
-### 5.4. 节点扩容
-1.  启动一个新的Worker Node实例。
-2.  它会自动执行[4.1](#41-节点注册与发现)中的注册流程。
-3.  一个独立的控制器或由主节点检测到`nodes:services`发生变化，会重新计算`cluster:hash_ring`并更新到Redis中。
-4.  此后，新的数据写入请求会根据新环的规则，自动开始向新节点分发，实现了自动化的数据分片扩展。
-5.  **注意**: 此方案中，历史数据不会自动迁移，它仍然保留在原来的位置。但由于查询是基于Redis的全局索引，无论文件是哪个节点写入的，都能被正确查询到。这大大简化了扩容逻辑，符合轻量化的设计理念。如果需要历史数据重分布，可以开发一个离线的、低优先级的后台任务来完成。
+```bash
+cd deploy/docker
+cp env.example .env
+# 编辑.env文件
+docker-compose up -d
+```
 
-### 5.5. 数据备份与高可用
-为了解决将每个MinIO实例视为独立存储节点而带来的单点故障风险，系统引入了数据备份机制。
 
-#### a. 自动备份
-- **触发时机**: 当内存缓冲区的数据成功写入主存储节点后触发。
-- **逻辑**: 如果配置文件中启用了自动备份，`SharedBuffer`服务会立即发起一个异步任务，将刚刚上传到主节点的Parquet文件再次上传到指定的备份存储节点。
-- **健壮性**: 主流程的成功不受备份流程影响。如果备份失败，系统会记录错误日志，为后续实现重试机制（如基于Redis的失败任务队列）提供基础。
+### 🔧 Ansible（推荐批量部署）
 
-#### a. 手动备份
-- **API接口**: 提供`POST /v1/backup/trigger` (RESTful) 和 `rpc TriggerBackup(...)` (gRPC)接口。
-- **功能**: 调用者可以指定`ID`和`日期`，手动触发对这部分数据的备份。
-- **逻辑**: 服务端接收到请求后，会扫描主存储节点上对应`ID`和`日期`的所有Parquet文件，并将它们逐一复制到备份存储节点。此功能可用于数据恢复、迁移或对特定重要数据进行强制备份。
+```bash
+cd deploy/ansible
+# 编辑inventory文件
+ansible-playbook -i inventory/auto-deploy.yml site.yml
+```
 
-## 6. API 设计 (示例)
+### ☸️ Kubernetes（推荐生产）
 
-### 6.1. Restful API
+```bash
+cd deploy/k8s
+kubectl apply -f namespace.yaml
+kubectl apply -f configmap.yaml
+kubectl apply -f secret.yaml
+kubectl apply -f redis/
+kubectl apply -f minio/
+kubectl apply -f miniodb/
+```
 
-*   **写入数据**
-    *   `POST /v1/data`
-    *   **Body**:
-        ```json
-        {
-          "id": "user-123",
-          "timestamp": "2023-10-27T10:00:00Z",
-          "payload": {
-            "key1": "value1",
-            "key2": 100
-          }
-        }
-        ```
+详细部署文档请参考：[部署指南](deploy/README.md)
 
-*   **查询数据**
-    *   `POST /v1/query`
-    *   **Body**:
-        ```json
-        {
-          "sql": "SELECT COUNT(*) FROM table WHERE id = 'user-123' AND time >= '2023-10-01' AND payload.key2 > 50"
-        }
-        ```
-    *   *注：在后端，`table`这个概念会被协调器翻译成一组Parquet文件路径列表*
+## 📖 API文档
 
-### 6.2. gRPC API
+### RESTful API
+
+#### 数据写入
+```bash
+curl -X POST http://localhost:8081/v1/data \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "id": "user-123",
+    "timestamp": "2024-01-01T10:00:00Z",
+    "payload": {
+      "name": "John Doe",
+      "age": 30,
+      "score": 95.5
+    }
+  }'
+```
+
+#### 数据查询
+```bash
+curl -X POST http://localhost:8081/v1/query \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "sql": "SELECT COUNT(*) FROM table WHERE id = '\''user-123'\'' AND age > 25"
+  }'
+```
+
+#### 数据备份
+```bash
+curl -X POST http://localhost:8081/v1/backup/trigger \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "id": "user-123",
+    "day": "2024-01-01"
+  }'
+```
+
+#### 数据恢复
+```bash
+curl -X POST http://localhost:8081/v1/backup/recover \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "id_range": {
+      "ids": ["user-123", "user-456"]
+    },
+    "force_overwrite": false
+  }'
+```
+
+### gRPC API
 
 ```protobuf
-syntax = "proto3";
-
-package olap.v1;
-
-import "google/protobuf/struct.proto";
-import "google/protobuf/timestamp.proto";
-
 service OlapService {
-  // 写入数据
-  rpc Write (WriteRequest) returns (WriteResponse);
-  // 执行查询
-  rpc Query (QueryRequest) returns (QueryResponse);
-  // 手动触发数据备份
+  rpc Write(WriteRequest) returns (WriteResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
   rpc TriggerBackup(TriggerBackupRequest) returns (TriggerBackupResponse);
-}
-
-message WriteRequest {
-  string id = 1;
-  google.protobuf.Timestamp timestamp = 2;
-  google.protobuf.Struct payload = 3;
-}
-
-message WriteResponse {
-  bool success = 1;
-  string message = 2;
-}
-
-message QueryRequest {
-  string sql = 1;
-}
-
-message QueryResponse {
-  // 结果可以用JSON字符串或者更复杂的结构表示
-  string result_json = 1;
-}
-
-message TriggerBackupRequest {
-  string id = 1;
-  string day = 2; // format: YYYY-MM-DD
-}
-
-message TriggerBackupResponse {
-  bool success = 1;
-  string message = 2;
-  int32 files_backed_up = 3;
+  rpc RecoverData(RecoverDataRequest) returns (RecoverDataResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
 }
 ```
+
+完整API文档请参考：[API参考](api/README.md)
+
+## 🔧 客户端示例
+
+### Go客户端
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "google.golang.org/grpc"
+    pb "minIODB/api/proto/olap/v1"
+)
+
+func main() {
+    conn, err := grpc.Dial("localhost:8080", grpc.WithInsecure())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer conn.Close()
+
+    client := pb.NewOlapServiceClient(conn)
+    
+    // 写入数据
+    _, err = client.Write(context.Background(), &pb.WriteRequest{
+        Id: "user-123",
+        Timestamp: timestamppb.Now(),
+        Payload: &structpb.Struct{
+            Fields: map[string]*structpb.Value{
+                "name": structpb.NewStringValue("John"),
+                "age":  structpb.NewNumberValue(30),
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### Java客户端
+```java
+OlapServiceGrpc.OlapServiceBlockingStub stub = 
+    OlapServiceGrpc.newBlockingStub(channel);
+
+WriteRequest request = WriteRequest.newBuilder()
+    .setId("user-123")
+    .setTimestamp(Timestamps.fromMillis(System.currentTimeMillis()))
+    .setPayload(Struct.newBuilder()
+        .putFields("name", Value.newBuilder().setStringValue("John").build())
+        .putFields("age", Value.newBuilder().setNumberValue(30).build())
+        .build())
+    .build();
+
+WriteResponse response = stub.write(request);
+```
+
+### Node.js客户端
+```javascript
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+
+const packageDefinition = protoLoader.loadSync('olap.proto');
+const olapProto = grpc.loadPackageDefinition(packageDefinition);
+
+const client = new olapProto.olap.v1.OlapService(
+    'localhost:8080', 
+    grpc.credentials.createInsecure()
+);
+
+client.write({
+    id: 'user-123',
+    timestamp: { seconds: Math.floor(Date.now() / 1000) },
+    payload: {
+        fields: {
+            name: { string_value: 'John' },
+            age: { number_value: 30 }
+        }
+    }
+}, (error, response) => {
+    if (error) {
+        console.error(error);
+    } else {
+        console.log('Success:', response);
+    }
+});
+```
+
+更多客户端示例请参考：[examples/](examples/)
+
+## 🏗️ 架构设计
+
+### 整体架构图
+
+```
+┌─────────────────┐    ┌─────────────────┐
+│   gRPC Client   │    │  RESTful Client │
+└─────────────────┘    └─────────────────┘
+         │                       │
+         └───────────┬───────────┘
+                     │
+    ┌────────────────▼────────────────┐
+    │     API Gateway / Query Node    │
+    │  - Request Parsing & Validation │
+    │  - Query Coordination           │
+    │  - Result Aggregation           │
+    └────────────────┬────────────────┘
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+        ▼            ▼            ▼
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+│   Redis     │ │ Worker Node │ │ Worker Node │
+│ Metadata    │ │   + DuckDB  │ │   + DuckDB  │
+│ & Discovery │ │             │ │             │
+└─────────────┘ └─────────────┘ └─────────────┘
+                       │            │
+                       └────────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │   MinIO Cluster   │
+                    │ (Object Storage)  │
+                    └───────────────────┘
+```
+
+### 核心组件
+
+#### 1. API网关层
+- **请求路由** - 智能路由到最优节点
+- **负载均衡** - 请求分发和负载均衡
+- **认证授权** - JWT令牌验证和权限控制
+- **结果聚合** - 多节点查询结果聚合
+
+#### 2. 计算节点层
+- **DuckDB引擎** - 高性能OLAP查询引擎
+- **数据缓冲** - 内存缓冲区管理
+- **文件生成** - Parquet文件生成和上传
+- **查询执行** - 分布式查询执行
+
+#### 3. 元数据层
+- **服务发现** - 节点注册和健康检查
+- **数据索引** - 文件位置和元数据索引
+- **哈希环** - 一致性哈希数据分片
+- **配置管理** - 集群配置和状态管理
+
+#### 4. 存储层
+- **主存储** - MinIO对象存储集群
+- **备份存储** - 独立的备份存储
+- **数据格式** - Apache Parquet列式存储
+- **数据组织** - 按ID和时间分区存储
+
+## 🔄 核心流程
+
+### 数据写入流程
+1. 客户端发送写入请求到API网关
+2. 网关根据ID计算目标节点（一致性哈希）
+3. 目标节点将数据写入内存缓冲区
+4. 缓冲区达到阈值时批量生成Parquet文件
+5. 文件上传到MinIO主存储
+6. 更新Redis中的数据索引
+7. 异步备份到备份存储（如果启用）
+
+### 数据查询流程
+1. 客户端发送查询请求到API网关
+2. 网关解析SQL并确定涉及的数据范围
+3. 查询Redis获取相关文件列表
+4. 将查询任务分发到相关计算节点
+5. 各节点使用DuckDB执行子查询
+6. 网关聚合所有节点的查询结果
+7. 返回最终结果给客户端
+
+### 节点扩容流程
+1. 新节点启动并注册到Redis
+2. 系统检测到节点变化
+3. 重新计算一致性哈希环
+4. 新数据自动路由到新节点
+5. 历史数据保持原有分布（可选重分布）
+
+## 📊 性能特点
+
+### 查询性能
+- **列式存储** - Parquet格式，查询性能优异
+- **向量化计算** - DuckDB向量化执行引擎
+- **并行处理** - 多节点并行查询执行
+- **智能缓存** - 多级缓存机制
+
+### 存储性能
+- **高压缩比** - Parquet格式压缩比高达10:1
+- **快速写入** - 批量写入和异步处理
+- **水平扩展** - 存储容量线性扩展
+- **数据备份** - 自动备份不影响主流程
+
+### 网络性能
+- **协议优化** - gRPC高效二进制协议
+- **连接复用** - HTTP/2连接复用
+- **压缩传输** - 数据传输压缩
+- **流式处理** - 大数据量流式传输
+
+## 🛠️ 配置说明
+
+### 基础配置
+```yaml
+server:
+  grpc_port: ":8080"
+  rest_port: ":8081"
+  node_id: "node-1"
+
+redis:
+  mode: "standalone"
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+minio:
+  endpoint: "localhost:9000"
+  access_key_id: "minioadmin"
+  secret_access_key: "minioadmin"
+  bucket: "olap-data"
+```
+
+### 高级配置
+```yaml
+buffer:
+  buffer_size: 1000
+  flush_interval: 30s
+  worker_pool_size: 10
+  batch_flush_size: 5
+
+backup:
+  enabled: true
+  interval: 3600
+  minio:
+    endpoint: "backup-minio:9000"
+    bucket: "olap-backup"
+
+security:
+  mode: "token"
+  jwt_secret: "your-secret-key"
+  enable_tls: false
+```
+
+完整配置说明请参考：[配置文档](docs/configuration.md)
+
+## 🧪 测试
+
+### 运行测试
+```bash
+# 运行所有测试
+go test ./...
+
+# 运行特定模块测试
+go test ./internal/storage/...
+
+# 运行基准测试
+go test -bench=. ./internal/query/...
+
+# 生成测试覆盖率报告
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+```
+
+### 集成测试
+```bash
+# 启动测试环境
+docker-compose -f test/docker-compose.test.yml up -d
+
+# 运行集成测试
+go test -tags=integration ./test/...
+```
+
+## 📈 监控
+
+### Prometheus指标
+```yaml
+# 系统指标
+miniodb_requests_total{method="write",status="success"}
+miniodb_requests_duration_seconds{method="query"}
+miniodb_buffer_size_bytes{node="node-1"}
+miniodb_storage_objects_total{bucket="olap-data"}
+
+# 业务指标
+miniodb_data_points_total{id="user-123"}
+miniodb_query_latency_seconds{sql_type="select"}
+miniodb_backup_files_total{status="success"}
+```
+
+### 健康检查
+```bash
+# 基础健康检查
+curl http://localhost:8081/v1/health
+
+# 详细状态检查
+curl http://localhost:8081/v1/stats
+```
+
+## 🔍 故障排除
+
+### 常见问题
+
+#### 1. 连接Redis失败
+```bash
+# 检查Redis连接
+redis-cli -h localhost -p 6379 ping
+
+# 检查配置
+grep -A 5 "redis:" config.yaml
+```
+
+#### 2. MinIO连接失败
+```bash
+# 检查MinIO服务
+curl http://localhost:9000/minio/health/live
+
+# 检查存储桶
+mc ls minio/olap-data
+```
+
+#### 3. 查询性能慢
+```bash
+# 查看查询统计
+curl http://localhost:8081/v1/stats | jq '.query_stats'
+
+# 检查索引状态
+redis-cli keys "index:*" | wc -l
+```
+
+更多故障排除请参考：[故障排除指南](docs/troubleshooting.md)
+
+## 🤝 贡献指南
+
+我们欢迎所有形式的贡献！
+
+### 开发环境设置
+```bash
+# 1. Fork项目
+git clone https://github.com/your-username/minIODB.git
+
+# 2. 创建功能分支
+git checkout -b feature/new-feature
+
+# 3. 安装开发依赖
+go mod download
+make dev-setup
+
+# 4. 运行测试
+make test
+
+# 5. 提交更改
+git commit -m "Add new feature"
+git push origin feature/new-feature
+```
+
+### 代码规范
+- 遵循Go官方代码规范
+- 使用gofmt格式化代码
+- 添加适当的注释和文档
+- 编写单元测试和集成测试
+
+### 提交PR
+1. 确保所有测试通过
+2. 更新相关文档
+3. 填写PR模板
+4. 等待代码审查
+
+## 📄 许可证
+
+本项目采用MIT许可证 - 详情请参考 [LICENSE](LICENSE) 文件。
+
+## 🙏 致谢
+
+感谢以下开源项目：
+- [MinIO](https://github.com/minio/minio) - 高性能对象存储
+- [DuckDB](https://github.com/duckdb/duckdb) - 内存OLAP数据库
+- [Redis](https://github.com/redis/redis) - 内存数据结构存储
+- [Gin](https://github.com/gin-gonic/gin) - Go Web框架
+- [gRPC](https://github.com/grpc/grpc-go) - 高性能RPC框架
+
+## 📞 联系我们
+
+- 项目主页：https://github.com/richenlin/minIODB
+- 问题反馈：https://github.com/richenlin/minIODB/issues
+
+---
+
+⭐ 如果这个项目对您有帮助，请给我们一个Star！
