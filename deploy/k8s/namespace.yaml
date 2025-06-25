@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: miniodb-system
+  labels:
+    name: miniodb-system
+    app.kubernetes.io/name: miniodb
+    app.kubernetes.io/part-of: miniodb-system
+    app.kubernetes.io/version: "1.0.0"
+  annotations:
+    description: "MinIODB 分布式OLAP系统命名空间" 

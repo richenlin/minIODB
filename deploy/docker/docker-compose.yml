@@ -1,0 +1,246 @@
+version: '3.8'
+
+services:
+  # Redis - 元数据中心和服务发现
+  redis:
+    image: redis:7-alpine
+    container_name: miniodb-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+    command: >
+      redis-server 
+      --requirepass ${REDIS_PASSWORD:-redis123}
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/etc/redis/redis.conf:ro
+    networks:
+      - miniodb-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIO - 主存储服务
+  minio:
+    image: minio/minio:latest
+    container_name: miniodb-minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # S3 API端口
+      - "9001:9001"   # Web控制台端口
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BROWSER_REDIRECT_URL=http://localhost:9001
+      - MINIO_SERVER_URL=http://localhost:9000
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+      - ./minio/certs:/root/.minio/certs:ro
+    networks:
+      - miniodb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIO Backup - 备份存储服务
+  minio-backup:
+    image: minio/minio:latest
+    container_name: miniodb-minio-backup
+    restart: unless-stopped
+    ports:
+      - "9002:9000"   # 备份S3 API端口
+      - "9003:9001"   # 备份Web控制台端口
+    environment:
+      - MINIO_ROOT_USER=${MINIO_BACKUP_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_BACKUP_PASSWORD:-minioadmin123}
+      - MINIO_BROWSER_REDIRECT_URL=http://localhost:9003
+      - MINIO_SERVER_URL=http://localhost:9002
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_backup_data:/data
+      - ./minio/certs:/root/.minio/certs:ro
+    networks:
+      - miniodb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIODB - 核心应用服务
+  miniodb:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    image: miniodb:latest
+    container_name: miniodb-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # gRPC API端口
+      - "8081:8081"   # REST API端口
+      - "9090:9090"   # Prometheus监控端口
+    environment:
+      # 应用配置
+      - MINIODB_ENV=${MINIODB_ENV:-production}
+      - MINIODB_LOG_LEVEL=${MINIODB_LOG_LEVEL:-info}
+      - MINIODB_CONFIG_PATH=/app/config/config.yaml
+      
+      # Redis配置
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+      - REDIS_DB=0
+      
+      # MinIO主存储配置
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-miniodb-data}
+      - MINIO_USE_SSL=false
+      
+      # MinIO备份存储配置
+      - MINIO_BACKUP_ENDPOINT=minio-backup:9000
+      - MINIO_BACKUP_ACCESS_KEY=${MINIO_BACKUP_USER:-minioadmin}
+      - MINIO_BACKUP_SECRET_KEY=${MINIO_BACKUP_PASSWORD:-minioadmin123}
+      - MINIO_BACKUP_BUCKET=${MINIO_BACKUP_BUCKET:-miniodb-backup}
+      - MINIO_BACKUP_USE_SSL=false
+      
+      # 服务器配置
+      - GRPC_PORT=8080
+      - REST_PORT=8081
+      - METRICS_PORT=9090
+      
+      # 认证配置
+      - AUTH_MODE=${AUTH_MODE:-jwt}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_EXPIRATION=${JWT_EXPIRATION:-24h}
+      
+      # 缓冲区配置
+      - BUFFER_SIZE=${BUFFER_SIZE:-1000}
+      - BUFFER_TIMEOUT=${BUFFER_TIMEOUT:-30s}
+      - BATCH_SIZE=${BATCH_SIZE:-100}
+    volumes:
+      - ./config:/app/config:ro
+      - miniodb_logs:/app/logs
+      - ./certs:/app/certs:ro
+    networks:
+      - miniodb-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-backup:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIO Client - 用于初始化存储桶
+  minio-init:
+    image: minio/mc:latest
+    container_name: miniodb-minio-init
+    networks:
+      - miniodb-network
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-backup:
+        condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BACKUP_USER=${MINIO_BACKUP_USER:-minioadmin}
+      - MINIO_BACKUP_PASSWORD=${MINIO_BACKUP_PASSWORD:-minioadmin123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-miniodb-data}
+      - MINIO_BACKUP_BUCKET=${MINIO_BACKUP_BUCKET:-miniodb-backup}
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO services to start...';
+      sleep 10;
+      echo 'Configuring MinIO aliases...';
+      mc alias set minio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      mc alias set minio-backup http://minio-backup:9000 $$MINIO_BACKUP_USER $$MINIO_BACKUP_PASSWORD;
+      echo 'Creating buckets...';
+      mc mb minio/$$MINIO_BUCKET --ignore-existing;
+      mc mb minio-backup/$$MINIO_BACKUP_BUCKET --ignore-existing;
+      echo 'Setting bucket policies...';
+      mc policy set public minio/$$MINIO_BUCKET;
+      mc policy set public minio-backup/$$MINIO_BACKUP_BUCKET;
+      echo 'MinIO initialization completed.';
+      "
+
+# 数据卷定义
+volumes:
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/redis
+  
+  minio_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/minio
+  
+  minio_backup_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/minio-backup
+  
+  miniodb_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/logs
+
+# 网络定义
+networks:
+  miniodb-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 

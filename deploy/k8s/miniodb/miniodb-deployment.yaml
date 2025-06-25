@@ -1,0 +1,220 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miniodb
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: miniodb
+    app.kubernetes.io/component: application
+    app.kubernetes.io/part-of: miniodb-system
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 2  # 可以根据需要调整副本数
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: miniodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: miniodb
+        app.kubernetes.io/component: application
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: miniodb
+        image: miniodb:latest  # 使用构建的镜像
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: grpc
+          protocol: TCP
+        - containerPort: 8081
+          name: rest
+          protocol: TCP
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        env:
+        # 基础配置
+        - name: MINIODB_ENV
+          value: "production"
+        - name: MINIODB_LOG_LEVEL
+          value: "info"
+        - name: MINIODB_CONFIG_PATH
+          value: "/app/config/config.yaml"
+        
+        # Redis配置
+        - name: REDIS_HOST
+          value: "redis-service"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: redis-password
+        - name: REDIS_DB
+          value: "0"
+        
+        # MinIO主存储配置
+        - name: MINIO_ENDPOINT
+          value: "minio-service:9000"
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-access-key
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-secret-key
+        - name: MINIO_BUCKET
+          value: "miniodb-data"
+        - name: MINIO_USE_SSL
+          value: "false"
+        
+        # MinIO备份存储配置
+        - name: MINIO_BACKUP_ENDPOINT
+          value: "minio-backup-service:9000"
+        - name: MINIO_BACKUP_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-backup-access-key
+        - name: MINIO_BACKUP_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-backup-secret-key
+        - name: MINIO_BACKUP_BUCKET
+          value: "miniodb-backup"
+        - name: MINIO_BACKUP_USE_SSL
+          value: "false"
+        
+        # 服务器配置
+        - name: GRPC_PORT
+          value: "8080"
+        - name: REST_PORT
+          value: "8081"
+        - name: METRICS_PORT
+          value: "9090"
+        
+        # 认证配置
+        - name: AUTH_MODE
+          value: "jwt"
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: jwt-secret
+        - name: JWT_EXPIRATION
+          value: "24h"
+        
+        # 缓冲区配置
+        - name: BUFFER_SIZE
+          value: "1000"
+        - name: BUFFER_TIMEOUT
+          value: "30s"
+        - name: BATCH_SIZE
+          value: "100"
+        
+        # DuckDB配置
+        - name: DUCKDB_MEMORY_LIMIT
+          value: "4GB"
+        - name: DUCKDB_THREADS
+          value: "4"
+        
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: logs
+          mountPath: /app/logs
+        - name: tmp
+          mountPath: /tmp
+        
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+        
+        livenessProbe:
+          httpGet:
+            path: /v1/health
+            port: 8081
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /v1/health
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        startupProbe:
+          httpGet:
+            path: /v1/health
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+      
+      volumes:
+      - name: config
+        configMap:
+          name: miniodb-config
+          items:
+          - key: config.yaml
+            path: config.yaml
+      - name: logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      
+      # 反亲和性配置，确保Pod分布在不同节点
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - miniodb
+              topologyKey: kubernetes.io/hostname
+      
+      # 容忍度配置 (可选)
+      tolerations:
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300 

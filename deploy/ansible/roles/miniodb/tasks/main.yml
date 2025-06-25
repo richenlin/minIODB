@@ -1,0 +1,142 @@
+---
+# MinIODB 应用部署任务
+
+- name: Create MinIODB configuration file
+  template:
+    src: config.yaml.j2
+    dest: "{{ miniodb.config_path | default('/opt/miniodb/config') }}/config.yaml"
+    owner: "{{ miniodb_user | default('miniodb') }}"
+    group: "{{ miniodb_group | default('miniodb') }}"
+    mode: '0644'
+  tags: miniodb
+
+- name: Create MinIODB Docker Compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "/opt/miniodb/docker-compose.yml"
+    owner: "{{ miniodb_user | default('miniodb') }}"
+    group: "{{ miniodb_group | default('miniodb') }}"
+    mode: '0644'
+  tags: miniodb
+
+- name: Build MinIODB Docker image (if building from source)
+  docker_image:
+    name: "miniodb:{{ miniodb.version | default('latest') }}"
+    build:
+      path: "{{ playbook_dir }}/../../"
+      dockerfile: Dockerfile
+    source: build
+    force_source: true
+  when: miniodb.build_from_source | default(false)
+  tags: miniodb
+
+- name: Pull MinIODB Docker image (if not building from source)
+  docker_image:
+    name: "miniodb:{{ miniodb.version | default('latest') }}"
+    source: pull
+  when: not (miniodb.build_from_source | default(false))
+  tags: miniodb
+
+- name: Stop existing MinIODB container
+  docker_container:
+    name: miniodb-app
+    state: absent
+  ignore_errors: true
+  tags: miniodb
+
+- name: Deploy MinIODB container
+  docker_container:
+    name: miniodb-app
+    image: "miniodb:{{ miniodb.version | default('latest') }}"
+    state: started
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ docker_network | default('miniodb-network') }}"
+    ports:
+      - "{{ miniodb.grpc_port | default(8080) }}:8080"
+      - "{{ miniodb.rest_port | default(8081) }}:8081"
+      - "{{ miniodb.metrics_port | default(9090) }}:9090"
+    volumes:
+      - "{{ miniodb.config_path | default('/opt/miniodb/config') }}:/app/config:ro"
+      - "{{ miniodb.log_path | default('/opt/miniodb/logs') }}:/app/logs"
+      - "{{ miniodb.data_path | default('/opt/miniodb/data/miniodb') }}:/app/data"
+    env:
+      # 基础配置
+      MINIODB_ENV: "production"
+      MINIODB_LOG_LEVEL: "{{ miniodb.log_level | default('info') }}"
+      MINIODB_CONFIG_PATH: "/app/config/config.yaml"
+      
+      # 服务器配置
+      GRPC_PORT: "{{ miniodb.grpc_port | default(8080) }}"
+      REST_PORT: "{{ miniodb.rest_port | default(8081) }}"
+      METRICS_PORT: "{{ miniodb.metrics_port | default(9090) }}"
+      
+      # Redis配置
+      REDIS_HOST: "{% if auto_deploy_services | default(false) %}{{ hostvars[groups['miniodb_nodes'] | select('match', '.*redis.*') | first]['ansible_default_ipv4']['address'] | default('redis') }}{% else %}{{ redis_host }}{% endif %}"
+      REDIS_PORT: "{{ redis.port | default(redis_port | default(6379)) }}"
+      REDIS_PASSWORD: "{{ redis.password | default(redis_password) }}"
+      REDIS_DB: "{{ redis_db | default(0) }}"
+      
+      # MinIO主存储配置
+      MINIO_ENDPOINT: "{% if auto_deploy_services | default(false) %}{{ hostvars[groups['miniodb_nodes'] | select('match', '.*minio.*') | first]['ansible_default_ipv4']['address'] | default('minio') }}:{{ minio.api_port | default(9000) }}{% else %}{{ minio_endpoint }}{% endif %}"
+      MINIO_ACCESS_KEY: "{{ minio.access_key | default(minio_access_key) }}"
+      MINIO_SECRET_KEY: "{{ minio.secret_key | default(minio_secret_key) }}"
+      MINIO_BUCKET: "{{ minio.bucket | default(minio_bucket | default('miniodb-data')) }}"
+      MINIO_USE_SSL: "{{ minio_use_ssl | default(false) | lower }}"
+      
+      # MinIO备份存储配置
+      MINIO_BACKUP_ENDPOINT: "{% if auto_deploy_services | default(false) %}{{ hostvars[groups['miniodb_nodes'] | select('match', '.*backup.*') | first]['ansible_default_ipv4']['address'] | default('minio-backup') }}:{{ minio_backup.api_port | default(9002) }}{% else %}{{ minio_backup_endpoint }}{% endif %}"
+      MINIO_BACKUP_ACCESS_KEY: "{{ minio_backup.access_key | default(minio_backup_access_key) }}"
+      MINIO_BACKUP_SECRET_KEY: "{{ minio_backup.secret_key | default(minio_backup_secret_key) }}"
+      MINIO_BACKUP_BUCKET: "{{ minio_backup.bucket | default(minio_backup_bucket | default('miniodb-backup')) }}"
+      MINIO_BACKUP_USE_SSL: "{{ minio_backup_use_ssl | default(false) | lower }}"
+      
+      # 认证配置
+      AUTH_MODE: "{{ auth.mode | default('jwt') }}"
+      JWT_SECRET: "{{ auth.jwt_secret }}"
+      JWT_EXPIRATION: "{{ auth.jwt_expiration | default('24h') }}"
+      
+      # 缓冲区配置
+      BUFFER_SIZE: "{{ buffer.size | default(1000) }}"
+      BUFFER_TIMEOUT: "{{ buffer.timeout | default('30s') }}"
+      BATCH_SIZE: "{{ buffer.batch_size | default(100) }}"
+      
+      # DuckDB配置
+      DUCKDB_MEMORY_LIMIT: "{{ duckdb.memory_limit | default('4GB') }}"
+      DUCKDB_THREADS: "{{ duckdb.threads | default(4) }}"
+    user: "{{ miniodb_uid | default(1001) }}:{{ miniodb_gid | default(1001) }}"
+    memory: "4g"
+    cpus: "2.0"
+    ulimits:
+      - "nofile:65536:65536"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+  tags: miniodb
+
+- name: Wait for MinIODB to be ready
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ miniodb.rest_port | default(8081) }}/v1/health"
+    method: GET
+    timeout: 10
+  register: health_check
+  until: health_check.status == 200
+  retries: 30
+  delay: 10
+  tags: miniodb
+
+- name: Display MinIODB service information
+  debug:
+    msg: |
+      MinIODB service deployed successfully on {{ inventory_hostname }}
+      
+      Service endpoints:
+      - gRPC API: {{ ansible_default_ipv4.address }}:{{ miniodb.grpc_port | default(8080) }}
+      - REST API: http://{{ ansible_default_ipv4.address }}:{{ miniodb.rest_port | default(8081) }}
+      - Metrics: http://{{ ansible_default_ipv4.address }}:{{ miniodb.metrics_port | default(9090) }}/metrics
+      
+      Health check: http://{{ ansible_default_ipv4.address }}:{{ miniodb.rest_port | default(8081) }}/v1/health
+  tags: miniodb 
