@@ -6,10 +6,12 @@ package mock_storage
 
 import (
 	context "context"
+	io "io"
 	reflect "reflect"
 
 	gomock "github.com/golang/mock/gomock"
 	minio "github.com/minio/minio-go/v7"
+	storage "minIODB/internal/storage"
 )
 
 // MockUploader is a mock of Uploader interface.
@@ -79,6 +81,64 @@ func (mr *MockUploaderMockRecorder) MakeBucket(ctx, bucketName, opts interface{}
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MakeBucket", reflect.TypeOf((*MockUploader)(nil).MakeBucket), ctx, bucketName, opts)
 }
 
+// PutObject mocks base method.
+func (m *MockUploader) PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, opts minio.PutObjectOptions) (minio.UploadInfo, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PutObject", ctx, bucketName, objectName, reader, objectSize, opts)
+	ret0, _ := ret[0].(minio.UploadInfo)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PutObject indicates an expected call of PutObject.
+func (mr *MockUploaderMockRecorder) PutObject(ctx, bucketName, objectName, reader, objectSize, opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PutObject", reflect.TypeOf((*MockUploader)(nil).PutObject), ctx, bucketName, objectName, reader, objectSize, opts)
+}
+
+// GetObject mocks base method.
+func (m *MockUploader) GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) ([]byte, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetObject", ctx, bucketName, objectName, opts)
+	ret0, _ := ret[0].([]byte)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetObject indicates an expected call of GetObject.
+func (mr *MockUploaderMockRecorder) GetObject(ctx, bucketName, objectName, opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetObject", reflect.TypeOf((*MockUploader)(nil).GetObject), ctx, bucketName, objectName, opts)
+}
+
+// RemoveObject mocks base method.
+func (m *MockUploader) RemoveObject(ctx context.Context, bucketName, objectName string, opts minio.RemoveObjectOptions) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemoveObject", ctx, bucketName, objectName, opts)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RemoveObject indicates an expected call of RemoveObject.
+func (mr *MockUploaderMockRecorder) RemoveObject(ctx, bucketName, objectName, opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveObject", reflect.TypeOf((*MockUploader)(nil).RemoveObject), ctx, bucketName, objectName, opts)
+}
+
+// ListObjects mocks base method.
+func (m *MockUploader) ListObjects(ctx context.Context, bucketName string, opts minio.ListObjectsOptions) <-chan minio.ObjectInfo {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListObjects", ctx, bucketName, opts)
+	ret0, _ := ret[0].(<-chan minio.ObjectInfo)
+	return ret0
+}
+
+// ListObjects indicates an expected call of ListObjects.
+func (mr *MockUploaderMockRecorder) ListObjects(ctx, bucketName, opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListObjects", reflect.TypeOf((*MockUploader)(nil).ListObjects), ctx, bucketName, opts)
+}
+
 // CopyObject mocks base method.
 func (m *MockUploader) CopyObject(ctx context.Context, dst minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error) {
 	m.ctrl.T.Helper()
@@ -92,4 +152,49 @@ func (m *MockUploader) CopyObject(ctx context.Context, dst minio.CopyDestOptions
 func (mr *MockUploaderMockRecorder) CopyObject(ctx, dst, src interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CopyObject", reflect.TypeOf((*MockUploader)(nil).CopyObject), ctx, dst, src)
+}
+
+// StatObject mocks base method.
+func (m *MockUploader) StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StatObject", ctx, bucketName, objectName, opts)
+	ret0, _ := ret[0].(minio.ObjectInfo)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// StatObject indicates an expected call of StatObject.
+func (mr *MockUploaderMockRecorder) StatObject(ctx, bucketName, objectName, opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StatObject", reflect.TypeOf((*MockUploader)(nil).StatObject), ctx, bucketName, objectName, opts)
+}
+
+// ObjectExists mocks base method.
+func (m *MockUploader) ObjectExists(ctx context.Context, bucketName, objectName string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ObjectExists", ctx, bucketName, objectName)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ObjectExists indicates an expected call of ObjectExists.
+func (mr *MockUploaderMockRecorder) ObjectExists(ctx, bucketName, objectName interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ObjectExists", reflect.TypeOf((*MockUploader)(nil).ObjectExists), ctx, bucketName, objectName)
+}
+
+// ListObjectsSimple mocks base method.
+func (m *MockUploader) ListObjectsSimple(ctx context.Context, bucketName string, opts minio.ListObjectsOptions) ([]storage.ObjectInfo, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListObjectsSimple", ctx, bucketName, opts)
+	ret0, _ := ret[0].([]storage.ObjectInfo)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListObjectsSimple indicates an expected call of ListObjectsSimple.
+func (mr *MockUploaderMockRecorder) ListObjectsSimple(ctx, bucketName, opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListObjectsSimple", reflect.TypeOf((*MockUploader)(nil).ListObjectsSimple), ctx, bucketName, opts)
 }
