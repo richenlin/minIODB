@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -25,9 +26,9 @@ type Storage interface {
 	Exists(ctx context.Context, keys ...string) (int64, error)
 	
 	// MinIO operations
-	PutObject(ctx context.Context, bucketName, objectName, filePath string) error
-	GetObject(ctx context.Context, bucketName, objectName, filePath string) error
-	ListObjects(ctx context.Context, bucketName, prefix string) ([]string, error)
+	PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64) error
+	GetObject(ctx context.Context, bucketName, objectName string) (*minio.Object, error)
+	ListObjects(ctx context.Context, bucketName string, prefix string) <-chan minio.ObjectInfo
 	DeleteObject(ctx context.Context, bucketName, objectName string) error
 	
 	// Health check
@@ -35,6 +36,14 @@ type Storage interface {
 	
 	// Close connections
 	Close() error
+	
+	// Get stats
+	GetStats() map[string]interface{}
+	
+	// Redis mode detection
+	GetRedisMode() string
+	IsRedisCluster() bool
+	IsRedisSentinel() bool
 }
 
 // StorageImpl 存储实现
@@ -47,24 +56,33 @@ type StorageImpl struct {
 func NewStorage(cfg *config.Config) (Storage, error) {
 	// 创建连接池管理器配置
 	poolConfig := &pool.PoolManagerConfig{
-		Redis: pool.RedisPoolConfig{
-			Addr:            cfg.Pool.Redis.Addr,
-			Password:        cfg.Pool.Redis.Password,
-			DB:              cfg.Pool.Redis.DB,
-			PoolSize:        cfg.Pool.Redis.PoolSize,
-			MinIdleConns:    cfg.Pool.Redis.MinIdleConns,
-			MaxConnAge:      cfg.Pool.Redis.MaxConnAge,
-			PoolTimeout:     cfg.Pool.Redis.PoolTimeout,
-			IdleTimeout:     cfg.Pool.Redis.IdleTimeout,
-			IdleCheckFreq:   cfg.Pool.Redis.IdleCheckFreq,
-			DialTimeout:     cfg.Pool.Redis.DialTimeout,
-			ReadTimeout:     cfg.Pool.Redis.ReadTimeout,
-			WriteTimeout:    cfg.Pool.Redis.WriteTimeout,
-			MaxRetries:      cfg.Pool.Redis.MaxRetries,
-			MinRetryBackoff: cfg.Pool.Redis.MinRetryBackoff,
-			MaxRetryBackoff: cfg.Pool.Redis.MaxRetryBackoff,
+		Redis: &pool.RedisPoolConfig{
+			Mode:              cfg.Pool.Redis.Mode,
+			Addr:              cfg.Pool.Redis.Addr,
+			Password:          cfg.Pool.Redis.Password,
+			DB:                cfg.Pool.Redis.DB,
+			MasterName:        cfg.Pool.Redis.MasterName,
+			SentinelAddrs:     cfg.Pool.Redis.SentinelAddrs,
+			SentinelPassword:  cfg.Pool.Redis.SentinelPassword,
+			ClusterAddrs:      cfg.Pool.Redis.ClusterAddrs,
+			PoolSize:          cfg.Pool.Redis.PoolSize,
+			MinIdleConns:      cfg.Pool.Redis.MinIdleConns,
+			MaxConnAge:        cfg.Pool.Redis.MaxConnAge,
+			PoolTimeout:       cfg.Pool.Redis.PoolTimeout,
+			IdleTimeout:       cfg.Pool.Redis.IdleTimeout,
+			IdleCheckFreq:     cfg.Pool.Redis.IdleCheckFreq,
+			DialTimeout:       cfg.Pool.Redis.DialTimeout,
+			ReadTimeout:       cfg.Pool.Redis.ReadTimeout,
+			WriteTimeout:      cfg.Pool.Redis.WriteTimeout,
+			MaxRetries:        cfg.Pool.Redis.MaxRetries,
+			MinRetryBackoff:   cfg.Pool.Redis.MinRetryBackoff,
+			MaxRetryBackoff:   cfg.Pool.Redis.MaxRetryBackoff,
+			MaxRedirects:      cfg.Pool.Redis.MaxRedirects,
+			ReadOnly:          cfg.Pool.Redis.ReadOnly,
+			RouteByLatency:    cfg.Pool.Redis.RouteByLatency,
+			RouteRandomly:     cfg.Pool.Redis.RouteRandomly,
 		},
-		MinIO: pool.MinIOPoolConfig{
+		MinIO: &pool.MinIOPoolConfig{
 			Endpoint:               cfg.Pool.MinIO.Endpoint,
 			AccessKeyID:            cfg.Pool.MinIO.AccessKeyID,
 			SecretAccessKey:        cfg.Pool.MinIO.SecretAccessKey,
@@ -134,209 +152,237 @@ func NewStorage(cfg *config.Config) (Storage, error) {
 func (s *StorageImpl) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return fmt.Errorf("Redis pool not available")
-	}
-
-	client := redisPool.GetClient()
-	redisMetrics := metrics.NewRedisMetrics("set")
-	
-	err := client.Set(ctx, key, value, expiration).Err()
-	if err != nil {
-		redisMetrics.Finish("error")
-		return fmt.Errorf("failed to set key %s: %w", key, err)
+		return fmt.Errorf("Redis连接池不可用")
 	}
 	
-	redisMetrics.Finish("success")
-	return nil
+	// 根据Redis模式执行操作
+	switch redisPool.GetMode() {
+	case pool.RedisModeCluster:
+		client := redisPool.GetClusterClient()
+		if client == nil {
+			return fmt.Errorf("Redis集群客户端不可用")
+		}
+		return client.Set(ctx, key, value, expiration).Err()
+	case pool.RedisModeSentinel:
+		client := redisPool.GetSentinelClient()
+		if client == nil {
+			return fmt.Errorf("Redis哨兵客户端不可用")
+		}
+		return client.Set(ctx, key, value, expiration).Err()
+	default: // standalone
+		client := redisPool.GetClient()
+		if client == nil {
+			return fmt.Errorf("Redis客户端不可用")
+		}
+		return client.Set(ctx, key, value, expiration).Err()
+	}
 }
 
 // Get 获取键值
 func (s *StorageImpl) Get(ctx context.Context, key string) (string, error) {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return "", fmt.Errorf("Redis pool not available")
+		return "", fmt.Errorf("Redis连接池不可用")
 	}
-
-	client := redisPool.GetClient()
-	redisMetrics := metrics.NewRedisMetrics("get")
 	
-	result, err := client.Get(ctx, key).Result()
-	if err != nil {
-		if err == redis.Nil {
-			redisMetrics.Finish("not_found")
-			return "", fmt.Errorf("key %s not found", key)
+	// 根据Redis模式执行操作
+	switch redisPool.GetMode() {
+	case pool.RedisModeCluster:
+		client := redisPool.GetClusterClient()
+		if client == nil {
+			return "", fmt.Errorf("Redis集群客户端不可用")
 		}
-		redisMetrics.Finish("error")
-		return "", fmt.Errorf("failed to get key %s: %w", key, err)
+		return client.Get(ctx, key).Result()
+	case pool.RedisModeSentinel:
+		client := redisPool.GetSentinelClient()
+		if client == nil {
+			return "", fmt.Errorf("Redis哨兵客户端不可用")
+		}
+		return client.Get(ctx, key).Result()
+	default: // standalone
+		client := redisPool.GetClient()
+		if client == nil {
+			return "", fmt.Errorf("Redis客户端不可用")
+		}
+		return client.Get(ctx, key).Result()
 	}
-	
-	redisMetrics.Finish("success")
-	return result, nil
 }
 
 // Del 删除键
 func (s *StorageImpl) Del(ctx context.Context, keys ...string) error {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return fmt.Errorf("Redis pool not available")
-	}
-
-	client := redisPool.GetClient()
-	redisMetrics := metrics.NewRedisMetrics("del")
-	
-	err := client.Del(ctx, keys...).Err()
-	if err != nil {
-		redisMetrics.Finish("error")
-		return fmt.Errorf("failed to delete keys: %w", err)
+		return fmt.Errorf("Redis连接池不可用")
 	}
 	
-	redisMetrics.Finish("success")
-	return nil
+	// 根据Redis模式执行操作
+	switch redisPool.GetMode() {
+	case pool.RedisModeCluster:
+		client := redisPool.GetClusterClient()
+		if client == nil {
+			return fmt.Errorf("Redis集群客户端不可用")
+		}
+		return client.Del(ctx, keys...).Err()
+	case pool.RedisModeSentinel:
+		client := redisPool.GetSentinelClient()
+		if client == nil {
+			return fmt.Errorf("Redis哨兵客户端不可用")
+		}
+		return client.Del(ctx, keys...).Err()
+	default: // standalone
+		client := redisPool.GetClient()
+		if client == nil {
+			return fmt.Errorf("Redis客户端不可用")
+		}
+		return client.Del(ctx, keys...).Err()
+	}
 }
 
 // SAdd 添加集合成员
 func (s *StorageImpl) SAdd(ctx context.Context, key string, members ...interface{}) error {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return fmt.Errorf("Redis pool not available")
-	}
-
-	client := redisPool.GetClient()
-	redisMetrics := metrics.NewRedisMetrics("sadd")
-	
-	err := client.SAdd(ctx, key, members...).Err()
-	if err != nil {
-		redisMetrics.Finish("error")
-		return fmt.Errorf("failed to add members to set %s: %w", key, err)
+		return fmt.Errorf("Redis连接池不可用")
 	}
 	
-	redisMetrics.Finish("success")
-	return nil
+	// 根据Redis模式执行操作
+	switch redisPool.GetMode() {
+	case pool.RedisModeCluster:
+		client := redisPool.GetClusterClient()
+		if client == nil {
+			return fmt.Errorf("Redis集群客户端不可用")
+		}
+		return client.SAdd(ctx, key, members...).Err()
+	case pool.RedisModeSentinel:
+		client := redisPool.GetSentinelClient()
+		if client == nil {
+			return fmt.Errorf("Redis哨兵客户端不可用")
+		}
+		return client.SAdd(ctx, key, members...).Err()
+	default: // standalone
+		client := redisPool.GetClient()
+		if client == nil {
+			return fmt.Errorf("Redis客户端不可用")
+		}
+		return client.SAdd(ctx, key, members...).Err()
+	}
 }
 
 // SMembers 获取集合成员
 func (s *StorageImpl) SMembers(ctx context.Context, key string) ([]string, error) {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return nil, fmt.Errorf("Redis pool not available")
-	}
-
-	client := redisPool.GetClient()
-	redisMetrics := metrics.NewRedisMetrics("smembers")
-	
-	result, err := client.SMembers(ctx, key).Result()
-	if err != nil {
-		redisMetrics.Finish("error")
-		return nil, fmt.Errorf("failed to get members of set %s: %w", key, err)
+		return nil, fmt.Errorf("Redis连接池不可用")
 	}
 	
-	redisMetrics.Finish("success")
-	return result, nil
+	// 根据Redis模式执行操作
+	switch redisPool.GetMode() {
+	case pool.RedisModeCluster:
+		client := redisPool.GetClusterClient()
+		if client == nil {
+			return nil, fmt.Errorf("Redis集群客户端不可用")
+		}
+		return client.SMembers(ctx, key).Result()
+	case pool.RedisModeSentinel:
+		client := redisPool.GetSentinelClient()
+		if client == nil {
+			return nil, fmt.Errorf("Redis哨兵客户端不可用")
+		}
+		return client.SMembers(ctx, key).Result()
+	default: // standalone
+		client := redisPool.GetClient()
+		if client == nil {
+			return nil, fmt.Errorf("Redis客户端不可用")
+		}
+		return client.SMembers(ctx, key).Result()
+	}
 }
 
 // Exists 检查键是否存在
 func (s *StorageImpl) Exists(ctx context.Context, keys ...string) (int64, error) {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return 0, fmt.Errorf("Redis pool not available")
-	}
-
-	client := redisPool.GetClient()
-	redisMetrics := metrics.NewRedisMetrics("exists")
-	
-	result, err := client.Exists(ctx, keys...).Result()
-	if err != nil {
-		redisMetrics.Finish("error")
-		return 0, fmt.Errorf("failed to check existence of keys: %w", err)
+		return 0, fmt.Errorf("Redis连接池不可用")
 	}
 	
-	redisMetrics.Finish("success")
-	return result, nil
+	// 根据Redis模式执行操作
+	switch redisPool.GetMode() {
+	case pool.RedisModeCluster:
+		client := redisPool.GetClusterClient()
+		if client == nil {
+			return 0, fmt.Errorf("Redis集群客户端不可用")
+		}
+		return client.Exists(ctx, keys...).Result()
+	case pool.RedisModeSentinel:
+		client := redisPool.GetSentinelClient()
+		if client == nil {
+			return 0, fmt.Errorf("Redis哨兵客户端不可用")
+		}
+		return client.Exists(ctx, keys...).Result()
+	default: // standalone
+		client := redisPool.GetClient()
+		if client == nil {
+			return 0, fmt.Errorf("Redis客户端不可用")
+		}
+		return client.Exists(ctx, keys...).Result()
+	}
 }
 
 // MinIO operations
 
 // PutObject 上传对象
-func (s *StorageImpl) PutObject(ctx context.Context, bucketName, objectName, filePath string) error {
+func (s *StorageImpl) PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64) error {
 	minioPool := s.poolManager.GetMinIOPool()
 	if minioPool == nil {
-		return fmt.Errorf("MinIO pool not available")
-	}
-
-	minioMetrics := metrics.NewMinIOMetrics("put_object")
-	
-	err := minioPool.ExecuteWithRetry(ctx, func() error {
-		client := minioPool.GetClient()
-		_, err := client.FPutObject(ctx, bucketName, objectName, filePath, minio.PutObjectOptions{})
-		return err
-	})
-	
-	if err != nil {
-		minioMetrics.Finish("error")
-		return fmt.Errorf("failed to put object %s: %w", objectName, err)
+		return fmt.Errorf("MinIO连接池不可用")
 	}
 	
-	minioMetrics.Finish("success")
-	return nil
+	client := minioPool.GetClient()
+	if client == nil {
+		return fmt.Errorf("MinIO客户端不可用")
+	}
+	
+	_, err := client.PutObject(ctx, bucketName, objectName, reader, objectSize, minio.PutObjectOptions{})
+	return err
 }
 
-// GetObject 下载对象
-func (s *StorageImpl) GetObject(ctx context.Context, bucketName, objectName, filePath string) error {
+// GetObject 获取对象
+func (s *StorageImpl) GetObject(ctx context.Context, bucketName, objectName string) (*minio.Object, error) {
 	minioPool := s.poolManager.GetMinIOPool()
 	if minioPool == nil {
-		return fmt.Errorf("MinIO pool not available")
-	}
-
-	minioMetrics := metrics.NewMinIOMetrics("get_object")
-	
-	err := minioPool.ExecuteWithRetry(ctx, func() error {
-		client := minioPool.GetClient()
-		return client.FGetObject(ctx, bucketName, objectName, filePath, minio.GetObjectOptions{})
-	})
-	
-	if err != nil {
-		minioMetrics.Finish("error")
-		return fmt.Errorf("failed to get object %s: %w", objectName, err)
+		return nil, fmt.Errorf("MinIO连接池不可用")
 	}
 	
-	minioMetrics.Finish("success")
-	return nil
+	client := minioPool.GetClient()
+	if client == nil {
+		return nil, fmt.Errorf("MinIO客户端不可用")
+	}
+	
+	return client.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
 }
 
 // ListObjects 列出对象
-func (s *StorageImpl) ListObjects(ctx context.Context, bucketName, prefix string) ([]string, error) {
+func (s *StorageImpl) ListObjects(ctx context.Context, bucketName string, prefix string) <-chan minio.ObjectInfo {
 	minioPool := s.poolManager.GetMinIOPool()
 	if minioPool == nil {
-		return nil, fmt.Errorf("MinIO pool not available")
+		// 返回空channel
+		ch := make(chan minio.ObjectInfo)
+		close(ch)
+		return ch
 	}
-
-	var objects []string
-	minioMetrics := metrics.NewMinIOMetrics("list_objects")
 	
-	err := minioPool.ExecuteWithRetry(ctx, func() error {
-		client := minioPool.GetClient()
-		objectCh := client.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
-			Prefix:    prefix,
-			Recursive: true,
-		})
-		
-		objects = objects[:0] // 清空切片但保留容量
-		for object := range objectCh {
-			if object.Err != nil {
-				return object.Err
-			}
-			objects = append(objects, object.Key)
-		}
-		return nil
+	client := minioPool.GetClient()
+	if client == nil {
+		// 返回空channel
+		ch := make(chan minio.ObjectInfo)
+		close(ch)
+		return ch
+	}
+	
+	return client.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
 	})
-	
-	if err != nil {
-		minioMetrics.Finish("error")
-		return nil, fmt.Errorf("failed to list objects with prefix %s: %w", prefix, err)
-	}
-	
-	minioMetrics.Finish("success")
-	return objects, nil
 }
 
 // DeleteObject 删除对象
@@ -408,9 +454,46 @@ func (s *StorageImpl) GetPoolManager() *pool.PoolManager {
 }
 
 // GetStats 获取连接池统计信息
-func (s *StorageImpl) GetStats() interface{} {
+func (s *StorageImpl) GetStats() map[string]interface{} {
 	if s.poolManager == nil {
 		return nil
 	}
 	return s.poolManager.GetStats()
+}
+
+// Redis mode detection methods
+
+// GetRedisMode 获取Redis模式
+func (s *StorageImpl) GetRedisMode() string {
+	redisPool := s.poolManager.GetRedisPool()
+	if redisPool == nil {
+		return "unknown"
+	}
+	
+	switch redisPool.GetMode() {
+	case pool.RedisModeCluster:
+		return "cluster"
+	case pool.RedisModeSentinel:
+		return "sentinel"
+	default:
+		return "standalone"
+	}
+}
+
+// IsRedisCluster 检查是否为集群模式
+func (s *StorageImpl) IsRedisCluster() bool {
+	redisPool := s.poolManager.GetRedisPool()
+	if redisPool == nil {
+		return false
+	}
+	return redisPool.GetMode() == pool.RedisModeCluster
+}
+
+// IsRedisSentinel 检查是否为哨兵模式
+func (s *StorageImpl) IsRedisSentinel() bool {
+	redisPool := s.poolManager.GetRedisPool()
+	if redisPool == nil {
+		return false
+	}
+	return redisPool.GetMode() == pool.RedisModeSentinel
 } 

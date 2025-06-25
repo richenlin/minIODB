@@ -3,69 +3,122 @@ package pool
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 )
 
+// RedisMode Redis运行模式
+type RedisMode string
+
+const (
+	RedisModeStandalone RedisMode = "standalone" // 单机模式
+	RedisModeSentinel   RedisMode = "sentinel"   // 哨兵模式
+	RedisModeCluster    RedisMode = "cluster"    // 集群模式
+)
+
 // RedisPoolConfig Redis连接池配置
 type RedisPoolConfig struct {
-	// 基础连接配置
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
+	// 基础配置
+	Mode     RedisMode `yaml:"mode"`     // Redis模式: standalone, sentinel, cluster
+	Addr     string    `yaml:"addr"`     // 单机模式地址
+	Password string    `yaml:"password"` // 密码
+	DB       int       `yaml:"db"`       // 数据库编号（集群模式不支持）
+	
+	// 哨兵模式配置
+	MasterName    string   `yaml:"master_name"`    // 主节点名称
+	SentinelAddrs []string `yaml:"sentinel_addrs"` // 哨兵地址列表
+	SentinelPassword string `yaml:"sentinel_password"` // 哨兵密码
+	
+	// 集群模式配置
+	ClusterAddrs []string `yaml:"cluster_addrs"` // 集群地址列表
 	
 	// 连接池配置
-	PoolSize        int           `yaml:"pool_size"`         // 最大连接数
+	PoolSize        int           `yaml:"pool_size"`         // 连接池大小
 	MinIdleConns    int           `yaml:"min_idle_conns"`    // 最小空闲连接数
-	MaxConnAge      time.Duration `yaml:"max_conn_age"`      // 连接最大生命周期
+	MaxConnAge      time.Duration `yaml:"max_conn_age"`      // 连接最大生存时间
 	PoolTimeout     time.Duration `yaml:"pool_timeout"`      // 获取连接超时
 	IdleTimeout     time.Duration `yaml:"idle_timeout"`      // 空闲连接超时
 	IdleCheckFreq   time.Duration `yaml:"idle_check_freq"`   // 空闲连接检查频率
 	
-	// 网络超时配置
+	// 网络配置
 	DialTimeout  time.Duration `yaml:"dial_timeout"`  // 连接超时
-	ReadTimeout  time.Duration `yaml:"read_timeout"`  // 读超时
-	WriteTimeout time.Duration `yaml:"write_timeout"` // 写超时
+	ReadTimeout  time.Duration `yaml:"read_timeout"`  // 读取超时
+	WriteTimeout time.Duration `yaml:"write_timeout"` // 写入超时
 	
 	// 重试配置
 	MaxRetries      int           `yaml:"max_retries"`       // 最大重试次数
 	MinRetryBackoff time.Duration `yaml:"min_retry_backoff"` // 最小重试间隔
 	MaxRetryBackoff time.Duration `yaml:"max_retry_backoff"` // 最大重试间隔
+	
+	// 集群特定配置
+	MaxRedirects   int  `yaml:"max_redirects"`   // 最大重定向次数
+	ReadOnly       bool `yaml:"read_only"`       // 只读模式
+	RouteByLatency bool `yaml:"route_by_latency"` // 按延迟路由
+	RouteRandomly  bool `yaml:"route_randomly"`   // 随机路由
 }
 
-// DefaultRedisPoolConfig 返回默认的Redis连接池配置
+// DefaultRedisPoolConfig 返回默认Redis连接池配置
 func DefaultRedisPoolConfig() *RedisPoolConfig {
+	cpuCount := runtime.NumCPU()
 	return &RedisPoolConfig{
-		Addr:     "localhost:6379",
-		Password: "",
-		DB:       0,
-		
-		// 连接池配置 - 基于CPU核心数优化
-		PoolSize:        runtime.NumCPU() * 2, // CPU核心数的2倍
-		MinIdleConns:    runtime.NumCPU(),     // CPU核心数
-		MaxConnAge:      30 * time.Minute,     // 30分钟
-		PoolTimeout:     4 * time.Second,      // 4秒
-		IdleTimeout:     5 * time.Minute,      // 5分钟
-		IdleCheckFreq:   1 * time.Minute,      // 1分钟
-		
-		// 网络超时配置
-		DialTimeout:  5 * time.Second,  // 5秒
-		ReadTimeout:  3 * time.Second,  // 3秒
-		WriteTimeout: 3 * time.Second,  // 3秒
-		
-		// 重试配置
+		Mode:            RedisModeStandalone,
+		Addr:            "localhost:6379",
+		Password:        "",
+		DB:              0,
+		PoolSize:        cpuCount * 10,
+		MinIdleConns:    cpuCount,
+		MaxConnAge:      30 * time.Minute,
+		PoolTimeout:     4 * time.Second,
+		IdleTimeout:     5 * time.Minute,
+		IdleCheckFreq:   time.Minute,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     3 * time.Second,
+		WriteTimeout:    3 * time.Second,
 		MaxRetries:      3,
 		MinRetryBackoff: 8 * time.Millisecond,
 		MaxRetryBackoff: 512 * time.Millisecond,
+		MaxRedirects:    8,
+		ReadOnly:        false,
+		RouteByLatency:  false,
+		RouteRandomly:   true,
 	}
 }
 
-// RedisPool Redis连接池管理器
+// RedisPool Redis连接池
 type RedisPool struct {
-	client *redis.Client
 	config *RedisPoolConfig
+	client redis.Cmdable // 统一接口，支持单机、哨兵、集群
+	
+	// 具体客户端实例
+	standaloneClient *redis.Client
+	sentinelClient   *redis.Client
+	clusterClient    *redis.ClusterClient
+	
+	mutex sync.RWMutex
+	stats *RedisPoolStats
+}
+
+// RedisPoolStats Redis连接池统计信息
+type RedisPoolStats struct {
+	Mode              string            `json:"mode"`
+	TotalConns        uint32            `json:"total_conns"`
+	IdleConns         uint32            `json:"idle_conns"`
+	StaleConns        uint32            `json:"stale_conns"`
+	Hits              uint64            `json:"hits"`
+	Misses            uint64            `json:"misses"`
+	Timeouts          uint64            `json:"timeouts"`
+	TotalRequests     uint64            `json:"total_requests"`
+	SuccessRequests   uint64            `json:"success_requests"`
+	FailedRequests    uint64            `json:"failed_requests"`
+	AvgResponseTime   time.Duration     `json:"avg_response_time"`
+	LastHealthCheck   time.Time         `json:"last_health_check"`
+	HealthStatus      string            `json:"health_status"`
+	ClusterNodes      map[string]string `json:"cluster_nodes,omitempty"` // 集群节点状态
 }
 
 // NewRedisPool 创建新的Redis连接池
@@ -73,96 +126,420 @@ func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
 	if config == nil {
 		config = DefaultRedisPoolConfig()
 	}
-	
-	// 创建Redis客户端选项
-	options := &redis.Options{
-		Addr:     config.Addr,
-		Password: config.Password,
-		DB:       config.DB,
-		
-		// 连接池配置
-		PoolSize:      config.PoolSize,
-		MinIdleConns:  config.MinIdleConns,
-		MaxConnAge:    config.MaxConnAge,
-		PoolTimeout:   config.PoolTimeout,
-		IdleTimeout:   config.IdleTimeout,
-		IdleCheckFreq: config.IdleCheckFreq,
-		
-		// 网络超时配置
-		DialTimeout:  config.DialTimeout,
-		ReadTimeout:  config.ReadTimeout,
-		WriteTimeout: config.WriteTimeout,
-		
-		// 重试配置
-		MaxRetries:      config.MaxRetries,
-		MinRetryBackoff: config.MinRetryBackoff,
-		MaxRetryBackoff: config.MaxRetryBackoff,
+
+	pool := &RedisPool{
+		config: config,
+		stats:  &RedisPoolStats{Mode: string(config.Mode)},
 	}
-	
-	client := redis.NewClient(options)
-	
-	// 测试连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	// 根据模式创建相应的客户端
+	switch config.Mode {
+	case RedisModeStandalone:
+		if err := pool.createStandaloneClient(); err != nil {
+			return nil, fmt.Errorf("failed to create standalone client: %w", err)
+		}
+	case RedisModeSentinel:
+		if err := pool.createSentinelClient(); err != nil {
+			return nil, fmt.Errorf("failed to create sentinel client: %w", err)
+		}
+	case RedisModeCluster:
+		if err := pool.createClusterClient(); err != nil {
+			return nil, fmt.Errorf("failed to create cluster client: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported Redis mode: %s", config.Mode)
+	}
+
+	// 执行健康检查
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	
-	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	if err := pool.HealthCheck(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initial health check failed: %w", err)
 	}
-	
-	pool := &RedisPool{
-		client: client,
-		config: config,
-	}
-	
+
+	log.Printf("Redis pool initialized in %s mode", config.Mode)
 	return pool, nil
 }
 
-// GetClient 获取Redis客户端
-func (p *RedisPool) GetClient() *redis.Client {
-	return p.client
+// createStandaloneClient 创建单机模式客户端
+func (p *RedisPool) createStandaloneClient() error {
+	options := &redis.Options{
+		Addr:            p.config.Addr,
+		Password:        p.config.Password,
+		DB:              p.config.DB,
+		PoolSize:        p.config.PoolSize,
+		MinIdleConns:    p.config.MinIdleConns,
+		MaxConnAge:      p.config.MaxConnAge,
+		PoolTimeout:     p.config.PoolTimeout,
+		IdleTimeout:     p.config.IdleTimeout,
+		IdleCheckFreq:   p.config.IdleCheckFreq,
+		DialTimeout:     p.config.DialTimeout,
+		ReadTimeout:     p.config.ReadTimeout,
+		WriteTimeout:    p.config.WriteTimeout,
+		MaxRetries:      p.config.MaxRetries,
+		MinRetryBackoff: p.config.MinRetryBackoff,
+		MaxRetryBackoff: p.config.MaxRetryBackoff,
+	}
+
+	p.standaloneClient = redis.NewClient(options)
+	p.client = p.standaloneClient
+	return nil
 }
 
-// GetStats 获取连接池统计信息
-func (p *RedisPool) GetStats() *redis.PoolStats {
-	return p.client.PoolStats()
+// createSentinelClient 创建哨兵模式客户端
+func (p *RedisPool) createSentinelClient() error {
+	if p.config.MasterName == "" {
+		return fmt.Errorf("master name is required for sentinel mode")
+	}
+	if len(p.config.SentinelAddrs) == 0 {
+		return fmt.Errorf("sentinel addresses are required for sentinel mode")
+	}
+
+	options := &redis.FailoverOptions{
+		MasterName:       p.config.MasterName,
+		SentinelAddrs:    p.config.SentinelAddrs,
+		SentinelPassword: p.config.SentinelPassword,
+		Password:         p.config.Password,
+		DB:               p.config.DB,
+		PoolSize:         p.config.PoolSize,
+		MinIdleConns:     p.config.MinIdleConns,
+		MaxConnAge:       p.config.MaxConnAge,
+		PoolTimeout:      p.config.PoolTimeout,
+		IdleTimeout:      p.config.IdleTimeout,
+		IdleCheckFreq:    p.config.IdleCheckFreq,
+		DialTimeout:      p.config.DialTimeout,
+		ReadTimeout:      p.config.ReadTimeout,
+		WriteTimeout:     p.config.WriteTimeout,
+		MaxRetries:       p.config.MaxRetries,
+		MinRetryBackoff:  p.config.MinRetryBackoff,
+		MaxRetryBackoff:  p.config.MaxRetryBackoff,
+	}
+
+	p.sentinelClient = redis.NewFailoverClient(options)
+	p.client = p.sentinelClient
+	return nil
+}
+
+// createClusterClient 创建集群模式客户端
+func (p *RedisPool) createClusterClient() error {
+	if len(p.config.ClusterAddrs) == 0 {
+		return fmt.Errorf("cluster addresses are required for cluster mode")
+	}
+
+	options := &redis.ClusterOptions{
+		Addrs:           p.config.ClusterAddrs,
+		Password:        p.config.Password,
+		PoolSize:        p.config.PoolSize,
+		MinIdleConns:    p.config.MinIdleConns,
+		MaxConnAge:      p.config.MaxConnAge,
+		PoolTimeout:     p.config.PoolTimeout,
+		IdleTimeout:     p.config.IdleTimeout,
+		IdleCheckFreq:   p.config.IdleCheckFreq,
+		DialTimeout:     p.config.DialTimeout,
+		ReadTimeout:     p.config.ReadTimeout,
+		WriteTimeout:    p.config.WriteTimeout,
+		MaxRetries:      p.config.MaxRetries,
+		MinRetryBackoff: p.config.MinRetryBackoff,
+		MaxRetryBackoff: p.config.MaxRetryBackoff,
+		MaxRedirects:    p.config.MaxRedirects,
+		ReadOnly:        p.config.ReadOnly,
+		RouteByLatency:  p.config.RouteByLatency,
+		RouteRandomly:   p.config.RouteRandomly,
+	}
+
+	p.clusterClient = redis.NewClusterClient(options)
+	p.client = p.clusterClient
+	return nil
+}
+
+// GetClient 获取Redis客户端
+func (p *RedisPool) GetClient() redis.Cmdable {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.client
 }
 
 // HealthCheck 健康检查
 func (p *RedisPool) HealthCheck(ctx context.Context) error {
-	return p.client.Ping(ctx).Err()
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	startTime := time.Now()
+	defer func() {
+		p.stats.LastHealthCheck = time.Now()
+		p.stats.AvgResponseTime = time.Since(startTime)
+	}()
+
+	// 基础连通性检查
+	if err := p.client.Ping(ctx).Err(); err != nil {
+		p.stats.HealthStatus = "unhealthy"
+		return fmt.Errorf("ping failed: %w", err)
+	}
+
+	// 根据模式进行特定检查
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		if err := p.checkStandaloneHealth(ctx); err != nil {
+			p.stats.HealthStatus = "unhealthy"
+			return err
+		}
+	case RedisModeSentinel:
+		if err := p.checkSentinelHealth(ctx); err != nil {
+			p.stats.HealthStatus = "unhealthy"
+			return err
+		}
+	case RedisModeCluster:
+		if err := p.checkClusterHealth(ctx); err != nil {
+			p.stats.HealthStatus = "unhealthy"
+			return err
+		}
+	}
+
+	p.stats.HealthStatus = "healthy"
+	return nil
+}
+
+// checkStandaloneHealth 检查单机模式健康状态
+func (p *RedisPool) checkStandaloneHealth(ctx context.Context) error {
+	// 检查服务器信息
+	info, err := p.standaloneClient.Info(ctx, "server").Result()
+	if err != nil {
+		return fmt.Errorf("failed to get server info: %w", err)
+	}
+	
+	// 简单验证服务器是否正常运行
+	if !strings.Contains(info, "redis_version") {
+		return fmt.Errorf("invalid server info response")
+	}
+	
+	return nil
+}
+
+// checkSentinelHealth 检查哨兵模式健康状态
+func (p *RedisPool) checkSentinelHealth(ctx context.Context) error {
+	// 检查主节点连接
+	info, err := p.sentinelClient.Info(ctx, "replication").Result()
+	if err != nil {
+		return fmt.Errorf("failed to get replication info: %w", err)
+	}
+	
+	// 验证角色信息
+	if strings.Contains(info, "role:master") || strings.Contains(info, "role:slave") {
+		return nil
+	}
+	
+	return fmt.Errorf("invalid replication role")
+}
+
+// checkClusterHealth 检查集群模式健康状态
+func (p *RedisPool) checkClusterHealth(ctx context.Context) error {
+	// 获取集群节点信息
+	nodes, err := p.clusterClient.ClusterNodes(ctx).Result()
+	if err != nil {
+		return fmt.Errorf("failed to get cluster nodes: %w", err)
+	}
+	
+	// 解析节点状态
+	p.stats.ClusterNodes = make(map[string]string)
+	lines := strings.Split(nodes, "\n")
+	healthyNodes := 0
+	
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		
+		parts := strings.Fields(line)
+		if len(parts) >= 8 {
+			nodeId := parts[0]
+			flags := parts[2]
+			
+			p.stats.ClusterNodes[nodeId] = flags
+			
+			// 检查节点是否健康 (master或slave且连接正常)
+			if (strings.Contains(flags, "master") || strings.Contains(flags, "slave")) && 
+			   !strings.Contains(flags, "fail") && !strings.Contains(flags, "fail?") {
+				healthyNodes++
+			}
+		}
+	}
+	
+	if healthyNodes == 0 {
+		return fmt.Errorf("no healthy nodes found in cluster")
+	}
+	
+	return nil
+}
+
+// GetStats 获取连接池统计信息
+func (p *RedisPool) GetStats() *RedisPoolStats {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	
+	// 更新连接池统计
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		if p.standaloneClient != nil {
+			poolStats := p.standaloneClient.PoolStats()
+			p.stats.TotalConns = poolStats.TotalConns
+			p.stats.IdleConns = poolStats.IdleConns
+			p.stats.StaleConns = poolStats.StaleConns
+			p.stats.Hits = poolStats.Hits
+			p.stats.Misses = poolStats.Misses
+			p.stats.Timeouts = poolStats.Timeouts
+		}
+	case RedisModeSentinel:
+		if p.sentinelClient != nil {
+			poolStats := p.sentinelClient.PoolStats()
+			p.stats.TotalConns = poolStats.TotalConns
+			p.stats.IdleConns = poolStats.IdleConns
+			p.stats.StaleConns = poolStats.StaleConns
+			p.stats.Hits = poolStats.Hits
+			p.stats.Misses = poolStats.Misses
+			p.stats.Timeouts = poolStats.Timeouts
+		}
+	case RedisModeCluster:
+		if p.clusterClient != nil {
+			poolStats := p.clusterClient.PoolStats()
+			p.stats.TotalConns = poolStats.TotalConns
+			p.stats.IdleConns = poolStats.IdleConns
+			p.stats.StaleConns = poolStats.StaleConns
+			p.stats.Hits = poolStats.Hits
+			p.stats.Misses = poolStats.Misses
+			p.stats.Timeouts = poolStats.Timeouts
+		}
+	}
+	
+	// 创建副本返回
+	statsCopy := *p.stats
+	return &statsCopy
+}
+
+// UpdatePoolSize 动态更新连接池大小
+func (p *RedisPool) UpdatePoolSize(newSize int) error {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	
+	if newSize <= 0 {
+		return fmt.Errorf("pool size must be positive")
+	}
+	
+	p.config.PoolSize = newSize
+	
+	// 注意: go-redis不支持动态调整连接池大小
+	// 这里只更新配置，实际生效需要重新创建连接池
+	log.Printf("Pool size updated to %d (requires restart to take effect)", newSize)
+	return nil
+}
+
+// GetConfig 获取配置信息
+func (p *RedisPool) GetConfig() *RedisPoolConfig {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	
+	// 创建配置副本
+	configCopy := *p.config
+	return &configCopy
 }
 
 // Close 关闭连接池
 func (p *RedisPool) Close() error {
-	return p.client.Close()
-}
-
-// GetConfig 获取连接池配置
-func (p *RedisPool) GetConfig() *RedisPoolConfig {
-	return p.config
-}
-
-// UpdatePoolSize 动态更新连接池大小
-func (p *RedisPool) UpdatePoolSize(newSize int) {
-	// 注意：go-redis不支持动态调整连接池大小
-	// 这里只是更新配置，实际需要重新创建客户端
-	p.config.PoolSize = newSize
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	
+	var err error
+	
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		if p.standaloneClient != nil {
+			err = p.standaloneClient.Close()
+			p.standaloneClient = nil
+		}
+	case RedisModeSentinel:
+		if p.sentinelClient != nil {
+			err = p.sentinelClient.Close()
+			p.sentinelClient = nil
+		}
+	case RedisModeCluster:
+		if p.clusterClient != nil {
+			err = p.clusterClient.Close()
+			p.clusterClient = nil
+		}
+	}
+	
+	p.client = nil
+	
+	if err != nil {
+		return fmt.Errorf("failed to close Redis client: %w", err)
+	}
+	
+	log.Printf("Redis pool (%s mode) closed successfully", p.config.Mode)
+	return nil
 }
 
 // GetConnectionInfo 获取连接信息
 func (p *RedisPool) GetConnectionInfo() map[string]interface{} {
-	stats := p.GetStats()
-	return map[string]interface{}{
-		"total_conns":   stats.TotalConns,
-		"idle_conns":    stats.IdleConns,
-		"stale_conns":   stats.StaleConns,
-		"hits":          stats.Hits,
-		"misses":        stats.Misses,
-		"timeouts":      stats.Timeouts,
-		"pool_size":     p.config.PoolSize,
-		"min_idle":      p.config.MinIdleConns,
-		"max_conn_age":  p.config.MaxConnAge.String(),
-		"idle_timeout":  p.config.IdleTimeout.String(),
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	
+	info := map[string]interface{}{
+		"mode":      p.config.Mode,
+		"pool_size": p.config.PoolSize,
 	}
+	
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		info["addr"] = p.config.Addr
+		info["db"] = p.config.DB
+	case RedisModeSentinel:
+		info["master_name"] = p.config.MasterName
+		info["sentinel_addrs"] = p.config.SentinelAddrs
+		info["db"] = p.config.DB
+	case RedisModeCluster:
+		info["cluster_addrs"] = p.config.ClusterAddrs
+		info["read_only"] = p.config.ReadOnly
+	}
+	
+	return info
+}
+
+// ExecuteWithRetry 执行带重试的Redis操作
+func (p *RedisPool) ExecuteWithRetry(ctx context.Context, operation func() error) error {
+	var lastErr error
+	
+	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
+		p.stats.TotalRequests++
+		
+		err := operation()
+		if err == nil {
+			p.stats.SuccessRequests++
+			return nil
+		}
+		
+		lastErr = err
+		p.stats.FailedRequests++
+		
+		if attempt < p.config.MaxRetries {
+			// 计算退避时间
+			backoff := p.config.MinRetryBackoff * time.Duration(1<<uint(attempt))
+			if backoff > p.config.MaxRetryBackoff {
+				backoff = p.config.MaxRetryBackoff
+			}
+			
+			log.Printf("Redis operation failed (attempt %d/%d), retrying in %v: %v", 
+				attempt+1, p.config.MaxRetries+1, backoff, err)
+			
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+	}
+	
+	return fmt.Errorf("operation failed after %d attempts: %w", p.config.MaxRetries+1, lastErr)
 } 

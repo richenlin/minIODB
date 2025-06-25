@@ -20,10 +20,20 @@ type Config struct {
 
 // RedisConfig Redis配置
 type RedisConfig struct {
-	Addr     string `mapstructure:"addr"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
-	Bucket   string `mapstructure:"bucket"`
+	// 基础配置
+	Mode     string `mapstructure:"mode"`     // Redis模式: standalone, sentinel, cluster
+	Addr     string `mapstructure:"addr"`     // 单机模式地址
+	Password string `mapstructure:"password"` // 密码
+	DB       int    `mapstructure:"db"`       // 数据库编号（集群模式不支持）
+	Bucket   string `mapstructure:"bucket"`   // 存储桶名称
+	
+	// 哨兵模式配置
+	MasterName       string   `mapstructure:"master_name"`       // 主节点名称
+	SentinelAddrs    []string `mapstructure:"sentinel_addrs"`    // 哨兵地址列表
+	SentinelPassword string   `mapstructure:"sentinel_password"` // 哨兵密码
+	
+	// 集群模式配置
+	ClusterAddrs []string `mapstructure:"cluster_addrs"` // 集群地址列表
 	
 	// 连接池配置
 	PoolSize       int           `mapstructure:"pool_size"`        // 连接池大小
@@ -38,6 +48,12 @@ type RedisConfig struct {
 	MaxRetries     int           `mapstructure:"max_retries"`      // 最大重试次数
 	MinRetryBackoff time.Duration `mapstructure:"min_retry_backoff"` // 最小重试间隔
 	MaxRetryBackoff time.Duration `mapstructure:"max_retry_backoff"` // 最大重试间隔
+	
+	// 集群特定配置
+	MaxRedirects   int  `mapstructure:"max_redirects"`   // 最大重定向次数
+	ReadOnly       bool `mapstructure:"read_only"`       // 只读模式
+	RouteByLatency bool `mapstructure:"route_by_latency"` // 按延迟路由
+	RouteRandomly  bool `mapstructure:"route_randomly"`   // 随机路由
 }
 
 // MinioConfig MinIO配置

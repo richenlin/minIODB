@@ -1,8 +1,28 @@
 redis:
-  addr: "localhost:6379"
-  password: ""
-  db: 0
-  bucket: "olap-data"
+  # 基础配置
+  mode: "standalone"          # Redis模式: standalone, sentinel, cluster
+  addr: "localhost:6379"      # 单机模式地址
+  password: ""                # 密码
+  db: 0                       # 数据库编号（集群模式不支持）
+  bucket: "olap-data"         # 存储桶名称
+  
+  # 哨兵模式配置（当mode为sentinel时使用）
+  # master_name: "mymaster"                    # 主节点名称
+  # sentinel_addrs:                            # 哨兵地址列表
+  #   - "localhost:26379"
+  #   - "localhost:26380"
+  #   - "localhost:26381"
+  # sentinel_password: ""                      # 哨兵密码
+  
+  # 集群模式配置（当mode为cluster时使用）
+  # cluster_addrs:                             # 集群地址列表
+  #   - "localhost:7000"
+  #   - "localhost:7001"
+  #   - "localhost:7002"
+  #   - "localhost:7003"
+  #   - "localhost:7004"
+  #   - "localhost:7005"
+  
   # 连接池配置
   pool_size: 100              # 连接池大小
   min_idle_conns: 10          # 最小空闲连接数
@@ -16,6 +36,12 @@ redis:
   max_retries: 3              # 最大重试次数
   min_retry_backoff: 8ms      # 最小重试间隔
   max_retry_backoff: 512ms    # 最大重试间隔
+  
+  # 集群特定配置（当mode为cluster时使用）
+  max_redirects: 8            # 最大重定向次数
+  read_only: false            # 只读模式
+  route_by_latency: false     # 按延迟路由
+  route_randomly: true        # 随机路由
 
 minio:
   endpoint: "localhost:9000"
@@ -128,10 +154,31 @@ auth:
 pool:
   # Redis连接池配置
   redis:
-    addr: "localhost:6379"
-    password: ""
-    db: 0
-    bucket: "olap-data"
+    # 基础配置
+    mode: "standalone"          # Redis模式: standalone, sentinel, cluster
+    addr: "localhost:6379"      # 单机模式地址
+    password: ""                # 密码
+    db: 0                       # 数据库编号
+    bucket: "olap-data"         # 存储桶名称
+    
+    # 哨兵模式配置（当mode为sentinel时使用）
+    # master_name: "mymaster"
+    # sentinel_addrs:
+    #   - "localhost:26379"
+    #   - "localhost:26380"
+    #   - "localhost:26381"
+    # sentinel_password: ""
+    
+    # 集群模式配置（当mode为cluster时使用）
+    # cluster_addrs:
+    #   - "localhost:7000"
+    #   - "localhost:7001"
+    #   - "localhost:7002"
+    #   - "localhost:7003"
+    #   - "localhost:7004"
+    #   - "localhost:7005"
+    
+    # 连接池配置
     pool_size: 100
     min_idle_conns: 10
     max_conn_age: 1800s
@@ -144,6 +191,12 @@ pool:
     max_retries: 3
     min_retry_backoff: 8ms
     max_retry_backoff: 512ms
+    
+    # 集群特定配置
+    max_redirects: 8
+    read_only: false
+    route_by_latency: false
+    route_randomly: true
   
   # MinIO连接池配置
   minio:
