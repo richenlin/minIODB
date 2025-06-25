@@ -11,6 +11,8 @@ import (
 
 	olapv1 "minIODB/api/proto/olap/v1"
 	"minIODB/internal/discovery"
+	"minIODB/internal/utils"
+	"minIODB/pkg/consistenthash"
 
 	"github.com/go-redis/redis/v8"
 	"google.golang.org/grpc"
@@ -34,264 +36,208 @@ type QueryResult struct {
 
 // WriteCoordinator 写入协调器
 type WriteCoordinator struct {
-	registry *discovery.ServiceRegistry
+	registry       *discovery.ServiceRegistry
+	hashRing       *consistenthash.ConsistentHash
+	circuitBreaker *utils.CircuitBreaker
+	mu             sync.RWMutex
 }
 
 // QueryCoordinator 查询协调器
 type QueryCoordinator struct {
-	redisClient *redis.Client
-	registry    *discovery.ServiceRegistry
+	redisClient    *redis.Client
+	registry       *discovery.ServiceRegistry
+	circuitBreaker *utils.CircuitBreaker
 }
 
 // NewWriteCoordinator 创建写入协调器
 func NewWriteCoordinator(registry *discovery.ServiceRegistry) *WriteCoordinator {
+	cb := utils.NewCircuitBreaker("write_coordinator", utils.DefaultCircuitBreakerConfig)
+	
 	return &WriteCoordinator{
-		registry: registry,
+		registry:       registry,
+		hashRing:       consistenthash.New(150),
+		circuitBreaker: cb,
 	}
 }
 
 // NewQueryCoordinator 创建查询协调器
 func NewQueryCoordinator(redisClient *redis.Client, registry *discovery.ServiceRegistry) *QueryCoordinator {
+	cb := utils.NewCircuitBreaker("query_coordinator", utils.DefaultCircuitBreakerConfig)
+	
 	return &QueryCoordinator{
-		redisClient: redisClient,
-		registry:    registry,
+		redisClient:    redisClient,
+		registry:       registry,
+		circuitBreaker: cb,
 	}
 }
 
 // RouteWrite 路由写入请求到对应的节点
 func (wc *WriteCoordinator) RouteWrite(req *olapv1.WriteRequest) (string, error) {
-	// 根据ID计算目标节点
-	dataKey := req.Id
-	targetNode := wc.registry.GetNodeForKey(dataKey)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 使用熔断器执行操作
+	var targetNode string
+	var err error
 	
-	if targetNode == "" {
-		return "", fmt.Errorf("no available nodes for key: %s", dataKey)
+	cbErr := wc.circuitBreaker.Execute(ctx, func(ctx context.Context) error {
+		// 获取所有活跃节点
+		nodes, getErr := wc.registry.GetHealthyNodes()
+		if getErr != nil {
+			return utils.NewRetryableError(fmt.Errorf("failed to get healthy nodes: %w", getErr))
+		}
+
+		if len(nodes) == 0 {
+			return fmt.Errorf("no healthy nodes available")
+		}
+
+		// 更新哈希环
+		wc.updateHashRing(nodes)
+
+		// 根据数据ID选择节点
+		targetNode = wc.hashRing.Get(req.Id)
+		if targetNode == "" {
+			return fmt.Errorf("failed to select target node for ID: %s", req.Id)
+		}
+
+		return nil
+	})
+
+	if cbErr != nil {
+		return "", cbErr
 	}
-	
-	// 如果是本节点，直接返回
-	currentNode := fmt.Sprintf("%s:%s", 
+
+	// 检查是否是本地节点
+	currentNodeAddr := fmt.Sprintf("%s:%s", 
 		wc.registry.GetNodeInfo().Address, 
 		wc.registry.GetNodeInfo().Port)
 	
-	if targetNode == currentNode {
+	if targetNode == currentNodeAddr {
 		return "local", nil
 	}
-	
-	// 转发到目标节点
-	err := wc.forwardWriteRequest(targetNode, req)
+
+	// 发送到远程节点（使用重试机制）
+	err = utils.Retry(ctx, utils.DefaultRetryConfig, "remote_write", func(ctx context.Context) error {
+		return wc.sendWriteToNode(ctx, targetNode, req)
+	})
+
 	if err != nil {
-		return "", fmt.Errorf("failed to forward write request to %s: %w", targetNode, err)
+		return "", fmt.Errorf("failed to send write to node %s: %w", targetNode, err)
 	}
-	
+
 	return targetNode, nil
 }
 
-// forwardWriteRequest 转发写入请求到目标节点
-func (wc *WriteCoordinator) forwardWriteRequest(targetNode string, req *olapv1.WriteRequest) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	
-	conn, err := grpc.DialContext(ctx, targetNode, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// sendWriteToNode 发送写入请求到指定节点
+func (wc *WriteCoordinator) sendWriteToNode(ctx context.Context, nodeAddr string, req *olapv1.WriteRequest) error {
+	conn, err := grpc.DialContext(ctx, nodeAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return fmt.Errorf("failed to connect to node %s: %w", targetNode, err)
+		return utils.NewRetryableError(fmt.Errorf("failed to connect to node %s: %w", nodeAddr, err))
 	}
 	defer conn.Close()
-	
+
 	client := olapv1.NewOlapServiceClient(conn)
 	_, err = client.Write(ctx, req)
 	if err != nil {
-		return fmt.Errorf("failed to write to node %s: %w", targetNode, err)
+		return utils.NewRetryableError(fmt.Errorf("failed to write to node %s: %w", nodeAddr, err))
 	}
-	
-	log.Printf("Successfully forwarded write request to node %s", targetNode)
+
 	return nil
+}
+
+// updateHashRing 更新哈希环
+func (wc *WriteCoordinator) updateHashRing(nodes []discovery.NodeInfo) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+
+	// 创建新的哈希环
+	newHashRing := consistenthash.New(150)
+	for _, node := range nodes {
+		nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
+		newHashRing.Add(nodeAddr)
+	}
+
+	wc.hashRing = newHashRing
 }
 
 // ExecuteDistributedQuery 执行分布式查询
 func (qc *QueryCoordinator) ExecuteDistributedQuery(sql string) (string, error) {
-	// 1. 解析查询，生成查询计划
-	plan, err := qc.generateQueryPlan(sql)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate query plan: %w", err)
-	}
-	
-	if !plan.IsDistributed {
-		// 单节点查询，直接执行
-		return qc.executeSingleNodeQuery(sql)
-	}
-	
-	// 2. 并发执行分布式查询
-	results, err := qc.executeDistributedQueryPlan(plan)
-	if err != nil {
-		return "", fmt.Errorf("failed to execute distributed query: %w", err)
-	}
-	
-	// 3. 聚合结果
-	return qc.aggregateResults(results)
-}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-// generateQueryPlan 生成查询计划
-func (qc *QueryCoordinator) generateQueryPlan(sql string) (*QueryPlan, error) {
-	ctx := context.Background()
-	
-	// 简化的SQL解析 - 实际项目中应该使用专业的SQL解析器
-	plan := &QueryPlan{
-		SQL:         sql,
-		FileMapping: make(map[string][]string),
-	}
-	
-	// 提取查询条件中的ID和时间范围
-	ids, dateRange := qc.parseQueryConditions(sql)
-	
-	// 如果没有指定ID或者是通配符，需要查询所有节点
-	if len(ids) == 0 || (len(ids) == 1 && ids[0] == "*") {
-		nodes, err := qc.registry.DiscoverNodes()
-		if err != nil {
-			return nil, fmt.Errorf("failed to discover nodes: %w", err)
+	var results []string
+	var err error
+
+	// 使用熔断器执行查询
+	cbErr := qc.circuitBreaker.Execute(ctx, func(ctx context.Context) error {
+		// 获取所有健康节点
+		nodes, getErr := qc.registry.GetHealthyNodes()
+		if getErr != nil {
+			return utils.NewRetryableError(fmt.Errorf("failed to get healthy nodes: %w", getErr))
 		}
-		
+
+		if len(nodes) == 0 {
+			return fmt.Errorf("no healthy nodes available")
+		}
+
+		// 并行查询所有节点
+		resultChan := make(chan string, len(nodes))
+		errorChan := make(chan error, len(nodes))
+
 		for _, node := range nodes {
-			nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
-			plan.TargetNodes = append(plan.TargetNodes, nodeAddr)
-		}
-		plan.IsDistributed = len(plan.TargetNodes) > 1
-		return plan, nil
-	}
-	
-	// 根据ID和日期范围获取相关文件
-	nodeFileMap := make(map[string][]string)
-	targetNodeSet := make(map[string]bool) // 用于跟踪所有目标节点
-	
-	for _, id := range ids {
-		for _, date := range dateRange {
-			redisKey := fmt.Sprintf("index:id:%s:%s", id, date)
-			files, err := qc.redisClient.SMembers(ctx, redisKey).Result()
-			if err != nil && err != redis.Nil {
-				log.Printf("WARN: failed to get files for key %s: %v", redisKey, err)
-				continue
-			}
-			
-			// 根据一致性哈希确定这些文件应该由哪个节点处理
-			targetNode := qc.registry.GetNodeForKey(fmt.Sprintf("%s:%s", id, date))
-			if targetNode != "" {
-				// 无论是否有文件，都要将节点标记为目标节点
-				targetNodeSet[targetNode] = true
-				if len(files) > 0 {
-					nodeFileMap[targetNode] = append(nodeFileMap[targetNode], files...)
+			go func(nodeAddr string) {
+				// 使用重试机制查询节点
+				retryErr := utils.Retry(ctx, utils.DefaultRetryConfig, "remote_query", func(ctx context.Context) error {
+					result, queryErr := qc.executeRemoteQuery(nodeAddr, sql)
+					if queryErr != nil {
+						return utils.NewRetryableError(queryErr)
+					}
+					resultChan <- result
+					return nil
+				})
+				
+				if retryErr != nil {
+					errorChan <- retryErr
 				}
+			}(fmt.Sprintf("%s:%s", node.Address, node.Port))
+		}
+
+		// 收集结果
+		var errors []error
+		for i := 0; i < len(nodes); i++ {
+			select {
+			case result := <-resultChan:
+				results = append(results, result)
+			case queryErr := <-errorChan:
+				errors = append(errors, queryErr)
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 		}
-	}
-	
-	// 构建查询计划 - 包含所有目标节点，无论是否有文件
-	for node := range targetNodeSet {
-		plan.TargetNodes = append(plan.TargetNodes, node)
-		if files, exists := nodeFileMap[node]; exists {
-			plan.FileMapping[node] = files
+
+		// 如果有部分成功，记录错误但继续
+		if len(errors) > 0 {
+			log.Printf("Some query nodes failed: %v", errors)
 		}
-	}
-	
-	plan.IsDistributed = len(plan.TargetNodes) > 1
-	return plan, nil
-}
 
-// parseQueryConditions 解析查询条件（简化实现）
-func (qc *QueryCoordinator) parseQueryConditions(sql string) ([]string, []string) {
-	// 这是一个简化的实现，实际项目中应该使用专业的SQL解析器
-	var ids []string
-	var dates []string
-	
-	// 简单的字符串匹配来提取条件
-	sqlLower := strings.ToLower(sql)
-	
-	// 提取ID条件 - 查找 id = 'xxx' 或 id IN ('xxx', 'yyy')
-	if strings.Contains(sqlLower, "id =") {
-		// 简化处理，假设格式为 id = 'value'
-		parts := strings.Split(sql, "'")
-		if len(parts) >= 2 {
-			ids = append(ids, parts[1])
+		if len(results) == 0 {
+			return fmt.Errorf("all query nodes failed")
 		}
-	}
-	
-	// 如果没有指定ID，返回空列表（表示查询所有）
-	if len(ids) == 0 {
-		ids = []string{"*"} // 通配符表示所有ID
-	}
-	
-	// 提取日期范围 - 简化处理
-	if strings.Contains(sqlLower, "timestamp") || strings.Contains(sqlLower, "day") {
-		// 默认查询最近7天
-		now := time.Now()
-		for i := 0; i < 7; i++ {
-			date := now.AddDate(0, 0, -i).Format("2006-01-02")
-			dates = append(dates, date)
-		}
-	} else {
-		// 默认查询今天
-		dates = append(dates, time.Now().Format("2006-01-02"))
-	}
-	
-	return ids, dates
-}
 
-// executeSingleNodeQuery 执行单节点查询
-func (qc *QueryCoordinator) executeSingleNodeQuery(sql string) (string, error) {
-	// 在当前节点执行查询
-	// 这里应该调用本地的查询引擎
-	return `[{"message": "single node query not implemented"}]`, nil
-}
+		return nil
+	})
 
-// executeDistributedQueryPlan 执行分布式查询计划
-func (qc *QueryCoordinator) executeDistributedQueryPlan(plan *QueryPlan) ([]*QueryResult, error) {
-	var wg sync.WaitGroup
-	results := make([]*QueryResult, len(plan.TargetNodes))
-	
-	for i, node := range plan.TargetNodes {
-		wg.Add(1)
-		go func(index int, nodeAddr string) {
-			defer wg.Done()
-			
-			result := &QueryResult{NodeID: nodeAddr}
-			
-			// 为该节点构建特定的查询
-			nodeSQL := qc.buildNodeSpecificQuery(plan.SQL, plan.FileMapping[nodeAddr])
-			
-			// 执行远程查询
-			data, err := qc.executeRemoteQuery(nodeAddr, nodeSQL)
-			if err != nil {
-				result.Error = err.Error()
-				log.Printf("ERROR: query failed on node %s: %v", nodeAddr, err)
-			} else {
-				result.Data = data
-			}
-			
-			results[index] = result
-		}(i, node)
+	if cbErr != nil {
+		return "", cbErr
 	}
-	
-	wg.Wait()
-	return results, nil
-}
 
-// buildNodeSpecificQuery 为特定节点构建查询
-func (qc *QueryCoordinator) buildNodeSpecificQuery(originalSQL string, files []string) string {
-	if len(files) == 0 {
-		return originalSQL
+	// 聚合结果
+	aggregatedResult, err := qc.aggregateResults(results)
+	if err != nil {
+		return "", fmt.Errorf("failed to aggregate results: %w", err)
 	}
-	
-	// 构建文件路径列表
-	var s3Files []string
-	for _, file := range files {
-		s3Files = append(s3Files, fmt.Sprintf("s3://olap-data/%s", file))
-	}
-	
-	fileList := "'" + strings.Join(s3Files, "','") + "'"
-	
-	// 替换表名为具体的文件列表
-	nodeSQL := strings.Replace(originalSQL, "FROM table", 
-		fmt.Sprintf("FROM read_parquet([%s])", fileList), 1)
-	
-	return nodeSQL
+
+	return aggregatedResult, nil
 }
 
 // executeRemoteQuery 执行远程查询
@@ -328,43 +274,19 @@ func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, er
 }
 
 // aggregateResults 聚合查询结果
-func (qc *QueryCoordinator) aggregateResults(results []*QueryResult) (string, error) {
-	var allData []map[string]interface{}
-	var errors []string
-	
-	for _, result := range results {
-		if result.Error != "" {
-			errors = append(errors, fmt.Sprintf("Node %s: %s", result.NodeID, result.Error))
-			continue
-		}
-		
-		// 解析节点返回的JSON数据
-		var nodeData []map[string]interface{}
-		if err := json.Unmarshal([]byte(result.Data), &nodeData); err != nil {
-			errors = append(errors, fmt.Sprintf("Node %s: failed to parse result: %v", result.NodeID, err))
-			continue
-		}
-		
-		allData = append(allData, nodeData...)
+func (qc *QueryCoordinator) aggregateResults(results []string) (string, error) {
+	// 简单的结果合并逻辑
+	// 在实际应用中，这里需要根据SQL查询类型进行更复杂的聚合
+	if len(results) == 0 {
+		return "[]", nil
 	}
 	
-	// 如果有错误但也有成功的结果，记录警告
-	if len(errors) > 0 {
-		log.Printf("WARN: some nodes failed during query: %v", errors)
+	if len(results) == 1 {
+		return results[0], nil
 	}
 	
-	// 如果所有节点都失败了
-	if len(allData) == 0 && len(errors) > 0 {
-		return "", fmt.Errorf("all nodes failed: %v", errors)
-	}
-	
-	// 聚合结果
-	aggregatedResult, err := json.Marshal(allData)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal aggregated results: %w", err)
-	}
-	
-	return string(aggregatedResult), nil
+	// 多个结果的简单合并
+	return fmt.Sprintf(`{"aggregated_results": %v}`, results), nil
 }
 
 // GetQueryStats 获取查询统计信息
