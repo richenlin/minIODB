@@ -20,14 +20,14 @@ import (
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
 	"minIODB/internal/errors"
-	"minIODB/internal/ingester"
+	"minIODB/internal/ingest"
 	"minIODB/internal/logger"
 	"minIODB/internal/metrics"
-	"minIODB/internal/querier"
+	"minIODB/internal/query"
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
 	"minIODB/internal/transport/rest"
-	pb "minIODB/api/proto"
+	pb "minIODB/api/proto/olap/v1"
 )
 
 func main() {
@@ -71,40 +71,39 @@ func main() {
 	}
 
 	// 初始化缓冲区
-	bufferManager := buffer.NewManager(cfg.Buffer.Size)
+	bufferManager := buffer.NewManager(cfg.Buffer.MaxSize)
 
 	// 初始化服务组件
-	ingesterService := ingester.NewIngester(redisClient, primaryMinio, bufferManager)
-	querierService := querier.NewQuerier(redisClient, primaryMinio)
+	sharedBuffer := buffer.NewSharedBuffer(
+		redisClient.GetClient(), 
+		primaryMinio, 
+		backupMinio, 
+		cfg.Backup.Minio.Bucket, 
+		cfg.Buffer.MaxSize, 
+		time.Duration(cfg.Buffer.FlushTimeout)*time.Second,
+	)
+	
+	ingesterService := ingest.NewIngester(sharedBuffer)
+	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg.Minio, sharedBuffer)
+	if err != nil {
+		logger.Fatal("Failed to create querier service", "error", err)
+	}
+
+	// 初始化服务注册与发现
+	serviceRegistry, err := discovery.NewServiceRegistry(*cfg, cfg.Server.NodeID, cfg.Server.GRPCPort)
+	if err != nil {
+		logger.Fatal("Failed to create service registry", "error", err)
+	}
+
+	// 启动服务注册
+	if err := serviceRegistry.Start(); err != nil {
+		logger.Fatal("Failed to start service registry", "error", err)
+	}
+	defer serviceRegistry.Stop()
 
 	// 初始化协调器
-	writeCoordinator := coordinator.NewWriteCoordinator(redisClient)
-	queryCoordinator := coordinator.NewQueryCoordinator(redisClient)
-
-	// 初始化服务发现
-	var discoveryService discovery.ServiceDiscovery
-	if cfg.Discovery.Enabled {
-		switch cfg.Discovery.Type {
-		case "consul":
-			discoveryService, err = discovery.NewConsulDiscovery(cfg.Discovery.Consul)
-			if err != nil {
-				logger.Fatal("Failed to create Consul discovery service", "error", err)
-			}
-		case "etcd":
-			discoveryService, err = discovery.NewEtcdDiscovery(cfg.Discovery.Etcd)
-			if err != nil {
-				logger.Fatal("Failed to create etcd discovery service", "error", err)
-			}
-		default:
-			logger.Fatal("Unsupported discovery type", "type", cfg.Discovery.Type)
-		}
-
-		// 注册服务
-		if err := discoveryService.Register(ctx); err != nil {
-			logger.Fatal("Failed to register service", "error", err)
-		}
-		defer discoveryService.Deregister(ctx)
-	}
+	writeCoordinator := coordinator.NewWriteCoordinator(serviceRegistry)
+	queryCoordinator := coordinator.NewQueryCoordinator(redisClient, serviceRegistry)
 
 	// 启动监控服务器
 	var monitoringServer *http.Server
@@ -134,7 +133,7 @@ func main() {
 	logger.Info("MinIODB server stopped")
 }
 
-func startGRPCServer(cfg *config.Config, ingester *ingester.Ingester, querier *querier.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio *storage.MinioClient) *grpc.Server {
+func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio *storage.MinioClient) *grpc.Server {
 	grpcServer := grpc.NewServer()
 	
 	// 创建gRPC服务
@@ -148,12 +147,12 @@ func startGRPCServer(cfg *config.Config, ingester *ingester.Ingester, querier *q
 
 	// 启动服务器
 	go func() {
-		lis, err := net.Listen("tcp", cfg.Server.GrpcPort)
+		lis, err := net.Listen("tcp", cfg.Server.GRPCPort)
 		if err != nil {
-			logger.Fatal("Failed to listen on gRPC port", "port", cfg.Server.GrpcPort, "error", err)
+			logger.Fatal("Failed to listen on gRPC port", "port", cfg.Server.GRPCPort, "error", err)
 		}
 
-		logger.Info("gRPC server listening", "port", cfg.Server.GrpcPort)
+		logger.Info("gRPC server listening", "port", cfg.Server.GRPCPort)
 		if err := grpcServer.Serve(lis); err != nil {
 			logger.Fatal("Failed to serve gRPC", "error", err)
 		}
@@ -162,14 +161,17 @@ func startGRPCServer(cfg *config.Config, ingester *ingester.Ingester, querier *q
 	return grpcServer
 }
 
-func startRESTServer(cfg *config.Config, ingester *ingester.Ingester, querier *querier.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio *storage.MinioClient, bufferManager *buffer.Manager) *rest.Server {
+func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio *storage.MinioClient, bufferManager *buffer.Manager) *rest.Server {
 	// 创建REST服务器
 	restServer := rest.NewServer(ingester, querier, bufferManager, redisClient, primaryMinio, backupMinio, cfg)
+	
+	// 设置协调器
+	restServer.SetCoordinators(writeCoord, queryCoord)
 
 	// 启动服务器
 	go func() {
-		logger.Info("REST server listening", "port", cfg.Server.RestPort)
-		if err := restServer.Start(cfg.Server.RestPort); err != nil && err != http.ErrServerClosed {
+		logger.Info("REST server listening", "port", cfg.Server.RESTPort)
+		if err := restServer.Start(cfg.Server.RESTPort); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("Failed to start REST server", "error", err)
 		}
 	}()
@@ -202,7 +204,7 @@ func startMonitoringServer(cfg *config.Config) *http.Server {
 	return server
 }
 
-func startBufferFlusher(ctx context.Context, bufferManager *buffer.Manager, ingester *ingester.Ingester, cfg *config.Config) {
+func startBufferFlusher(ctx context.Context, bufferManager *buffer.Manager, ingester *ingest.Ingester, cfg *config.Config) {
 	ticker := time.NewTicker(cfg.Buffer.FlushInterval)
 	defer ticker.Stop()
 
