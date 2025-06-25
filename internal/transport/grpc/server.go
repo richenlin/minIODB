@@ -10,6 +10,7 @@ import (
 	"minIODB/internal/buffer"
 	"minIODB/internal/config"
 	"minIODB/internal/ingest"
+	"minIODB/internal/metrics"
 	"minIODB/internal/query"
 	"minIODB/internal/storage"
 
@@ -51,44 +52,60 @@ func NewServer(redisClient *redis.Client, primaryMinio storage.Uploader, backupM
 
 // Write implements the Write rpc
 func (s *Server) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.WriteResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("Write")
+	
 	log.Printf("Received Write request for ID: %s", req.Id)
 
 	err := s.ingester.IngestData(req)
 	if err != nil {
 		log.Printf("Failed to ingest data: %v", err)
+		grpcMetrics.Finish("error")
 		return &olapv1.WriteResponse{Success: false, Message: "Failed to ingest data"}, nil
 	}
 
+	grpcMetrics.Finish("success")
 	return &olapv1.WriteResponse{Success: true, Message: "Write request received"}, nil
 }
 
 // Query implements the Query rpc
 func (s *Server) Query(ctx context.Context, req *olapv1.QueryRequest) (*olapv1.QueryResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("Query")
+	
 	log.Printf("Received Query request with SQL: %s", req.Sql)
 
 	result, err := s.querier.ExecuteQuery(req.Sql)
 	if err != nil {
+		grpcMetrics.Finish("error")
 		return nil, err
 	}
 
+	grpcMetrics.Finish("success")
 	return &olapv1.QueryResponse{ResultJson: result}, nil
 }
 
 // TriggerBackup implements the manual backup RPC
 func (s *Server) TriggerBackup(ctx context.Context, req *olapv1.TriggerBackupRequest) (*olapv1.TriggerBackupResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("TriggerBackup")
+	
 	log.Printf("Received TriggerBackup request for ID %s, Day %s", req.Id, req.Day)
 
 	if s.backupMinio == nil {
+		grpcMetrics.Finish("error")
 		return &olapv1.TriggerBackupResponse{Success: false, Message: "Backup is not enabled in configuration"}, nil
 	}
 
 	redisKey := fmt.Sprintf("index:id:%s:%s", req.Id, req.Day)
 	objectNames, err := s.redisClient.SMembers(ctx, redisKey).Result()
 	if err != nil {
+		grpcMetrics.Finish("error")
 		return nil, fmt.Errorf("failed to get objects from redis: %w", err)
 	}
 
 	if len(objectNames) == 0 {
+		grpcMetrics.Finish("success")
 		return &olapv1.TriggerBackupResponse{Success: true, Message: "No objects found to back up", FilesBackedUp: 0}, nil
 	}
 
@@ -111,6 +128,7 @@ func (s *Server) TriggerBackup(ctx context.Context, req *olapv1.TriggerBackupReq
 		}
 	}
 
+	grpcMetrics.Finish("success")
 	return &olapv1.TriggerBackupResponse{
 		Success:       true,
 		Message:       fmt.Sprintf("Backup process completed. Backed up %d files.", successCount),

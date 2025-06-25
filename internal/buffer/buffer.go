@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"minIODB/internal/metrics"
 	"minIODB/internal/storage"
 
 	"github.com/go-redis/redis/v8"
@@ -78,6 +79,9 @@ func (b *SharedBuffer) Add(row DataRow) {
 	bufferKey := fmt.Sprintf("%s/%s", row.ID, dayStr)
 
 	b.buffer[bufferKey] = append(b.buffer[bufferKey], row)
+	
+	// 更新缓冲区大小指标
+	metrics.UpdateBufferSize("shared", float64(len(b.buffer[bufferKey])))
 
 	if len(b.buffer[bufferKey]) >= b.bufferSize {
 		// copy rows to avoid race condition when flushing
@@ -85,6 +89,9 @@ func (b *SharedBuffer) Add(row DataRow) {
 		copy(rowsToFlush, b.buffer[bufferKey])
 		go b.flushBuffer(bufferKey, rowsToFlush)
 		delete(b.buffer, bufferKey)
+		
+		// 记录缓冲区刷新指标
+		metrics.RecordBufferFlush("triggered_by_size")
 	}
 }
 
@@ -112,6 +119,9 @@ func (b *SharedBuffer) runFlusher() {
 					copy(rowsToFlush, rows)
 					go b.flushBuffer(key, rowsToFlush)
 					delete(b.buffer, key)
+					
+					// 记录缓冲区刷新指标
+					metrics.RecordBufferFlush("triggered_by_time")
 				}
 			}
 			b.mu.Unlock()
@@ -120,6 +130,8 @@ func (b *SharedBuffer) runFlusher() {
 			for key, rows := range b.buffer {
 				if len(rows) > 0 {
 					b.flushBuffer(key, rows)
+					// 记录缓冲区刷新指标
+					metrics.RecordBufferFlush("triggered_by_shutdown")
 				}
 			}
 			b.mu.Unlock()
@@ -152,29 +164,35 @@ func (b *SharedBuffer) flushBuffer(bufferKey string, rows []DataRow) {
 	ctx := context.Background()
 	objectName := fmt.Sprintf("%s/%d.parquet", bufferKey, time.Now().UnixNano())
 
-	if err := b.ensureBucketExists(ctx, minioBucket, b.primaryClient); err != nil {
-		log.Printf("ERROR: failed to ensure bucket exists for key %s: %v", bufferKey, err)
+	// Upload to primary MinIO
+	minioMetrics := metrics.NewMinIOMetrics("upload_primary")
+	if err := b.primaryClient.BucketExists(ctx, minioBucket); err != nil {
+		log.Printf("ERROR: primary bucket check failed: %v", err)
+		minioMetrics.Finish("error")
 		return
 	}
 
-	if _, err := b.primaryClient.FPutObject(ctx, minioBucket, objectName, localFilePath, minio.PutObjectOptions{}); err != nil {
-		log.Printf("ERROR: failed to upload to primary minio for key %s: %v", bufferKey, err)
+	_, err := b.primaryClient.FPutObject(ctx, minioBucket, objectName, localFilePath, minio.PutObjectOptions{})
+	if err != nil {
+		log.Printf("ERROR: failed to upload to primary MinIO: %v", err)
+		minioMetrics.Finish("error")
 		return
 	}
-	log.Printf("Successfully uploaded %s to Primary MinIO", objectName)
+	minioMetrics.Finish("success")
 
-	// Automatic backup if enabled
+	// Upload to backup MinIO if available
 	if b.backupClient != nil {
-		err := b.ensureBucketExists(ctx, b.backupBucket, b.backupClient)
-		if err != nil {
-			log.Printf("ERROR: failed to ensure backup bucket exists for key %s: %v", bufferKey, err)
-			// Don't return, primary write succeeded
+		backupMetrics := metrics.NewMinIOMetrics("upload_backup")
+		if err := b.backupClient.BucketExists(ctx, b.backupBucket); err != nil {
+			log.Printf("ERROR: backup bucket check failed: %v", err)
+			backupMetrics.Finish("error")
 		} else {
 			_, err = b.backupClient.FPutObject(ctx, b.backupBucket, objectName, localFilePath, minio.PutObjectOptions{})
 			if err != nil {
-				log.Printf("ERROR: failed to upload to backup minio for key %s: %v", bufferKey, err)
+				log.Printf("ERROR: failed to upload to backup MinIO: %v", err)
+				backupMetrics.Finish("error")
 			} else {
-				log.Printf("Successfully backed up %s", objectName)
+				backupMetrics.Finish("success")
 			}
 		}
 	}

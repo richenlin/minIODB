@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/metrics"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -45,59 +46,158 @@ func (r *RedisClient) Ping(ctx context.Context) error {
 	return r.client.Ping(ctx).Err()
 }
 
-// Set 设置键值
+// Set 设置键值对
 func (r *RedisClient) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
-	return r.client.Set(ctx, key, value, expiration).Err()
+	redisMetrics := metrics.NewRedisMetrics("Set")
+	
+	err := r.client.Set(ctx, key, value, expiration).Err()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return err
+	}
+	
+	redisMetrics.Finish("success")
+	return nil
 }
 
-// Get 获取值
+// Get 获取键对应的值
 func (r *RedisClient) Get(ctx context.Context, key string) (string, error) {
-	return r.client.Get(ctx, key).Result()
+	redisMetrics := metrics.NewRedisMetrics("Get")
+	
+	result, err := r.client.Get(ctx, key).Result()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return "", err
+	}
+	
+	redisMetrics.Finish("success")
+	return result, nil
 }
 
 // Del 删除键
 func (r *RedisClient) Del(ctx context.Context, keys ...string) error {
-	return r.client.Del(ctx, keys...).Err()
+	redisMetrics := metrics.NewRedisMetrics("Del")
+	
+	err := r.client.Del(ctx, keys...).Err()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return err
+	}
+	
+	redisMetrics.Finish("success")
+	return nil
 }
 
 // HSet 设置哈希字段
 func (r *RedisClient) HSet(ctx context.Context, key string, values ...interface{}) error {
-	return r.client.HSet(ctx, key, values...).Err()
+	redisMetrics := metrics.NewRedisMetrics("HSet")
+	
+	err := r.client.HSet(ctx, key, values...).Err()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return err
+	}
+	
+	redisMetrics.Finish("success")
+	return nil
 }
 
 // HGet 获取哈希字段值
 func (r *RedisClient) HGet(ctx context.Context, key, field string) (string, error) {
-	return r.client.HGet(ctx, key, field).Result()
+	redisMetrics := metrics.NewRedisMetrics("HGet")
+	
+	result, err := r.client.HGet(ctx, key, field).Result()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return "", err
+	}
+	
+	redisMetrics.Finish("success")
+	return result, nil
 }
 
-// HGetAll 获取所有哈希字段
+// HGetAll 获取哈希所有字段
 func (r *RedisClient) HGetAll(ctx context.Context, key string) (map[string]string, error) {
-	return r.client.HGetAll(ctx, key).Result()
+	redisMetrics := metrics.NewRedisMetrics("HGetAll")
+	
+	result, err := r.client.HGetAll(ctx, key).Result()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return nil, err
+	}
+	
+	redisMetrics.Finish("success")
+	return result, nil
 }
 
 // HDel 删除哈希字段
 func (r *RedisClient) HDel(ctx context.Context, key string, fields ...string) error {
-	return r.client.HDel(ctx, key, fields...).Err()
+	redisMetrics := metrics.NewRedisMetrics("HDel")
+	
+	err := r.client.HDel(ctx, key, fields...).Err()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return err
+	}
+	
+	redisMetrics.Finish("success")
+	return nil
 }
 
-// SAdd 添加集合成员
+// SAdd 向集合添加成员
 func (r *RedisClient) SAdd(ctx context.Context, key string, members ...interface{}) error {
-	return r.client.SAdd(ctx, key, members...).Err()
+	redisMetrics := metrics.NewRedisMetrics("SAdd")
+	
+	err := r.client.SAdd(ctx, key, members...).Err()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return err
+	}
+	
+	redisMetrics.Finish("success")
+	return nil
 }
 
 // SMembers 获取集合所有成员
 func (r *RedisClient) SMembers(ctx context.Context, key string) ([]string, error) {
-	return r.client.SMembers(ctx, key).Result()
+	redisMetrics := metrics.NewRedisMetrics("SMembers")
+	
+	result, err := r.client.SMembers(ctx, key).Result()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return nil, err
+	}
+	
+	redisMetrics.Finish("success")
+	return result, nil
 }
 
-// SRem 删除集合成员
+// SRem 从集合移除成员
 func (r *RedisClient) SRem(ctx context.Context, key string, members ...interface{}) error {
-	return r.client.SRem(ctx, key, members...).Err()
+	redisMetrics := metrics.NewRedisMetrics("SRem")
+	
+	err := r.client.SRem(ctx, key, members...).Err()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return err
+	}
+	
+	redisMetrics.Finish("success")
+	return nil
 }
 
-// Expire 设置过期时间
+// Expire 设置键的过期时间
 func (r *RedisClient) Expire(ctx context.Context, key string, expiration time.Duration) error {
-	return r.client.Expire(ctx, key, expiration).Err()
+	redisMetrics := metrics.NewRedisMetrics("Expire")
+	
+	err := r.client.Expire(ctx, key, expiration).Err()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return err
+	}
+	
+	redisMetrics.Finish("success")
+	return nil
 }
 
 // Close 关闭连接
