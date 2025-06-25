@@ -54,77 +54,77 @@ func NewStorage(cfg *config.Config) (Storage, error) {
 	// 创建连接池管理器配置
 	poolConfig := &pool.PoolManagerConfig{
 		Redis: &pool.RedisPoolConfig{
-			Mode:              pool.RedisMode(cfg.Pool.Redis.Mode),
-			Addr:              cfg.Pool.Redis.Addr,
-			Password:          cfg.Pool.Redis.Password,
-			DB:                cfg.Pool.Redis.DB,
-			MasterName:        cfg.Pool.Redis.MasterName,
-			SentinelAddrs:     cfg.Pool.Redis.SentinelAddrs,
-			SentinelPassword:  cfg.Pool.Redis.SentinelPassword,
-			ClusterAddrs:      cfg.Pool.Redis.ClusterAddrs,
-			PoolSize:          cfg.Pool.Redis.PoolSize,
-			MinIdleConns:      cfg.Pool.Redis.MinIdleConns,
-			MaxConnAge:        cfg.Pool.Redis.MaxConnAge,
-			PoolTimeout:       cfg.Pool.Redis.PoolTimeout,
-			IdleTimeout:       cfg.Pool.Redis.IdleTimeout,
-			IdleCheckFreq:     cfg.Pool.Redis.IdleCheckFreq,
-			DialTimeout:       cfg.Pool.Redis.DialTimeout,
-			ReadTimeout:       cfg.Pool.Redis.ReadTimeout,
-			WriteTimeout:      cfg.Pool.Redis.WriteTimeout,
-			MaxRetries:        cfg.Pool.Redis.MaxRetries,
-			MinRetryBackoff:   cfg.Pool.Redis.MinRetryBackoff,
-			MaxRetryBackoff:   cfg.Pool.Redis.MaxRetryBackoff,
-			MaxRedirects:      cfg.Pool.Redis.MaxRedirects,
-			ReadOnly:          cfg.Pool.Redis.ReadOnly,
-			RouteByLatency:    cfg.Pool.Redis.RouteByLatency,
-			RouteRandomly:     cfg.Pool.Redis.RouteRandomly,
+			Mode:              pool.RedisMode(cfg.Redis.Mode),
+			Addr:              cfg.Redis.Addr,
+			Password:          cfg.Redis.Password,
+			DB:                cfg.Redis.DB,
+			MasterName:        cfg.Redis.MasterName,
+			SentinelAddrs:     cfg.Redis.SentinelAddrs,
+			SentinelPassword:  cfg.Redis.SentinelPassword,
+			ClusterAddrs:      cfg.Redis.ClusterAddrs,
+			PoolSize:          cfg.Redis.PoolSize,
+			MinIdleConns:      cfg.Redis.MinIdleConns,
+			MaxConnAge:        cfg.Redis.MaxConnAge,
+			PoolTimeout:       cfg.Redis.PoolTimeout,
+			IdleTimeout:       cfg.Redis.IdleTimeout,
+			IdleCheckFreq:     time.Minute, // 默认值
+			DialTimeout:       cfg.Redis.DialTimeout,
+			ReadTimeout:       cfg.Redis.ReadTimeout,
+			WriteTimeout:      cfg.Redis.WriteTimeout,
+			MaxRetries:        3,           // 默认值
+			MinRetryBackoff:   8 * time.Millisecond, // 默认值
+			MaxRetryBackoff:   512 * time.Millisecond, // 默认值
+			MaxRedirects:      cfg.Redis.MaxRedirects,
+			ReadOnly:          cfg.Redis.ReadOnly,
+			RouteByLatency:    false,       // 默认值
+			RouteRandomly:     false,       // 默认值
 		},
 		MinIO: &pool.MinIOPoolConfig{
-			Endpoint:               cfg.Pool.MinIO.Endpoint,
-			AccessKeyID:            cfg.Pool.MinIO.AccessKeyID,
-			SecretAccessKey:        cfg.Pool.MinIO.SecretAccessKey,
-			UseSSL:                 cfg.Pool.MinIO.UseSSL,
-			Region:                 cfg.Pool.MinIO.Region,
-			MaxIdleConns:           cfg.Pool.MinIO.MaxIdleConns,
-			MaxIdleConnsPerHost:    cfg.Pool.MinIO.MaxIdleConnsPerHost,
-			MaxConnsPerHost:        cfg.Pool.MinIO.MaxConnsPerHost,
-			IdleConnTimeout:        cfg.Pool.MinIO.IdleConnTimeout,
-			DialTimeout:            cfg.Pool.MinIO.DialTimeout,
-			TLSHandshakeTimeout:    cfg.Pool.MinIO.TLSHandshakeTimeout,
-			ResponseHeaderTimeout:  cfg.Pool.MinIO.ResponseHeaderTimeout,
-			ExpectContinueTimeout:  cfg.Pool.MinIO.ExpectContinueTimeout,
-			MaxRetries:             cfg.Pool.MinIO.MaxRetries,
-			RetryDelay:             cfg.Pool.MinIO.RetryDelay,
-			RequestTimeout:         cfg.Pool.MinIO.RequestTimeout,
-			KeepAlive:              cfg.Pool.MinIO.KeepAlive,
-			DisableKeepAlive:       cfg.Pool.MinIO.DisableKeepAlive,
-			DisableCompression:     cfg.Pool.MinIO.DisableCompression,
+			Endpoint:               cfg.MinIO.Endpoint,
+			AccessKeyID:            cfg.MinIO.AccessKeyID,
+			SecretAccessKey:        cfg.MinIO.SecretAccessKey,
+			UseSSL:                 cfg.MinIO.UseSSL,
+			Region:                 "us-east-1", // 默认值
+			MaxIdleConns:           100,         // 默认值
+			MaxIdleConnsPerHost:    10,          // 默认值
+			MaxConnsPerHost:        0,           // 默认值
+			IdleConnTimeout:        90 * time.Second, // 默认值
+			DialTimeout:            30 * time.Second, // 默认值
+			TLSHandshakeTimeout:    10 * time.Second, // 默认值
+			ResponseHeaderTimeout:  0,                // 默认值
+			ExpectContinueTimeout:  1 * time.Second,  // 默认值
+			MaxRetries:             3,                // 默认值
+			RetryDelay:             1 * time.Second,  // 默认值
+			RequestTimeout:         0,                // 默认值
+			KeepAlive:              30 * time.Second, // 默认值
+			DisableKeepAlive:       false,            // 默认值
+			DisableCompression:     false,            // 默认值
 		},
-		HealthCheckInterval: cfg.Pool.HealthCheckInterval,
+		HealthCheckInterval: 30 * time.Second, // 默认值
 	}
 	
 	// 如果配置了备份MinIO，添加到配置中
-	if cfg.Pool.BackupMinIO != nil {
+	if cfg.Backup.Enabled && cfg.Backup.MinIO.Endpoint != "" {
 		poolConfig.BackupMinIO = &pool.MinIOPoolConfig{
-			Endpoint:               cfg.Pool.BackupMinIO.Endpoint,
-			AccessKeyID:            cfg.Pool.BackupMinIO.AccessKeyID,
-			SecretAccessKey:        cfg.Pool.BackupMinIO.SecretAccessKey,
-			UseSSL:                 cfg.Pool.BackupMinIO.UseSSL,
-			Region:                 cfg.Pool.BackupMinIO.Region,
-			MaxIdleConns:           cfg.Pool.BackupMinIO.MaxIdleConns,
-			MaxIdleConnsPerHost:    cfg.Pool.BackupMinIO.MaxIdleConnsPerHost,
-			MaxConnsPerHost:        cfg.Pool.BackupMinIO.MaxConnsPerHost,
-			IdleConnTimeout:        cfg.Pool.BackupMinIO.IdleConnTimeout,
-			DialTimeout:            cfg.Pool.BackupMinIO.DialTimeout,
-			TLSHandshakeTimeout:    cfg.Pool.BackupMinIO.TLSHandshakeTimeout,
-			ResponseHeaderTimeout:  cfg.Pool.BackupMinIO.ResponseHeaderTimeout,
-			ExpectContinueTimeout:  cfg.Pool.BackupMinIO.ExpectContinueTimeout,
-			MaxRetries:             cfg.Pool.BackupMinIO.MaxRetries,
-			RetryDelay:             cfg.Pool.BackupMinIO.RetryDelay,
-			RequestTimeout:         cfg.Pool.BackupMinIO.RequestTimeout,
-			KeepAlive:              cfg.Pool.BackupMinIO.KeepAlive,
-			DisableKeepAlive:       cfg.Pool.BackupMinIO.DisableKeepAlive,
-			DisableCompression:     cfg.Pool.BackupMinIO.DisableCompression,
+			Endpoint:               cfg.Backup.MinIO.Endpoint,
+			AccessKeyID:            cfg.Backup.MinIO.AccessKeyID,
+			SecretAccessKey:        cfg.Backup.MinIO.SecretAccessKey,
+			UseSSL:                 cfg.Backup.MinIO.UseSSL,
+			Region:                 "us-east-1", // 默认值
+			MaxIdleConns:           100,         // 默认值
+			MaxIdleConnsPerHost:    10,          // 默认值
+			MaxConnsPerHost:        0,           // 默认值
+			IdleConnTimeout:        90 * time.Second, // 默认值
+			DialTimeout:            30 * time.Second, // 默认值
+			TLSHandshakeTimeout:    10 * time.Second, // 默认值
+			ResponseHeaderTimeout:  0,                // 默认值
+			ExpectContinueTimeout:  1 * time.Second,  // 默认值
+			MaxRetries:             3,                // 默认值
+			RetryDelay:             1 * time.Second,  // 默认值
+			RequestTimeout:         0,                // 默认值
+			KeepAlive:              30 * time.Second, // 默认值
+			DisableKeepAlive:       false,            // 默认值
+			DisableCompression:     false,            // 默认值
 		}
 	}
 

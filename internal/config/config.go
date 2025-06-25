@@ -1,221 +1,325 @@
 package config
 
 import (
-	"github.com/spf13/viper"
+	"fmt"
+	"log"
+	"os"
+	"regexp"
 	"time"
+
+	"gopkg.in/yaml.v2"
 )
 
 // Config 应用配置
 type Config struct {
-	Redis      RedisConfig      `mapstructure:"redis"`
-	Minio      MinioConfig      `mapstructure:"minio"`
-	Server     ServerConfig     `mapstructure:"server"`
-	Backup     BackupConfig     `mapstructure:"backup"`
-	Buffer     BufferConfig     `mapstructure:"buffer"`
-	Log        LogConfig        `mapstructure:"log"`
-	Monitoring MonitoringConfig `mapstructure:"monitoring"`
-	Security   SecurityConfig   `mapstructure:"security"`
-	Pool       PoolConfig       `mapstructure:"pool"`
+	Server  ServerConfig  `yaml:"server"`
+	Redis   RedisConfig   `yaml:"redis"`
+	MinIO   MinioConfig   `yaml:"minio"`
+	Buffer  BufferConfig  `yaml:"buffer"`
+	Backup  BackupConfig  `yaml:"backup"`
+	Security SecurityConfig `yaml:"security"`
+	Tables  TablesConfig  `yaml:"tables"`
+	TableManagement TableManagementConfig `yaml:"table_management"`
 }
 
-// RedisConfig Redis配置
-type RedisConfig struct {
-	// 基础配置
-	Mode     string `mapstructure:"mode"`     // Redis模式: standalone, sentinel, cluster
-	Addr     string `mapstructure:"addr"`     // 单机模式地址
-	Password string `mapstructure:"password"` // 密码
-	DB       int    `mapstructure:"db"`       // 数据库编号（集群模式不支持）
-	Bucket   string `mapstructure:"bucket"`   // 存储桶名称
-	
-	// 哨兵模式配置
-	MasterName       string   `mapstructure:"master_name"`       // 主节点名称
-	SentinelAddrs    []string `mapstructure:"sentinel_addrs"`    // 哨兵地址列表
-	SentinelPassword string   `mapstructure:"sentinel_password"` // 哨兵密码
-	
-	// 集群模式配置
-	ClusterAddrs []string `mapstructure:"cluster_addrs"` // 集群地址列表
-	
-	// 连接池配置
-	PoolSize       int           `mapstructure:"pool_size"`        // 连接池大小
-	MinIdleConns   int           `mapstructure:"min_idle_conns"`   // 最小空闲连接数
-	MaxConnAge     time.Duration `mapstructure:"max_conn_age"`     // 连接最大生存时间
-	PoolTimeout    time.Duration `mapstructure:"pool_timeout"`     // 获取连接超时
-	IdleTimeout    time.Duration `mapstructure:"idle_timeout"`     // 空闲连接超时
-	IdleCheckFreq  time.Duration `mapstructure:"idle_check_freq"`  // 空闲连接检查频率
-	DialTimeout    time.Duration `mapstructure:"dial_timeout"`     // 连接超时
-	ReadTimeout    time.Duration `mapstructure:"read_timeout"`     // 读取超时
-	WriteTimeout   time.Duration `mapstructure:"write_timeout"`    // 写入超时
-	MaxRetries     int           `mapstructure:"max_retries"`      // 最大重试次数
-	MinRetryBackoff time.Duration `mapstructure:"min_retry_backoff"` // 最小重试间隔
-	MaxRetryBackoff time.Duration `mapstructure:"max_retry_backoff"` // 最大重试间隔
-	
-	// 集群特定配置
-	MaxRedirects   int  `mapstructure:"max_redirects"`   // 最大重定向次数
-	ReadOnly       bool `mapstructure:"read_only"`       // 只读模式
-	RouteByLatency bool `mapstructure:"route_by_latency"` // 按延迟路由
-	RouteRandomly  bool `mapstructure:"route_randomly"`   // 随机路由
+// TableConfig 表级配置
+type TableConfig struct {
+	BufferSize       int               `yaml:"buffer_size"`
+	FlushInterval    time.Duration     `yaml:"flush_interval"`
+	RetentionDays    int               `yaml:"retention_days"`
+	BackupEnabled    bool              `yaml:"backup_enabled"`
+	Properties       map[string]string `yaml:"properties"`
 }
 
-// MinioConfig MinIO配置
-type MinioConfig struct {
-	Endpoint        string `mapstructure:"endpoint"`
-	AccessKeyID     string `mapstructure:"access_key_id"`
-	SecretAccessKey string `mapstructure:"secret_access_key"`
-	UseSSL          bool   `mapstructure:"use_ssl"`
-	Region          string `mapstructure:"region"`
-	
-	// HTTP连接池配置
-	MaxIdleConns          int           `mapstructure:"max_idle_conns"`           // 最大空闲连接数
-	MaxIdleConnsPerHost   int           `mapstructure:"max_idle_conns_per_host"`  // 每个主机最大空闲连接数
-	MaxConnsPerHost       int           `mapstructure:"max_conns_per_host"`       // 每个主机最大连接数
-	IdleConnTimeout       time.Duration `mapstructure:"idle_conn_timeout"`        // 空闲连接超时
-	
-	// 超时配置
-	DialTimeout            time.Duration `mapstructure:"dial_timeout"`             // 连接超时
-	TLSHandshakeTimeout    time.Duration `mapstructure:"tls_handshake_timeout"`    // TLS握手超时
-	ResponseHeaderTimeout  time.Duration `mapstructure:"response_header_timeout"`  // 响应头超时
-	ExpectContinueTimeout  time.Duration `mapstructure:"expect_continue_timeout"`  // Expect Continue超时
-	
-	// 重试和请求配置
-	MaxRetries     int           `mapstructure:"max_retries"`      // 最大重试次数
-	RetryDelay     time.Duration `mapstructure:"retry_delay"`      // 重试延迟
-	RequestTimeout time.Duration `mapstructure:"request_timeout"`  // 请求超时
-	
-	// Keep-Alive配置
-	KeepAlive         time.Duration `mapstructure:"keep_alive"`          // Keep-Alive时间
-	DisableKeepAlive  bool          `mapstructure:"disable_keep_alive"`  // 禁用Keep-Alive
-	DisableCompression bool         `mapstructure:"disable_compression"` // 禁用压缩
+// TablesConfig 表配置管理
+type TablesConfig struct {
+	DefaultConfig TableConfig            `yaml:"default_config"`
+	Tables        map[string]TableConfig `yaml:",inline"`
+}
+
+// TableManagementConfig 表管理配置
+type TableManagementConfig struct {
+	AutoCreateTables   bool   `yaml:"auto_create_tables"`
+	DefaultTable       string `yaml:"default_table"`
+	MaxTables          int    `yaml:"max_tables"`
+	TableNamePattern   string `yaml:"table_name_pattern"`
+	tableNameRegex     *regexp.Regexp
 }
 
 // ServerConfig 服务器配置
 type ServerConfig struct {
-	GRPCPort string `mapstructure:"grpc_port"`
-	RESTPort string `mapstructure:"rest_port"`
-	NodeID   string `mapstructure:"node_id"`
+	GrpcPort string `yaml:"grpc_port"`
+	RestPort string `yaml:"rest_port"`
+	NodeID   string `yaml:"node_id"`
+}
+
+// RedisConfig Redis配置
+type RedisConfig struct {
+	Mode         string        `yaml:"mode"`
+	Addr         string        `yaml:"addr"`
+	Password     string        `yaml:"password"`
+	DB           int           `yaml:"db"`
+	PoolSize     int           `yaml:"pool_size"`
+	MinIdleConns int           `yaml:"min_idle_conns"`
+	MaxConnAge   time.Duration `yaml:"max_conn_age"`
+	PoolTimeout  time.Duration `yaml:"pool_timeout"`
+	IdleTimeout  time.Duration `yaml:"idle_timeout"`
+	DialTimeout  time.Duration `yaml:"dial_timeout"`
+	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	WriteTimeout time.Duration `yaml:"write_timeout"`
+	
+	// 集群模式配置
+	ClusterAddrs []string `yaml:"cluster_addrs"`
+	MaxRedirects int      `yaml:"max_redirects"`
+	ReadOnly     bool     `yaml:"read_only"`
+	
+	// 哨兵模式配置
+	MasterName       string   `yaml:"master_name"`
+	SentinelAddrs    []string `yaml:"sentinel_addrs"`
+	SentinelPassword string   `yaml:"sentinel_password"`
+}
+
+// MinioConfig MinIO配置
+type MinioConfig struct {
+	Endpoint        string `yaml:"endpoint"`
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
+	UseSSL          bool   `yaml:"use_ssl"`
+	Bucket          string `yaml:"bucket"`
+}
+
+// BufferConfig 缓冲区配置（保持向后兼容）
+type BufferConfig struct {
+	BufferSize    int           `yaml:"buffer_size"`
+	FlushInterval time.Duration `yaml:"flush_interval"`
 }
 
 // BackupConfig 备份配置
 type BackupConfig struct {
-	Enabled  bool        `mapstructure:"enabled"`
-	Interval int         `mapstructure:"interval"` // 备份间隔（秒）
-	Minio    MinioConfig `mapstructure:"minio"`
-}
-
-// BufferConfig 缓冲区配置
-type BufferConfig struct {
-	// 基础配置
-	BufferSize    int           `mapstructure:"buffer_size"`    // 缓冲区大小
-	FlushInterval time.Duration `mapstructure:"flush_interval"` // 刷新间隔
-	
-	// 并发配置
-	WorkerPoolSize   int           `mapstructure:"worker_pool_size"`   // 工作池大小
-	TaskQueueSize    int           `mapstructure:"task_queue_size"`    // 任务队列大小
-	BatchFlushSize   int           `mapstructure:"batch_flush_size"`   // 批量刷新大小
-	EnableBatching   bool          `mapstructure:"enable_batching"`    // 启用批量处理
-	FlushTimeout     time.Duration `mapstructure:"flush_timeout"`      // 刷新超时
-	MaxRetries       int           `mapstructure:"max_retries"`        // 最大重试次数
-	RetryDelay       time.Duration `mapstructure:"retry_delay"`        // 重试延迟
-	
-	// 性能优化配置
-	EnableConcurrent bool `mapstructure:"enable_concurrent"` // 启用并发缓冲区
-	EnableMetrics    bool `mapstructure:"enable_metrics"`    // 启用指标收集
-}
-
-// LogConfig 日志配置
-type LogConfig struct {
-	Level      string `mapstructure:"level"`
-	Format     string `mapstructure:"format"`
-	Output     string `mapstructure:"output"`
-	File       string `mapstructure:"file"`
-	MaxSize    int    `mapstructure:"max_size"`    // 日志文件最大大小(MB)
-	MaxBackups int    `mapstructure:"max_backups"` // 保留的旧日志文件最大数量
-	MaxAge     int    `mapstructure:"max_age"`     // 保留旧日志文件的最大天数
-	Compress   bool   `mapstructure:"compress"`    // 是否压缩旧日志文件
-}
-
-// MonitoringConfig 监控配置
-type MonitoringConfig struct {
-	Enabled    bool   `mapstructure:"enabled"`
-	Port       string `mapstructure:"port"`
-	Path       string `mapstructure:"path"`
-	Prometheus bool   `mapstructure:"prometheus"`
+	Enabled  bool        `yaml:"enabled"`
+	Interval int         `yaml:"interval"`
+	MinIO    MinioConfig `yaml:"minio"`
 }
 
 // SecurityConfig 安全配置
 type SecurityConfig struct {
-	Mode        string   `mapstructure:"mode"`         // "none" 或 "token"
-	JWTSecret   string   `mapstructure:"jwt_secret"`   // JWT密钥
-	ValidTokens []string `mapstructure:"valid_tokens"` // 预设的有效token列表
-	EnableTLS   bool     `mapstructure:"enable_tls"`   // 是否启用TLS
-	CertFile    string   `mapstructure:"cert_file"`    // 证书文件路径
-	KeyFile     string   `mapstructure:"key_file"`     // 私钥文件路径
+	Mode         string   `yaml:"mode"`
+	JWTSecret    string   `yaml:"jwt_secret"`
+	EnableTLS    bool     `yaml:"enable_tls"`
+	ValidTokens  []string `yaml:"valid_tokens"`
 }
 
-// PoolConfig 连接池配置
-type PoolConfig struct {
-	Redis          RedisConfig  `mapstructure:"redis"`
-	MinIO          MinioConfig  `mapstructure:"minio"`
-	BackupMinIO    *MinioConfig `mapstructure:"backup_minio,omitempty"` // 可选的备份MinIO配置
-	HealthCheckInterval time.Duration `mapstructure:"health_check_interval"` // 健康检查间隔
-}
-
-// LoadConfig 加载配置文件
-func LoadConfig(path string) (*Config, error) {
-	viper.SetConfigFile(path)
-	viper.AutomaticEnv()
-
-	if err := viper.ReadInConfig(); err != nil {
-		return nil, err
+// GetTableConfig 获取指定表的配置，如果不存在则返回默认配置
+func (c *Config) GetTableConfig(tableName string) *TableConfig {
+	if tableConfig, exists := c.Tables.Tables[tableName]; exists {
+		// 合并默认配置和表级配置
+		config := c.Tables.DefaultConfig
+		if tableConfig.BufferSize > 0 {
+			config.BufferSize = tableConfig.BufferSize
+		}
+		if tableConfig.FlushInterval > 0 {
+			config.FlushInterval = tableConfig.FlushInterval
+		}
+		if tableConfig.RetentionDays > 0 {
+			config.RetentionDays = tableConfig.RetentionDays
+		}
+		// BackupEnabled 使用表级设置，如果未设置则使用默认值
+		config.BackupEnabled = tableConfig.BackupEnabled
+		
+		// 合并属性
+		if config.Properties == nil {
+			config.Properties = make(map[string]string)
+		}
+		for k, v := range tableConfig.Properties {
+			config.Properties[k] = v
+		}
+		
+		return &config
 	}
+	
+	// 返回默认配置的副本
+	defaultConfig := c.Tables.DefaultConfig
+	return &defaultConfig
+}
 
+// IsValidTableName 验证表名是否合法
+func (c *Config) IsValidTableName(tableName string) bool {
+	if c.TableManagement.tableNameRegex == nil {
+		// 编译正则表达式
+		regex, err := regexp.Compile(c.TableManagement.TableNamePattern)
+		if err != nil {
+			log.Printf("WARN: invalid table name pattern: %v, using default", err)
+			regex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
+		}
+		c.TableManagement.tableNameRegex = regex
+	}
+	
+	return c.TableManagement.tableNameRegex.MatchString(tableName)
+}
+
+// GetDefaultTableName 获取默认表名
+func (c *Config) GetDefaultTableName() string {
+	if c.TableManagement.DefaultTable == "" {
+		return "default"
+	}
+	return c.TableManagement.DefaultTable
+}
+
+// LoadConfig 从文件加载配置
+func LoadConfig(configPath string) (*Config, error) {
 	config := &Config{}
-	if err := viper.Unmarshal(config); err != nil {
-		return nil, err
+	
+	// 设置默认值
+	config.setDefaults()
+	
+	if configPath != "" && fileExists(configPath) {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read config file: %w", err)
+		}
+		
+		if err := yaml.Unmarshal(data, config); err != nil {
+			return nil, fmt.Errorf("failed to parse config file: %w", err)
+		}
 	}
-
-	setDefaults(config)
+	
+	// 验证配置
+	if err := config.validate(); err != nil {
+		return nil, fmt.Errorf("config validation failed: %w", err)
+	}
+	
 	return config, nil
 }
 
-// setDefaults 设置默认值
-func setDefaults(config *Config) {
-	// Buffer defaults
-	if config.Buffer.BufferSize == 0 {
-		config.Buffer.BufferSize = 1000
-	}
-	if config.Buffer.FlushTimeout == 0 {
-		config.Buffer.FlushTimeout = 30 * time.Second
-	}
-	if config.Buffer.BatchFlushSize == 0 {
-		config.Buffer.BatchFlushSize = 100
-	}
-
-	// Log defaults
-	if config.Log.Level == "" {
-		config.Log.Level = "info"
-	}
-	if config.Log.Format == "" {
-		config.Log.Format = "json"
-	}
-	if config.Log.Output == "" {
-		config.Log.Output = "stdout"
-	}
-
-	// Monitoring defaults
-	if config.Monitoring.Port == "" {
-		config.Monitoring.Port = ":9090"
-	}
-	if config.Monitoring.Path == "" {
-		config.Monitoring.Path = "/metrics"
-	}
-
-	// Server defaults
-	if config.Server.NodeID == "" {
-		config.Server.NodeID = "node-1"
+// setDefaults 设置默认配置值
+func (c *Config) setDefaults() {
+	// 服务器默认配置
+	c.Server = ServerConfig{
+		GrpcPort: ":8080",
+		RestPort: ":8081",
+		NodeID:   "node-1",
 	}
 	
-	// Backup defaults
-	if config.Backup.Interval == 0 {
-		config.Backup.Interval = 3600 // 默认1小时
+	// Redis默认配置
+	c.Redis = RedisConfig{
+		Mode:         "standalone",
+		Addr:         "localhost:6379",
+		Password:     "",
+		DB:           0,
+		PoolSize:     100,
+		MinIdleConns: 10,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
 	}
+	
+	// MinIO默认配置
+	c.MinIO = MinioConfig{
+		Endpoint:        "localhost:9000",
+		AccessKeyID:     "minioadmin",
+		SecretAccessKey: "minioadmin",
+		UseSSL:          false,
+		Bucket:          "olap-data",
+	}
+	
+	// 缓冲区默认配置（向后兼容）
+	c.Buffer = BufferConfig{
+		BufferSize:    1000,
+		FlushInterval: 30 * time.Second,
+	}
+	
+	// 备份默认配置
+	c.Backup = BackupConfig{
+		Enabled:  false,
+		Interval: 3600,
+	}
+	
+	// 安全默认配置
+	c.Security = SecurityConfig{
+		Mode:      "disabled",
+		JWTSecret: "",
+		EnableTLS: false,
+	}
+	
+	// 表管理默认配置
+	c.TableManagement = TableManagementConfig{
+		AutoCreateTables: true,
+		DefaultTable:     "default",
+		MaxTables:        1000,
+		TableNamePattern: `^[a-zA-Z][a-zA-Z0-9_]{0,63}$`,
+	}
+	
+	// 表级默认配置
+	c.Tables = TablesConfig{
+		DefaultConfig: TableConfig{
+			BufferSize:    1000,
+			FlushInterval: 30 * time.Second,
+			RetentionDays: 365,
+			BackupEnabled: true,
+			Properties:    make(map[string]string),
+		},
+		Tables: make(map[string]TableConfig),
+	}
+}
+
+// validate 验证配置
+func (c *Config) validate() error {
+	// 验证服务器配置
+	if c.Server.GrpcPort == "" {
+		return fmt.Errorf("grpc_port is required")
+	}
+	if c.Server.RestPort == "" {
+		return fmt.Errorf("rest_port is required")
+	}
+	
+	// 验证Redis配置
+	if c.Redis.Addr == "" {
+		return fmt.Errorf("redis addr is required")
+	}
+	
+	// 验证MinIO配置
+	if c.MinIO.Endpoint == "" {
+		return fmt.Errorf("minio endpoint is required")
+	}
+	if c.MinIO.Bucket == "" {
+		return fmt.Errorf("minio bucket is required")
+	}
+	
+	// 验证表管理配置
+	if c.TableManagement.MaxTables <= 0 {
+		return fmt.Errorf("max_tables must be positive")
+	}
+	if c.TableManagement.TableNamePattern == "" {
+		return fmt.Errorf("table_name_pattern is required")
+	}
+	
+	// 验证默认表配置
+	if c.Tables.DefaultConfig.BufferSize <= 0 {
+		return fmt.Errorf("default buffer_size must be positive")
+	}
+	if c.Tables.DefaultConfig.FlushInterval <= 0 {
+		return fmt.Errorf("default flush_interval must be positive")
+	}
+	
+	// 如果有旧的buffer配置，将其映射到默认表配置
+	if c.Buffer.BufferSize > 0 || c.Buffer.FlushInterval > 0 {
+		log.Printf("INFO: migrating legacy buffer config to default table config")
+		if c.Buffer.BufferSize > 0 {
+			c.Tables.DefaultConfig.BufferSize = c.Buffer.BufferSize
+		}
+		if c.Buffer.FlushInterval > 0 {
+			c.Tables.DefaultConfig.FlushInterval = c.Buffer.FlushInterval
+		}
+	}
+	
+	return nil
+}
+
+// fileExists 检查文件是否存在
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }

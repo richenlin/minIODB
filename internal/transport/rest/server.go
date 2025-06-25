@@ -10,7 +10,6 @@ import (
 	olapv1 "minIODB/api/proto/olap/v1"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
-	"minIODB/internal/metrics"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
 
@@ -231,8 +230,7 @@ func (s *Server) setupRoutes() {
 
 // healthCheck 健康检查
 func (s *Server) healthCheck(c *gin.Context) {
-	restMetrics := metrics.NewRESTMetrics("HealthCheck")
-	defer restMetrics.Finish("success")
+	// TODO: 添加REST指标收集
 
 	// 委托给service层处理
 	grpcResp, err := s.olapService.HealthCheck(c.Request.Context(), &olapv1.HealthCheckRequest{})
@@ -262,8 +260,7 @@ func (s *Server) healthCheck(c *gin.Context) {
 
 // writeData 写入数据
 func (s *Server) writeData(c *gin.Context) {
-	restMetrics := metrics.NewRESTMetrics("WriteData")
-	defer restMetrics.Finish("success")
+	// TODO: 添加REST指标收集
 
 	var req WriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -315,8 +312,7 @@ func (s *Server) writeData(c *gin.Context) {
 
 // queryData 查询数据
 func (s *Server) queryData(c *gin.Context) {
-	restMetrics := metrics.NewRESTMetrics("QueryData")
-	defer restMetrics.Finish("success")
+	// TODO: 添加REST指标收集
 
 	var req QueryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -354,8 +350,7 @@ func (s *Server) queryData(c *gin.Context) {
 
 // triggerBackup 触发备份
 func (s *Server) triggerBackup(c *gin.Context) {
-	restMetrics := metrics.NewRESTMetrics("TriggerBackup")
-	defer restMetrics.Finish("success")
+	// TODO: 添加REST指标收集
 
 	var req TriggerBackupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -396,8 +391,7 @@ func (s *Server) triggerBackup(c *gin.Context) {
 
 // recoverData 恢复数据
 func (s *Server) recoverData(c *gin.Context) {
-	restMetrics := metrics.NewRESTMetrics("RecoverData")
-	defer restMetrics.Finish("success")
+	// TODO: 添加REST指标收集
 
 	var req RecoverDataRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -463,8 +457,7 @@ func (s *Server) recoverData(c *gin.Context) {
 
 // getStats 获取统计信息
 func (s *Server) getStats(c *gin.Context) {
-	restMetrics := metrics.NewRESTMetrics("GetStats")
-	defer restMetrics.Finish("success")
+	// TODO: 添加REST指标收集
 
 	// 委托给service层处理
 	grpcResp, err := s.olapService.GetStats(c.Request.Context(), &olapv1.GetStatsRequest{})
@@ -490,8 +483,7 @@ func (s *Server) getStats(c *gin.Context) {
 
 // getNodes 获取节点信息
 func (s *Server) getNodes(c *gin.Context) {
-	restMetrics := metrics.NewRESTMetrics("GetNodes")
-	defer restMetrics.Finish("success")
+	// TODO: 添加REST指标收集
 
 	// 委托给service层处理
 	grpcResp, err := s.olapService.GetNodes(c.Request.Context(), &olapv1.GetNodesRequest{})

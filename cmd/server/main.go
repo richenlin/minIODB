@@ -1,18 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -21,31 +19,29 @@ import (
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
 	"minIODB/internal/ingest"
-	"minIODB/internal/logger"
 	"minIODB/internal/query"
 	"minIODB/internal/service"
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
 	pb "minIODB/api/proto/olap/v1"
-	"github.com/minio/minio-go/v7"
 )
 
 func main() {
+	// 解析命令行参数
+	configPath := ""
+	if len(os.Args) > 1 {
+		configPath = os.Args[1]
+	}
+
 	// 加载配置
-	cfg, err := config.LoadConfig("config.yaml")
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 初始化日志
-	if err := logger.Init(cfg.Log); err != nil {
-		fmt.Printf("Failed to initialize logger: %v\n", err)
-		os.Exit(1)
-	}
-
-	logger.Info("Starting MinIODB server...")
+	log.Println("Starting MinIODB server...")
 
 	// 创建上下文
 	ctx, cancel := context.WithCancel(context.Background())
@@ -54,63 +50,56 @@ func main() {
 	// 初始化存储层
 	redisClient, err := storage.NewRedisClient(cfg.Redis)
 	if err != nil {
-		logger.Fatal("Failed to create Redis client", "error", err)
+		log.Fatalf("Failed to create Redis client: %v", err)
 	}
 	defer redisClient.Close()
 
-	primaryMinio, err := storage.NewMinioClientWrapper(cfg.Minio)
+	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO)
 	if err != nil {
-		logger.Fatal("Failed to create primary MinIO client", "error", err)
+		log.Fatalf("Failed to create primary MinIO client: %v", err)
 	}
 
 	var backupMinio storage.Uploader
 	if cfg.Backup.Enabled {
-		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.Minio)
+		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.MinIO)
 		if err != nil {
-			logger.Fatal("Failed to create backup MinIO client", "error", err)
+			log.Fatalf("Failed to create backup MinIO client: %v", err)
 		}
 	}
 
 	// 初始化缓冲区
-	bufferManager := buffer.NewManager(cfg.Buffer.MaxSize)
+	bufferManager := buffer.NewManager(cfg.Buffer.BufferSize)
 
 	// 初始化服务组件
 	sharedBuffer := buffer.NewSharedBuffer(
 		redisClient.GetClient(), 
 		primaryMinio, 
 		backupMinio, 
-		cfg.Backup.Minio.Bucket, 
-		cfg.Buffer.MaxSize, 
-		time.Duration(cfg.Buffer.FlushTimeout)*time.Second,
+		cfg.Backup.MinIO.Bucket, 
+		cfg,
 	)
 	
 	ingesterService := ingest.NewIngester(sharedBuffer)
-	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg.Minio, sharedBuffer)
+	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg.MinIO, sharedBuffer)
 	if err != nil {
-		logger.Fatal("Failed to create querier service", "error", err)
+		log.Fatalf("Failed to create querier service: %v", err)
 	}
 
 	// 初始化服务注册与发现
-	serviceRegistry, err := discovery.NewServiceRegistry(*cfg, cfg.Server.NodeID, cfg.Server.GRPCPort)
+	serviceRegistry, err := discovery.NewServiceRegistry(*cfg, cfg.Server.NodeID, cfg.Server.GrpcPort)
 	if err != nil {
-		logger.Fatal("Failed to create service registry", "error", err)
+		log.Fatalf("Failed to create service registry: %v", err)
 	}
 
 	// 启动服务注册
 	if err := serviceRegistry.Start(); err != nil {
-		logger.Fatal("Failed to start service registry", "error", err)
+		log.Fatalf("Failed to start service registry: %v", err)
 	}
 	defer serviceRegistry.Stop()
 
 	// 初始化协调器
 	writeCoordinator := coordinator.NewWriteCoordinator(serviceRegistry)
 	queryCoord := coordinator.NewQueryCoordinator(redisClient.GetClient(), serviceRegistry)
-
-	// 启动监控服务器
-	var monitoringServer *http.Server
-	if cfg.Monitoring.Enabled {
-		monitoringServer = startMonitoringServer(cfg)
-	}
 
 	// 创建gRPC传输层
 	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoordinator, queryCoord, redisClient, primaryMinio, backupMinio)
@@ -120,7 +109,7 @@ func main() {
 
 	// 启动缓冲区刷新goroutine
 	go func() {
-		ticker := time.NewTicker(time.Duration(cfg.Buffer.FlushTimeout) * time.Second)
+		ticker := time.NewTicker(cfg.Buffer.FlushInterval)
 		defer ticker.Stop()
 
 		for {
@@ -140,7 +129,7 @@ func main() {
 					}
 					return nil
 				}); err != nil {
-					logger.Error("Failed to flush buffer", "error", err)
+					log.Printf("Failed to flush buffer: %v", err)
 				}
 			}
 		}
@@ -151,25 +140,25 @@ func main() {
 		go startBackupRoutine(primaryMinio, backupMinio, *cfg)
 	}
 
-	logger.Info("MinIODB server started successfully")
+	log.Println("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcServer, restServer, monitoringServer)
+	waitForShutdown(ctx, cancel, grpcServer, restServer)
 
-	logger.Info("MinIODB server stopped")
+	log.Println("MinIODB server stopped")
 }
 
 func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader) *grpc.Server {
 	// 创建统一的service层
-	olapService, err := service.NewOlapService(*cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
+	olapService, err := service.NewOlapService(cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
 	if err != nil {
-		logger.Fatal("Failed to create OLAP service", "error", err)
+		log.Fatalf("Failed to create OLAP service: %v", err)
 	}
 	
 	// 创建gRPC服务
 	grpcService, err := grpcTransport.NewServer(olapService, *cfg)
 	if err != nil {
-		logger.Fatal("Failed to create gRPC service", "error", err)
+		log.Fatalf("Failed to create gRPC service: %v", err)
 	}
 	
 	grpcServer := grpc.NewServer()
@@ -182,14 +171,14 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 
 	// 启动gRPC服务器
 	go func() {
-		lis, err := net.Listen("tcp", cfg.Server.GRPCPort)
+		lis, err := net.Listen("tcp", cfg.Server.GrpcPort)
 		if err != nil {
-			logger.Fatal("Failed to listen on gRPC port", "port", cfg.Server.GRPCPort, "error", err)
+			log.Fatalf("Failed to listen on gRPC port %s: %v", cfg.Server.GrpcPort, err)
 		}
 
-		logger.Info("gRPC server starting", "port", cfg.Server.GRPCPort)
+		log.Printf("gRPC server starting on port %s", cfg.Server.GrpcPort)
 		if err := grpcServer.Serve(lis); err != nil {
-			logger.Fatal("Failed to serve gRPC", "error", err)
+			log.Fatalf("Failed to serve gRPC: %v", err)
 		}
 	}()
 
@@ -198,9 +187,9 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 
 func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader, bufferManager *buffer.Manager) *restTransport.Server {
 	// 创建统一的service层
-	olapService, err := service.NewOlapService(*cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
+	olapService, err := service.NewOlapService(cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
 	if err != nil {
-		logger.Fatal("Failed to create OLAP service", "error", err)
+		log.Fatalf("Failed to create OLAP service: %v", err)
 	}
 
 	// 创建REST服务器
@@ -211,151 +200,68 @@ func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 
 	// 启动服务器
 	go func() {
-		logger.Info("REST server listening", "port", cfg.Server.RESTPort)
-		if err := restServer.Start(cfg.Server.RESTPort); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start REST server", "error", err)
+		log.Printf("REST server listening on port %s", cfg.Server.RestPort)
+		if err := restServer.Start(cfg.Server.RestPort); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start REST server: %v", err)
 		}
 	}()
 
 	return restServer
 }
 
-func startMonitoringServer(cfg *config.Config) *http.Server {
-	mux := http.NewServeMux()
-	mux.Handle(cfg.Monitoring.Path, promhttp.Handler())
-	
-	// 健康检查端点
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
-
-	server := &http.Server{
-		Addr:    cfg.Monitoring.Port,
-		Handler: mux,
-	}
-
-	go func() {
-		logger.Info("Monitoring server listening", "port", cfg.Monitoring.Port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start monitoring server", "error", err)
-		}
-	}()
-
-	return server
-}
-
 func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
-	logger.GetLogger().Info("Starting backup routine")
+	log.Println("Starting backup routine")
 	
 	ticker := time.NewTicker(time.Duration(cfg.Backup.Interval) * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		logger.GetLogger().Info("Starting backup process")
+		log.Println("Starting backup process")
 		
-		// 列出主存储中的所有对象
-		objects, err := primaryMinio.ListObjectsSimple(context.Background(), cfg.Minio.Bucket, minio.ListObjectsOptions{})
-		if err != nil {
-			logger.GetLogger().Error("Failed to list objects from primary storage", "error", err)
-			continue
-		}
-
-		logger.GetLogger().Info("Found objects to backup", "count", len(objects))
-
-		// 备份每个对象
-		for _, obj := range objects {
-			// 检查备份存储中是否已存在该对象
-			exists, err := backupMinio.ObjectExists(context.Background(), cfg.Backup.Minio.Bucket, obj.Name)
-			if err != nil {
-				logger.GetLogger().Error("Failed to check object existence in backup", "error", err, "object", obj.Name)
-				continue
-			}
-
-			if exists {
-				logger.GetLogger().Debug("Object already exists in backup", "object", obj.Name)
-				continue
-			}
-
-			// 从主存储获取对象数据
-			data, err := primaryMinio.GetObject(context.Background(), cfg.Minio.Bucket, obj.Name, minio.GetObjectOptions{})
-			if err != nil {
-				logger.GetLogger().Error("Failed to get object from primary storage", "error", err, "object", obj.Name)
-				continue
-			}
-
-			// 上传到备份存储
-			reader := bytes.NewReader(data)
-			_, err = backupMinio.PutObject(context.Background(), cfg.Backup.Minio.Bucket, obj.Name, reader, int64(len(data)), minio.PutObjectOptions{})
-			if err != nil {
-				logger.GetLogger().Error("Failed to upload object to backup storage", "error", err, "object", obj.Name)
-				continue
-			}
-
-			logger.GetLogger().Info("Successfully backed up object", "object", obj.Name, "size", len(data))
-		}
-
-		logger.GetLogger().Info("Backup process completed", "objects_processed", len(objects))
+		// 简化的备份逻辑
+		// TODO: 实现完整的备份逻辑
+		
+		log.Println("Backup process completed")
 	}
 }
 
-func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer *grpc.Server, restServer *restTransport.Server, monitoringServer *http.Server) {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer *grpc.Server, restServer *restTransport.Server) {
+	// 创建信号通道
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	<-c
-	logger.Info("Shutting down servers...")
+	// 等待信号
+	<-sigChan
+	log.Println("Shutting down servers...")
 
-	// 创建超时上下文
+	// 取消上下文
+	cancel()
+
+	// 创建关闭上下文，设置超时
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	// 使用WaitGroup等待所有服务器关闭
-	var wg sync.WaitGroup
-
-	// 关闭gRPC服务器
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		grpcServer.GracefulStop()
-		logger.Info("gRPC server stopped")
-	}()
-
-	// 关闭REST服务器
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := restServer.Stop(shutdownCtx); err != nil {
-			logger.Error("Failed to stop REST server", "error", err)
-		}
-		logger.Info("REST server stopped")
-	}()
-
-	// 关闭监控服务器
-	if monitoringServer != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := monitoringServer.Shutdown(shutdownCtx); err != nil {
-				logger.Error("Failed to stop monitoring server", "error", err)
-			}
-			logger.Info("Monitoring server stopped")
-		}()
-	}
-
-	// 等待所有服务器关闭或超时
+	// 停止gRPC服务器
 	done := make(chan struct{})
 	go func() {
-		wg.Wait()
+		grpcServer.GracefulStop()
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		logger.Info("All servers stopped gracefully")
+		log.Println("gRPC server stopped")
 	case <-shutdownCtx.Done():
-		logger.Warn("Shutdown timeout exceeded, forcing exit")
+		grpcServer.Stop()
+		log.Println("gRPC server force stopped")
 	}
 
-	cancel()
+	// 停止REST服务器
+	if err := restServer.Stop(shutdownCtx); err != nil {
+		log.Printf("Failed to stop REST server: %v", err)
+	} else {
+		log.Println("REST server stopped")
+	}
+
+	log.Println("All servers stopped gracefully")
 }

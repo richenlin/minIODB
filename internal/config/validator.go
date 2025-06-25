@@ -141,7 +141,7 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 
 // validateMinIOConfig 验证MinIO配置
 func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
-	cfg := v.cfg.Minio
+	cfg := v.cfg.MinIO
 	
 	if cfg.Endpoint == "" {
 		return &ValidationResult{
@@ -224,7 +224,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 	cfg := v.cfg.Server
 	
 	// 检查GRPC端口
-	if cfg.GRPCPort == "" {
+	if cfg.GrpcPort == "" {
 		return &ValidationResult{
 			Component: "server",
 			Status:    "error",
@@ -232,19 +232,19 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 		}
 	}
 	
-	if port, err := strconv.Atoi(cfg.GRPCPort); err != nil || port <= 0 || port > 65535 {
+	if port, err := strconv.Atoi(cfg.GrpcPort); err != nil || port <= 0 || port > 65535 {
 		return &ValidationResult{
 			Component: "server",
 			Status:    "error",
 			Message:   "Invalid server GRPC port",
 			Details: map[string]interface{}{
-				"port": cfg.GRPCPort,
+				"port": cfg.GrpcPort,
 			},
 		}
 	}
 	
 	// 检查端口是否被占用
-	addr := fmt.Sprintf(":%s", cfg.GRPCPort)
+	addr := fmt.Sprintf(":%s", cfg.GrpcPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return &ValidationResult{
@@ -252,7 +252,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 			Status:    "error",
 			Message:   "Server GRPC port is already in use",
 			Details: map[string]interface{}{
-				"port":  cfg.GRPCPort,
+				"port":  cfg.GrpcPort,
 				"error": err.Error(),
 			},
 		}
@@ -260,19 +260,19 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 	listener.Close()
 	
 	// 检查REST端口（如果配置了）
-	if cfg.RESTPort != "" {
-		if port, err := strconv.Atoi(cfg.RESTPort); err != nil || port <= 0 || port > 65535 {
+	if cfg.RestPort != "" {
+		if port, err := strconv.Atoi(cfg.RestPort); err != nil || port <= 0 || port > 65535 {
 			return &ValidationResult{
 				Component: "server",
 				Status:    "error",
 				Message:   "Invalid server REST port",
 				Details: map[string]interface{}{
-					"port": cfg.RESTPort,
+					"port": cfg.RestPort,
 				},
 			}
 		}
 		
-		addr := fmt.Sprintf(":%s", cfg.RESTPort)
+		addr := fmt.Sprintf(":%s", cfg.RestPort)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
 			return &ValidationResult{
@@ -280,7 +280,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 				Status:    "error",
 				Message:   "Server REST port is already in use",
 				Details: map[string]interface{}{
-					"port":  cfg.RESTPort,
+					"port":  cfg.RestPort,
 					"error": err.Error(),
 				},
 			}
@@ -293,8 +293,8 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 		Status:    "ok",
 		Message:   "Server configuration is valid",
 		Details: map[string]interface{}{
-			"grpc_port": cfg.GRPCPort,
-			"rest_port": cfg.RESTPort,
+			"grpc_port": cfg.GrpcPort,
+			"rest_port": cfg.RestPort,
 		},
 	}
 }

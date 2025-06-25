@@ -23,17 +23,21 @@ import (
 type OlapService struct {
 	olapv1.UnimplementedOlapServiceServer
 	
-	cfg           config.Config
+	cfg           *config.Config
 	ingester      *ingest.Ingester
 	querier       *query.Querier
 	redisClient   *redis.Client
 	primaryMinio  storage.Uploader
 	backupMinio   storage.Uploader
+	tableManager  *TableManager
 }
 
 // NewOlapService 创建OLAP服务实例
-func NewOlapService(cfg config.Config, ingester *ingest.Ingester, querier *query.Querier, 
+func NewOlapService(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, 
 	redisClient *redis.Client, primaryMinio, backupMinio storage.Uploader) (*OlapService, error) {
+	
+	// 创建表管理器
+	tableManager := NewTableManager(redisClient, primaryMinio, backupMinio, cfg)
 	
 	return &OlapService{
 		cfg:          cfg,
@@ -42,6 +46,7 @@ func NewOlapService(cfg config.Config, ingester *ingest.Ingester, querier *query
 		redisClient:  redisClient,
 		primaryMinio: primaryMinio,
 		backupMinio:  backupMinio,
+		tableManager: tableManager,
 	}, nil
 }
 
@@ -73,23 +78,52 @@ func (s *OlapService) validateWriteRequest(req *olapv1.WriteRequest) error {
 
 // Write 写入数据
 func (s *OlapService) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.WriteResponse, error) {
-	log.Printf("Received write request for ID: %s", req.Id)
+	// 处理表名：如果未指定则使用默认表
+	// 注意：由于protobuf重新生成问题，暂时使用默认表名
+	tableName := s.cfg.GetDefaultTableName()
+	
+	log.Printf("Received write request for table: %s, ID: %s", tableName, req.Id)
 
 	// 验证请求
 	if err := s.validateWriteRequest(req); err != nil {
 		return nil, err
 	}
+	
+	// 验证表名
+	if !s.cfg.IsValidTableName(tableName) {
+		return &olapv1.WriteResponse{
+			Success: false,
+			Message: fmt.Sprintf("invalid table name: %s", tableName),
+		}, nil
+	}
+	
+	// 确保表存在（如果启用自动创建）
+	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
+		log.Printf("ERROR: failed to ensure table exists: %v", err)
+		return &olapv1.WriteResponse{
+			Success: false,
+			Message: fmt.Sprintf("table error: %v", err),
+		}, nil
+	}
+
+	// 更新请求中的表名（确保一致性）
+	// 注意：由于protobuf重新生成问题，暂时跳过这步
 
 	// 使用Ingester处理写入
 	if err := s.ingester.IngestData(req); err != nil {
-		log.Printf("ERROR: failed to ingest data for ID %s: %v", req.Id, err)
+		log.Printf("ERROR: failed to ingest data for table %s, ID %s: %v", tableName, req.Id, err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to ingest data: %v", err))
 	}
+	
+	// 更新表的最后写入时间
+	if err := s.tableManager.UpdateLastWrite(ctx, tableName); err != nil {
+		log.Printf("WARN: failed to update last write time for table %s: %v", tableName, err)
+	}
 
-	log.Printf("Successfully ingested data for ID: %s", req.Id)
+	log.Printf("Successfully ingested data for table: %s, ID: %s", tableName, req.Id)
 	return &olapv1.WriteResponse{
 		Success: true,
-		Message: fmt.Sprintf("Data successfully ingested for ID: %s", req.Id),
+		Message: fmt.Sprintf("Data successfully ingested for table: %s, ID: %s", tableName, req.Id),
 	}, nil
 }
 
@@ -122,9 +156,18 @@ func (s *OlapService) Query(ctx context.Context, req *olapv1.QueryRequest) (*ola
 	if err := s.validateQueryRequest(req); err != nil {
 		return nil, err
 	}
+	
+	// 处理向后兼容：将旧的"table"关键字替换为默认表名
+	sql := req.Sql
+	if strings.Contains(strings.ToLower(sql), "from table") {
+		defaultTable := s.cfg.GetDefaultTableName()
+		sql = strings.ReplaceAll(sql, "FROM table", fmt.Sprintf("FROM %s", defaultTable))
+		sql = strings.ReplaceAll(sql, "from table", fmt.Sprintf("from %s", defaultTable))
+		log.Printf("Converted legacy SQL to use default table: %s", sql)
+	}
 
 	// 使用Querier执行查询
-	result, err := s.querier.ExecuteQuery(req.Sql)
+	result, err := s.querier.ExecuteQuery(sql)
 	if err != nil {
 		log.Printf("ERROR: query failed: %v", err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("query execution failed: %v", err))
@@ -134,6 +177,228 @@ func (s *OlapService) Query(ctx context.Context, req *olapv1.QueryRequest) (*ola
 	return &olapv1.QueryResponse{
 		ResultJson: result,
 	}, nil
+}
+
+// CreateTable 创建表
+func (s *OlapService) CreateTable(ctx context.Context, req *CreateTableRequest) (*CreateTableResponse, error) {
+	log.Printf("Received create table request: %s", req.TableName)
+	
+	// 验证表名
+	if req.TableName == "" {
+		return &CreateTableResponse{
+			Success: false,
+			Message: "table name is required",
+		}, nil
+	}
+	
+	// 转换配置
+	var tableConfig *config.TableConfig
+	if req.Config != nil {
+		tableConfig = &config.TableConfig{
+			BufferSize:    int(req.Config.BufferSize),
+			FlushInterval: time.Duration(req.Config.FlushIntervalSeconds) * time.Second,
+			RetentionDays: int(req.Config.RetentionDays),
+			BackupEnabled: req.Config.BackupEnabled,
+			Properties:    req.Config.Properties,
+		}
+	}
+	
+	// 创建表
+	if err := s.tableManager.CreateTable(ctx, req.TableName, tableConfig, req.IfNotExists); err != nil {
+		log.Printf("ERROR: failed to create table %s: %v", req.TableName, err)
+		return &CreateTableResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to create table: %v", err),
+		}, nil
+	}
+	
+	return &CreateTableResponse{
+		Success: true,
+		Message: fmt.Sprintf("Table %s created successfully", req.TableName),
+	}, nil
+}
+
+// DropTable 删除表
+func (s *OlapService) DropTable(ctx context.Context, req *DropTableRequest) (*DropTableResponse, error) {
+	log.Printf("Received drop table request: %s (cascade: %v)", req.TableName, req.Cascade)
+	
+	// 验证表名
+	if req.TableName == "" {
+		return &DropTableResponse{
+			Success: false,
+			Message: "table name is required",
+		}, nil
+	}
+	
+	// 删除表
+	filesDeleted, err := s.tableManager.DropTable(ctx, req.TableName, req.IfExists, req.Cascade)
+	if err != nil {
+		log.Printf("ERROR: failed to drop table %s: %v", req.TableName, err)
+		return &DropTableResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to drop table: %v", err),
+		}, nil
+	}
+	
+	return &DropTableResponse{
+		Success:      true,
+		Message:      fmt.Sprintf("Table %s dropped successfully", req.TableName),
+		FilesDeleted: filesDeleted,
+	}, nil
+}
+
+// ListTables 列出表
+func (s *OlapService) ListTables(ctx context.Context, req *ListTablesRequest) (*ListTablesResponse, error) {
+	log.Printf("Received list tables request (pattern: %s)", req.Pattern)
+	
+	// 列出表
+	tables, err := s.tableManager.ListTables(ctx, req.Pattern)
+	if err != nil {
+		log.Printf("ERROR: failed to list tables: %v", err)
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list tables: %v", err))
+	}
+	
+	// 转换为protobuf格式
+	var tableInfos []*TableInfo
+	for _, table := range tables {
+		tableInfo := &TableInfo{
+			Name:      table.Name,
+			CreatedAt: table.CreatedAt,
+			LastWrite: table.LastWrite,
+			Status:    table.Status,
+		}
+		
+		// 转换配置
+		if table.Config != nil {
+			tableInfo.Config = &TableConfig{
+				BufferSize:            int32(table.Config.BufferSize),
+				FlushIntervalSeconds:  int32(table.Config.FlushInterval / time.Second),
+				RetentionDays:         int32(table.Config.RetentionDays),
+				BackupEnabled:         table.Config.BackupEnabled,
+				Properties:            table.Config.Properties,
+			}
+		}
+		
+		tableInfos = append(tableInfos, tableInfo)
+	}
+	
+	return &ListTablesResponse{
+		Tables: tableInfos,
+		Total:  int32(len(tableInfos)),
+	}, nil
+}
+
+// DescribeTable 描述表
+func (s *OlapService) DescribeTable(ctx context.Context, req *DescribeTableRequest) (*DescribeTableResponse, error) {
+	log.Printf("Received describe table request: %s", req.TableName)
+	
+	// 验证表名
+	if req.TableName == "" {
+		return nil, status.Error(codes.InvalidArgument, "table name is required")
+	}
+	
+	// 获取表信息和统计
+	tableInfo, tableStats, err := s.tableManager.DescribeTable(ctx, req.TableName)
+	if err != nil {
+		log.Printf("ERROR: failed to describe table %s: %v", req.TableName, err)
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to describe table: %v", err))
+	}
+	
+	// 转换为protobuf格式
+	response := &DescribeTableResponse{
+		TableInfo: &TableInfo{
+			Name:      tableInfo.Name,
+			CreatedAt: tableInfo.CreatedAt,
+			LastWrite: tableInfo.LastWrite,
+			Status:    tableInfo.Status,
+		},
+		Stats: &TableStats{
+			RecordCount:  tableStats.RecordCount,
+			FileCount:    tableStats.FileCount,
+			SizeBytes:    tableStats.SizeBytes,
+			OldestRecord: tableStats.OldestRecord,
+			NewestRecord: tableStats.NewestRecord,
+		},
+	}
+	
+	// 转换配置
+	if tableInfo.Config != nil {
+		response.TableInfo.Config = &TableConfig{
+			BufferSize:            int32(tableInfo.Config.BufferSize),
+							FlushIntervalSeconds:  int32(tableInfo.Config.FlushInterval / time.Second),
+			RetentionDays:         int32(tableInfo.Config.RetentionDays),
+			BackupEnabled:         tableInfo.Config.BackupEnabled,
+			Properties:            tableInfo.Config.Properties,
+		}
+	}
+	
+	return response, nil
+}
+
+// 临时类型定义（直到protobuf重新生成）
+type CreateTableRequest struct {
+	TableName   string       `json:"table_name"`
+	Config      *TableConfig `json:"config"`
+	IfNotExists bool         `json:"if_not_exists"`
+}
+
+type CreateTableResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type DropTableRequest struct {
+	TableName string `json:"table_name"`
+	IfExists  bool   `json:"if_exists"`
+	Cascade   bool   `json:"cascade"`
+}
+
+type DropTableResponse struct {
+	Success      bool   `json:"success"`
+	Message      string `json:"message"`
+	FilesDeleted int32  `json:"files_deleted"`
+}
+
+type ListTablesRequest struct {
+	Pattern string `json:"pattern"`
+}
+
+type ListTablesResponse struct {
+	Tables []*TableInfo `json:"tables"`
+	Total  int32        `json:"total"`
+}
+
+type DescribeTableRequest struct {
+	TableName string `json:"table_name"`
+}
+
+type DescribeTableResponse struct {
+	TableInfo *TableInfo  `json:"table_info"`
+	Stats     *TableStats `json:"stats"`
+}
+
+type TableInfo struct {
+	Name      string       `json:"name"`
+	Config    *TableConfig `json:"config"`
+	CreatedAt string       `json:"created_at"`
+	LastWrite string       `json:"last_write"`
+	Status    string       `json:"status"`
+}
+
+type TableConfig struct {
+	BufferSize            int32             `json:"buffer_size"`
+	FlushIntervalSeconds  int32             `json:"flush_interval_seconds"`
+	RetentionDays         int32             `json:"retention_days"`
+	BackupEnabled         bool              `json:"backup_enabled"`
+	Properties            map[string]string `json:"properties"`
+}
+
+type TableStats struct {
+	RecordCount  int64  `json:"record_count"`
+	FileCount    int64  `json:"file_count"`
+	SizeBytes    int64  `json:"size_bytes"`
+	OldestRecord string `json:"oldest_record"`
+	NewestRecord string `json:"newest_record"`
 }
 
 // TriggerBackup 触发备份
@@ -157,7 +422,8 @@ func (s *OlapService) TriggerBackup(ctx context.Context, req *olapv1.TriggerBack
 		return nil, status.Error(codes.FailedPrecondition, "backup storage not configured")
 	}
 
-	// 获取需要备份的文件列表
+	// TODO: 需要更新为支持表级备份
+	// 获取需要备份的文件列表（暂时保持旧格式，后续更新）
 	redisKey := fmt.Sprintf("index:id:%s:%s", req.Id, req.Day)
 	files, err := s.redisClient.SMembers(ctx, redisKey).Result()
 	if err != nil {
@@ -197,20 +463,21 @@ func (s *OlapService) backupFile(ctx context.Context, objectName string) error {
 	const mainBucket = "olap-data"
 	
 	// 检查备份存储中是否已存在该文件
-	exists, err := s.backupMinio.ObjectExists(ctx, s.cfg.Backup.Minio.Bucket, objectName)
+	exists, err := s.backupMinio.ObjectExists(ctx, s.cfg.Backup.MinIO.Bucket, objectName)
 	if err != nil {
 		return fmt.Errorf("failed to check if backup file exists: %w", err)
 	}
+	
 	if exists {
 		log.Printf("File %s already exists in backup storage, skipping", objectName)
 		return nil
 	}
-
+	
 	// 从主存储复制到备份存储
 	_, err = s.backupMinio.CopyObject(ctx,
 		// 目标
 		minio.CopyDestOptions{
-			Bucket: s.cfg.Backup.Minio.Bucket,
+			Bucket: s.cfg.Backup.MinIO.Bucket,
 			Object: objectName,
 		},
 		// 源
@@ -219,11 +486,11 @@ func (s *OlapService) backupFile(ctx context.Context, objectName string) error {
 			Object: objectName,
 		},
 	)
-	
 	if err != nil {
 		return fmt.Errorf("failed to copy file to backup storage: %w", err)
 	}
 	
+	log.Printf("Successfully backed up file: %s", objectName)
 	return nil
 }
 
@@ -309,7 +576,7 @@ func (s *OlapService) recoverDataForID(ctx context.Context, id string, forceOver
 	pattern := fmt.Sprintf("%s/", id)
 	
 	// 使用ListObjects查找匹配的文件
-	objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.Minio.Bucket, minio.ListObjectsOptions{
+	objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.MinIO.Bucket, minio.ListObjectsOptions{
 		Prefix: pattern,
 	})
 	
@@ -344,7 +611,7 @@ func (s *OlapService) recoverDataForTimeRange(ctx context.Context, id, startDate
 		dayStr := d.Format("2006-01-02")
 		pattern := fmt.Sprintf("%s/%s/", id, dayStr)
 		
-		objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.Minio.Bucket, minio.ListObjectsOptions{
+		objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.MinIO.Bucket, minio.ListObjectsOptions{
 			Prefix: pattern,
 		})
 		
@@ -369,7 +636,7 @@ func (s *OlapService) recoverDataForTimeRangeAllIDs(ctx context.Context, startDa
 	var recoveredKeys []string
 	
 	// 列出备份存储中的所有对象并按时间过滤
-	objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.Minio.Bucket, minio.ListObjectsOptions{})
+	objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.MinIO.Bucket, minio.ListObjectsOptions{})
 	
 	for object := range objects {
 		if object.Err != nil {
@@ -425,7 +692,7 @@ func (s *OlapService) recoverSingleFile(ctx context.Context, objectName string, 
 		},
 		// 源
 		minio.CopySrcOptions{
-			Bucket: s.cfg.Backup.Minio.Bucket,
+			Bucket: s.cfg.Backup.MinIO.Bucket,
 			Object: objectName,
 		},
 	)
