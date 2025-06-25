@@ -21,6 +21,11 @@ const (
 	RedisModeCluster    RedisMode = "cluster"    // 集群模式
 )
 
+// String 返回RedisMode的字符串表示
+func (m RedisMode) String() string {
+	return string(m)
+}
+
 // RedisPoolConfig Redis连接池配置
 type RedisPoolConfig struct {
 	// 基础配置
@@ -165,6 +170,10 @@ func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
 
 // createStandaloneClient 创建单机模式客户端
 func (p *RedisPool) createStandaloneClient() error {
+	if p.config.Addr == "" {
+		return fmt.Errorf("address is required for standalone mode")
+	}
+
 	options := &redis.Options{
 		Addr:            p.config.Addr,
 		Password:        p.config.Password,
@@ -174,7 +183,7 @@ func (p *RedisPool) createStandaloneClient() error {
 		MaxConnAge:      p.config.MaxConnAge,
 		PoolTimeout:     p.config.PoolTimeout,
 		IdleTimeout:     p.config.IdleTimeout,
-		IdleCheckFreq:   p.config.IdleCheckFreq,
+		IdleCheckFrequency: p.config.IdleCheckFreq,
 		DialTimeout:     p.config.DialTimeout,
 		ReadTimeout:     p.config.ReadTimeout,
 		WriteTimeout:    p.config.WriteTimeout,
@@ -208,7 +217,7 @@ func (p *RedisPool) createSentinelClient() error {
 		MaxConnAge:       p.config.MaxConnAge,
 		PoolTimeout:      p.config.PoolTimeout,
 		IdleTimeout:      p.config.IdleTimeout,
-		IdleCheckFreq:    p.config.IdleCheckFreq,
+		IdleCheckFrequency: p.config.IdleCheckFreq,
 		DialTimeout:      p.config.DialTimeout,
 		ReadTimeout:      p.config.ReadTimeout,
 		WriteTimeout:     p.config.WriteTimeout,
@@ -236,7 +245,7 @@ func (p *RedisPool) createClusterClient() error {
 		MaxConnAge:      p.config.MaxConnAge,
 		PoolTimeout:     p.config.PoolTimeout,
 		IdleTimeout:     p.config.IdleTimeout,
-		IdleCheckFreq:   p.config.IdleCheckFreq,
+		IdleCheckFrequency: p.config.IdleCheckFreq,
 		DialTimeout:     p.config.DialTimeout,
 		ReadTimeout:     p.config.ReadTimeout,
 		WriteTimeout:    p.config.WriteTimeout,
@@ -254,11 +263,39 @@ func (p *RedisPool) createClusterClient() error {
 	return nil
 }
 
-// GetClient 获取Redis客户端
+// GetClient 获取Redis客户端（统一接口）
 func (p *RedisPool) GetClient() redis.Cmdable {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
 	return p.client
+}
+
+// GetMode 获取Redis模式
+func (p *RedisPool) GetMode() RedisMode {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.config.Mode
+}
+
+// GetStandaloneClient 获取单机客户端
+func (p *RedisPool) GetStandaloneClient() *redis.Client {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.standaloneClient
+}
+
+// GetSentinelClient 获取哨兵客户端
+func (p *RedisPool) GetSentinelClient() *redis.Client {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.sentinelClient
+}
+
+// GetClusterClient 获取集群客户端
+func (p *RedisPool) GetClusterClient() *redis.ClusterClient {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.clusterClient
 }
 
 // HealthCheck 健康检查
@@ -303,15 +340,15 @@ func (p *RedisPool) HealthCheck(ctx context.Context) error {
 
 // checkStandaloneHealth 检查单机模式健康状态
 func (p *RedisPool) checkStandaloneHealth(ctx context.Context) error {
-	// 检查服务器信息
-	info, err := p.standaloneClient.Info(ctx, "server").Result()
+	// 使用PING命令测试连接
+	result, err := p.standaloneClient.Ping(ctx).Result()
 	if err != nil {
-		return fmt.Errorf("failed to get server info: %w", err)
+		return fmt.Errorf("failed to ping server: %w", err)
 	}
 	
-	// 简单验证服务器是否正常运行
-	if !strings.Contains(info, "redis_version") {
-		return fmt.Errorf("invalid server info response")
+	// 验证PING响应
+	if result != "PONG" {
+		return fmt.Errorf("unexpected ping response: %s", result)
 	}
 	
 	return nil
@@ -319,18 +356,18 @@ func (p *RedisPool) checkStandaloneHealth(ctx context.Context) error {
 
 // checkSentinelHealth 检查哨兵模式健康状态
 func (p *RedisPool) checkSentinelHealth(ctx context.Context) error {
-	// 检查主节点连接
-	info, err := p.sentinelClient.Info(ctx, "replication").Result()
+	// 使用PING命令测试连接
+	result, err := p.sentinelClient.Ping(ctx).Result()
 	if err != nil {
-		return fmt.Errorf("failed to get replication info: %w", err)
+		return fmt.Errorf("failed to ping server: %w", err)
 	}
 	
-	// 验证角色信息
-	if strings.Contains(info, "role:master") || strings.Contains(info, "role:slave") {
-		return nil
+	// 验证PING响应
+	if result != "PONG" {
+		return fmt.Errorf("unexpected ping response: %s", result)
 	}
 	
-	return fmt.Errorf("invalid replication role")
+	return nil
 }
 
 // checkClusterHealth 检查集群模式健康状态
@@ -378,44 +415,44 @@ func (p *RedisPool) checkClusterHealth(ctx context.Context) error {
 func (p *RedisPool) GetStats() *RedisPoolStats {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
-	
-	// 更新连接池统计
+
+	stats := *p.stats
+
+	// 获取连接池统计信息
 	switch p.config.Mode {
 	case RedisModeStandalone:
 		if p.standaloneClient != nil {
 			poolStats := p.standaloneClient.PoolStats()
-			p.stats.TotalConns = poolStats.TotalConns
-			p.stats.IdleConns = poolStats.IdleConns
-			p.stats.StaleConns = poolStats.StaleConns
-			p.stats.Hits = poolStats.Hits
-			p.stats.Misses = poolStats.Misses
-			p.stats.Timeouts = poolStats.Timeouts
+			stats.TotalConns = poolStats.TotalConns
+			stats.IdleConns = poolStats.IdleConns
+			stats.StaleConns = poolStats.StaleConns
+			stats.Hits = uint64(poolStats.Hits)
+			stats.Misses = uint64(poolStats.Misses)
+			stats.Timeouts = uint64(poolStats.Timeouts)
 		}
 	case RedisModeSentinel:
 		if p.sentinelClient != nil {
 			poolStats := p.sentinelClient.PoolStats()
-			p.stats.TotalConns = poolStats.TotalConns
-			p.stats.IdleConns = poolStats.IdleConns
-			p.stats.StaleConns = poolStats.StaleConns
-			p.stats.Hits = poolStats.Hits
-			p.stats.Misses = poolStats.Misses
-			p.stats.Timeouts = poolStats.Timeouts
+			stats.TotalConns = poolStats.TotalConns
+			stats.IdleConns = poolStats.IdleConns
+			stats.StaleConns = poolStats.StaleConns
+			stats.Hits = uint64(poolStats.Hits)
+			stats.Misses = uint64(poolStats.Misses)
+			stats.Timeouts = uint64(poolStats.Timeouts)
 		}
 	case RedisModeCluster:
 		if p.clusterClient != nil {
 			poolStats := p.clusterClient.PoolStats()
-			p.stats.TotalConns = poolStats.TotalConns
-			p.stats.IdleConns = poolStats.IdleConns
-			p.stats.StaleConns = poolStats.StaleConns
-			p.stats.Hits = poolStats.Hits
-			p.stats.Misses = poolStats.Misses
-			p.stats.Timeouts = poolStats.Timeouts
+			stats.TotalConns = poolStats.TotalConns
+			stats.IdleConns = poolStats.IdleConns
+			stats.StaleConns = poolStats.StaleConns
+			stats.Hits = uint64(poolStats.Hits)
+			stats.Misses = uint64(poolStats.Misses)
+			stats.Timeouts = uint64(poolStats.Timeouts)
 		}
 	}
-	
-	// 创建副本返回
-	statsCopy := *p.stats
-	return &statsCopy
+
+	return &stats
 }
 
 // UpdatePoolSize 动态更新连接池大小

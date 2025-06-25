@@ -7,12 +7,9 @@ import (
 	"log"
 	"time"
 
-	"minIODB/internal/config"
-	"minIODB/internal/metrics"
-	"minIODB/internal/pool"
-
-	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"
+	"minIODB/internal/config"
+	"minIODB/internal/pool"
 )
 
 // Storage 存储接口
@@ -57,7 +54,7 @@ func NewStorage(cfg *config.Config) (Storage, error) {
 	// 创建连接池管理器配置
 	poolConfig := &pool.PoolManagerConfig{
 		Redis: &pool.RedisPoolConfig{
-			Mode:              cfg.Pool.Redis.Mode,
+			Mode:              pool.RedisMode(cfg.Pool.Redis.Mode),
 			Addr:              cfg.Pool.Redis.Addr,
 			Password:          cfg.Pool.Redis.Password,
 			DB:                cfg.Pool.Redis.DB,
@@ -389,23 +386,15 @@ func (s *StorageImpl) ListObjects(ctx context.Context, bucketName string, prefix
 func (s *StorageImpl) DeleteObject(ctx context.Context, bucketName, objectName string) error {
 	minioPool := s.poolManager.GetMinIOPool()
 	if minioPool == nil {
-		return fmt.Errorf("MinIO pool not available")
-	}
-
-	minioMetrics := metrics.NewMinIOMetrics("delete_object")
-	
-	err := minioPool.ExecuteWithRetry(ctx, func() error {
-		client := minioPool.GetClient()
-		return client.RemoveObject(ctx, bucketName, objectName, minio.RemoveObjectOptions{})
-	})
-	
-	if err != nil {
-		minioMetrics.Finish("error")
-		return fmt.Errorf("failed to delete object %s: %w", objectName, err)
+		return fmt.Errorf("MinIO连接池不可用")
 	}
 	
-	minioMetrics.Finish("success")
-	return nil
+	client := minioPool.GetClient()
+	if client == nil {
+		return fmt.Errorf("MinIO客户端不可用")
+	}
+	
+	return client.RemoveObject(ctx, bucketName, objectName, minio.RemoveObjectOptions{})
 }
 
 // HealthCheck 健康检查

@@ -50,8 +50,8 @@ type MinIOPoolConfig struct {
 func DefaultMinIOPoolConfig() *MinIOPoolConfig {
 	return &MinIOPoolConfig{
 		Endpoint:        "localhost:9000",
-		AccessKeyID:     "",
-		SecretAccessKey: "",
+		AccessKeyID:     "minioadmin",
+		SecretAccessKey: "minioadmin",
 		UseSSL:          false,
 		Region:          "us-east-1",
 		
