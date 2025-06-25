@@ -47,9 +47,9 @@
       |   |   |   |  (Service Discovery & Query Planning)
       |   v   |   v
 +----------------+      +---------------------------------+
-| Redis |  | Worker Nodes (Go Service) |
-| ----- ||---------------------------------|
-| - Service Reg. |----->| - Heartbeat & Registration      |
+| Redis          |      | Worker Nodes (Go Service)       |
+| ---------------|      |---------------------------------|
+| - Service Reg. |<-----| - Heartbeat & Registration      |
 | - Data Index   |----->| - DuckDB Instance (embedded)    |
 | - Hash Ring    |      | - Data Ingestion & Buffering    |
 |                |      | - Parquet File Generation       |
