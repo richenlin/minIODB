@@ -385,4 +385,29 @@ func (pm *PoolManager) GetDetailedHealthStatus(ctx context.Context) map[string]i
 	}
 	
 	return status
+}
+
+// GetStats 获取连接池统计信息
+func (pm *PoolManager) GetStats() map[string]interface{} {
+	pm.mutex.RLock()
+	defer pm.mutex.RUnlock()
+	
+	stats := make(map[string]interface{})
+	
+	// Redis统计信息
+	if pm.redisPool != nil {
+		stats["redis"] = pm.redisPool.GetStats()
+	}
+	
+	// MinIO统计信息
+	if pm.minioPool != nil {
+		stats["minio"] = pm.minioPool.GetStats()
+	}
+	
+	// 备份MinIO统计信息
+	if pm.backupPool != nil {
+		stats["backup_minio"] = pm.backupPool.GetStats()
+	}
+	
+	return stats
 } 
