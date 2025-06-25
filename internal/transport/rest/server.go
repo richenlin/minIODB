@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"minIODB/internal/storage"
 
 	"github.com/gin-gonic/gin"
+	"github.com/minio/minio-go/v7"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -331,19 +333,27 @@ func (s *Server) queryData(c *gin.Context) {
 	})
 }
 
-// triggerBackup 处理备份请求
+// triggerBackup 手动触发备份
 func (s *Server) triggerBackup(c *gin.Context) {
+	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/v1/backup/trigger")
+	defer func() {
+		httpMetrics.Finish("200")
+	}()
+
 	var req TriggerBackupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error:   "invalid_request",
 			Code:    400,
-			Message: err.Error(),
+			Message: "Invalid request format",
 		})
 		return
 	}
 
+	// 检查备份存储是否可用
 	if s.backupMinio == nil {
+		httpMetrics.Finish("503")
 		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
 			Error:   "backup_disabled",
 			Code:    503,
@@ -353,13 +363,18 @@ func (s *Server) triggerBackup(c *gin.Context) {
 	}
 
 	ctx := context.Background()
-	redisKey := fmt.Sprintf("index:id:%s:%s", req.ID, req.Day)
-	objectNames, err := s.redisClient.SMembers(ctx, redisKey)
+	log.Printf("Triggering backup for ID: %s, Day: %s", req.ID, req.Day)
+
+	// 从Redis获取需要备份的对象列表
+	dataKey := fmt.Sprintf("index:id:%s:%s", req.ID, req.Day)
+	objectNames, err := s.redisClient.SMembers(ctx, dataKey)
 	if err != nil {
+		log.Printf("Failed to get object names from Redis: %v", err)
+		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Error:   "redis_error",
 			Code:    500,
-			Message: "Failed to get objects from Redis",
+			Message: fmt.Sprintf("Failed to get object names: %v", err),
 		})
 		return
 	}
@@ -377,7 +392,7 @@ func (s *Server) triggerBackup(c *gin.Context) {
 	var successCount int32 = 0
 	for _, objName := range objectNames {
 		// 检查备份中是否已存在
-		exists, err := s.backupMinio.ObjectExists(ctx, objName)
+		exists, err := s.backupMinio.ObjectExists(ctx, s.cfg.Backup.Minio.Bucket, objName)
 		if err != nil {
 			log.Printf("Failed to check backup object existence: %v", err)
 			continue
@@ -385,14 +400,16 @@ func (s *Server) triggerBackup(c *gin.Context) {
 
 		if !exists {
 			// 从主存储读取数据
-			data, err := s.primaryMinio.GetObject(ctx, objName)
+			data, err := s.primaryMinio.GetObject(ctx, s.cfg.Minio.Bucket, objName, minio.GetObjectOptions{})
 			if err != nil {
 				log.Printf("Failed to get object for backup: %v", err)
 				continue
 			}
 
 			// 写入备份存储
-			if err := s.backupMinio.PutObject(ctx, objName, data); err != nil {
+			reader := bytes.NewReader(data)
+			_, err = s.backupMinio.PutObject(ctx, s.cfg.Backup.Minio.Bucket, objName, reader, int64(len(data)), minio.PutObjectOptions{})
+			if err != nil {
 				log.Printf("Failed to backup object: %v", err)
 				continue
 			}
@@ -657,7 +674,7 @@ func (s *Server) recoverDataForKey(ctx context.Context, dataKey string, forceOve
 	for _, fileName := range backupFiles {
 		// 检查主存储中是否已存在该文件
 		if !forceOverwrite {
-			exists, err := s.primaryMinio.ObjectExists(ctx, fileName)
+			exists, err := s.primaryMinio.ObjectExists(ctx, s.cfg.Minio.Bucket, fileName)
 			if err == nil && exists {
 				log.Printf("File %s already exists in primary storage, skipping (use force_overwrite to override)", fileName)
 				continue
@@ -665,14 +682,15 @@ func (s *Server) recoverDataForKey(ctx context.Context, dataKey string, forceOve
 		}
 
 		// 从备份存储获取数据
-		data, err := s.backupMinio.GetObject(ctx, fileName)
+		data, err := s.backupMinio.GetObject(ctx, s.cfg.Backup.Minio.Bucket, fileName, minio.GetObjectOptions{})
 		if err != nil {
 			log.Printf("ERROR: failed to get backup file %s: %v", fileName, err)
 			continue
 		}
 
 		// 恢复到主存储
-		err = s.primaryMinio.PutObject(ctx, fileName, data)
+		reader := bytes.NewReader(data)
+		_, err = s.primaryMinio.PutObject(ctx, s.cfg.Minio.Bucket, fileName, reader, int64(len(data)), minio.PutObjectOptions{})
 		if err != nil {
 			log.Printf("ERROR: failed to recover file %s: %v", fileName, err)
 			continue

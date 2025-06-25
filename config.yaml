@@ -46,4 +46,29 @@ security:
   cert_file: ""
   key_file: ""
   enable_auth: false
-  auth_token: "" 
+  auth_token: ""
+
+# 新增认证配置
+auth:
+  enable_jwt: true
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  token_expiry: "24h"
+  enable_api_key: true
+  api_keys:
+    - "api-key-1234567890abcdef"
+    - "api-key-0987654321fedcba"
+  skip_auth_paths:
+    - "/health"
+    - "/metrics"
+    - "/v1/health"
+  require_auth_paths:
+    - "/v1/write"
+    - "/v1/query"
+    - "/v1/backup/trigger"
+    - "/v1/recover"
+  admin_roles:
+    - "admin"
+    - "superuser"
+  user_roles:
+    - "user"
+    - "api" 

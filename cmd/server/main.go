@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -21,15 +20,14 @@ import (
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
-	"minIODB/internal/errors"
 	"minIODB/internal/ingest"
 	"minIODB/internal/logger"
-	"minIODB/internal/metrics"
 	"minIODB/internal/query"
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
 	pb "minIODB/api/proto/olap/v1"
+	"github.com/minio/minio-go/v7"
 )
 
 func main() {
@@ -105,7 +103,7 @@ func main() {
 
 	// 初始化协调器
 	writeCoordinator := coordinator.NewWriteCoordinator(serviceRegistry)
-	queryCoord := coordinator.NewQueryCoordinator(redisClient.Client)
+	queryCoord := coordinator.NewQueryCoordinator(redisClient.GetClient(), serviceRegistry)
 
 	// 启动监控服务器
 	var monitoringServer *http.Server
@@ -114,10 +112,7 @@ func main() {
 	}
 
 	// 创建gRPC传输层
-	grpcServer, err := grpcTransport.NewServer(ingesterService, querierService, redisClient, *cfg)
-	if err != nil {
-		logger.Fatal("Failed to create gRPC server", "error", err)
-	}
+	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoordinator, queryCoord, redisClient, primaryMinio, backupMinio)
 
 	// 启动REST服务器
 	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoordinator, queryCoord, redisClient, primaryMinio, backupMinio, bufferManager)
@@ -132,7 +127,18 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := bufferManager.Flush(); err != nil {
+				if err := bufferManager.Flush(func(data []buffer.DataPoint) error {
+					// 批量写入数据
+					for _, point := range data {
+						dataRow := buffer.DataRow{
+							ID:        point.ID,
+							Timestamp: point.Timestamp.UnixNano(),
+							Payload:   string(point.Data),
+						}
+						sharedBuffer.Add(dataRow)
+					}
+					return nil
+				}); err != nil {
 					logger.Error("Failed to flush buffer", "error", err)
 				}
 			}
@@ -141,7 +147,7 @@ func main() {
 
 	// 启动备份goroutine
 	if cfg.Backup.Enabled && backupMinio != nil {
-		go startBackupRoutine(ctx, primaryMinio, backupMinio, cfg)
+		go startBackupRoutine(primaryMinio, backupMinio, *cfg)
 	}
 
 	logger.Info("MinIODB server started successfully")
@@ -156,7 +162,10 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	grpcServer := grpc.NewServer()
 	
 	// 创建gRPC服务
-	grpcService := grpcTransport.NewServer(redisClient, primaryMinio, backupMinio, cfg)
+	grpcService, err := grpcTransport.NewServer(redisClient.GetClient(), primaryMinio, backupMinio, *cfg)
+	if err != nil {
+		logger.Fatal("Failed to create gRPC service", "error", err)
+	}
 	
 	// 注册服务
 	pb.RegisterOlapServiceServer(grpcServer, grpcService)
@@ -223,79 +232,57 @@ func startMonitoringServer(cfg *config.Config) *http.Server {
 	return server
 }
 
-func startBufferFlusher(ctx context.Context, bufferManager *buffer.Manager, ingester *ingest.Ingester, cfg *config.Config) {
-	ticker := time.NewTicker(cfg.Buffer.FlushInterval)
+func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
+	logger.GetLogger().Info("Starting backup routine")
+	
+	ticker := time.NewTicker(time.Duration(cfg.Backup.Interval) * time.Second)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := bufferManager.Flush(func(data []buffer.DataPoint) error {
-				// 批量写入数据
-				for _, point := range data {
-					if err := ingester.Write(point.ID, point.Data, point.Timestamp); err != nil {
-						logger.Error("Failed to write buffered data", "id", point.ID, "error", err)
-						return err
-					}
-				}
-				return nil
-			}); err != nil {
-				logger.Error("Failed to flush buffer", "error", err)
-			}
+	for range ticker.C {
+		logger.GetLogger().Info("Starting backup process")
+		
+		// 列出主存储中的所有对象
+		objects, err := primaryMinio.ListObjectsSimple(context.Background(), cfg.Minio.Bucket, minio.ListObjectsOptions{})
+		if err != nil {
+			logger.GetLogger().Error("Failed to list objects from primary storage", "error", err)
+			continue
 		}
-	}
-}
 
-func startBackupRoutine(ctx context.Context, primaryMinio, backupMinio *storage.MinioClient, cfg *config.Config) {
-	ticker := time.NewTicker(cfg.Backup.Interval)
-	defer ticker.Stop()
+		logger.GetLogger().Info("Found objects to backup", "count", len(objects))
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			logger.Info("Starting backup process")
-			
-			// 获取所有对象列表
-			objects, err := primaryMinio.ListObjects(ctx)
+		// 备份每个对象
+		for _, obj := range objects {
+			// 检查备份存储中是否已存在该对象
+			exists, err := backupMinio.ObjectExists(context.Background(), cfg.Backup.Minio.Bucket, obj.Name)
 			if err != nil {
-				logger.Error("Failed to list objects for backup", "error", err)
+				logger.GetLogger().Error("Failed to check object existence in backup", "error", err, "object", obj.Name)
 				continue
 			}
 
-			// 备份每个对象
-			var backupCount int
-			for _, obj := range objects {
-				// 检查备份中是否已存在
-				exists, err := backupMinio.ObjectExists(ctx, obj.Key)
-				if err != nil {
-					logger.Error("Failed to check backup object existence", "key", obj.Key, "error", err)
-					continue
-				}
-
-				if !exists {
-					// 从主存储读取数据
-					data, err := primaryMinio.GetObject(ctx, obj.Key)
-					if err != nil {
-						logger.Error("Failed to get object for backup", "key", obj.Key, "error", err)
-						continue
-					}
-
-					// 写入备份存储
-					if err := backupMinio.PutObject(ctx, obj.Key, data); err != nil {
-						logger.Error("Failed to backup object", "key", obj.Key, "error", err)
-						continue
-					}
-
-					backupCount++
-				}
+			if exists {
+				logger.GetLogger().Debug("Object already exists in backup", "object", obj.Name)
+				continue
 			}
 
-			logger.Info("Backup process completed", "backed_up", backupCount, "total", len(objects))
+			// 从主存储获取对象数据
+			data, err := primaryMinio.GetObject(context.Background(), cfg.Minio.Bucket, obj.Name, minio.GetObjectOptions{})
+			if err != nil {
+				logger.GetLogger().Error("Failed to get object from primary storage", "error", err, "object", obj.Name)
+				continue
+			}
+
+			// 上传到备份存储
+			reader := bytes.NewReader(data)
+			_, err = backupMinio.PutObject(context.Background(), cfg.Backup.Minio.Bucket, obj.Name, reader, int64(len(data)), minio.PutObjectOptions{})
+			if err != nil {
+				logger.GetLogger().Error("Failed to upload object to backup storage", "error", err, "object", obj.Name)
+				continue
+			}
+
+			logger.GetLogger().Info("Successfully backed up object", "object", obj.Name, "size", len(data))
 		}
+
+		logger.GetLogger().Info("Backup process completed", "objects_processed", len(objects))
 	}
 }
 
