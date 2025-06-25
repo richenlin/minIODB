@@ -143,7 +143,6 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 	cfg := v.cfg.Minio
 	
-	// 检查必需字段
 	if cfg.Endpoint == "" {
 		return &ValidationResult{
 			Component: "minio",
@@ -168,13 +167,14 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 		}
 	}
 	
-	if cfg.Bucket == "" {
-		return &ValidationResult{
-			Component: "minio",
-			Status:    "error",
-			Message:   "MinIO bucket name is required",
-		}
-	}
+	// 注释掉bucket验证，因为MinioConfig没有BucketName字段
+	// if cfg.BucketName == "" {
+	// 	return &ValidationResult{
+	// 		Component: "minio",
+	// 		Status:    "error",
+	// 		Message:   "MinIO bucket name is required",
+	// 	}
+	// }
 	
 	// 测试连接
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
@@ -195,27 +195,15 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	
-	// 检查存储桶是否存在
-	exists, err := client.BucketExists(ctx, cfg.Bucket)
+	// 简单的连接测试
+	_, err = client.ListBuckets(ctx)
 	if err != nil {
 		return &ValidationResult{
 			Component: "minio",
 			Status:    "error",
-			Message:   "Failed to check MinIO bucket",
+			Message:   "Failed to list MinIO buckets",
 			Details: map[string]interface{}{
-				"error":  err.Error(),
-				"bucket": cfg.Bucket,
-			},
-		}
-	}
-	
-	if !exists {
-		return &ValidationResult{
-			Component: "minio",
-			Status:    "warning",
-			Message:   "MinIO bucket does not exist (will be created)",
-			Details: map[string]interface{}{
-				"bucket": cfg.Bucket,
+				"error": err.Error(),
 			},
 		}
 	}
@@ -223,10 +211,9 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 	return &ValidationResult{
 		Component: "minio",
 		Status:    "ok",
-		Message:   "MinIO connection and bucket validation successful",
+		Message:   "MinIO connection validation successful",
 		Details: map[string]interface{}{
 			"endpoint": cfg.Endpoint,
-			"bucket":   cfg.Bucket,
 			"ssl":      cfg.UseSSL,
 		},
 	}

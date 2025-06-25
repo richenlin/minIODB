@@ -180,14 +180,14 @@ func LoadConfig(path string) (*Config, error) {
 // setDefaults 设置默认值
 func setDefaults(config *Config) {
 	// Buffer defaults
-	if config.Buffer.MaxSize == 0 {
-		config.Buffer.MaxSize = 1000
+	if config.Buffer.BufferSize == 0 {
+		config.Buffer.BufferSize = 1000
 	}
 	if config.Buffer.FlushTimeout == 0 {
-		config.Buffer.FlushTimeout = 30
+		config.Buffer.FlushTimeout = 30 * time.Second
 	}
-	if config.Buffer.BatchSize == 0 {
-		config.Buffer.BatchSize = 100
+	if config.Buffer.BatchFlushSize == 0 {
+		config.Buffer.BatchFlushSize = 100
 	}
 
 	// Log defaults
