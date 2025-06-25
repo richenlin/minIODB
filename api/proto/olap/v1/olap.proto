@@ -22,12 +22,19 @@ service OlapService {
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
   // 获取集群节点信息
   rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
+  
+  // 表管理接口
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc DropTable(DropTableRequest) returns (DropTableResponse);
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
 }
 
 message WriteRequest {
-  string id = 1;
-  google.protobuf.Timestamp timestamp = 2;
-  google.protobuf.Struct payload = 3;
+  string table = 1;                    // 表名（新增，可选，默认为"default"）
+  string id = 2;                       // 记录ID
+  google.protobuf.Timestamp timestamp = 3;  // 时间戳
+  google.protobuf.Struct payload = 4;  // 数据载荷
 }
 
 message WriteResponse {
@@ -42,6 +49,80 @@ message QueryRequest {
 message QueryResponse {
   // 结果可以用JSON字符串或者更复杂的结构表示
   string result_json = 1;
+}
+
+// 表管理消息定义
+
+// 创建表
+message CreateTableRequest {
+  string table_name = 1;
+  TableConfig config = 2;
+  bool if_not_exists = 3;
+}
+
+message CreateTableResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 删除表
+message DropTableRequest {
+  string table_name = 1;
+  bool if_exists = 2;
+  bool cascade = 3;  // 是否级联删除数据
+}
+
+message DropTableResponse {
+  bool success = 1;
+  string message = 2;
+  int32 files_deleted = 3;
+}
+
+// 列出表
+message ListTablesRequest {
+  string pattern = 1;  // 表名模式匹配
+}
+
+message ListTablesResponse {
+  repeated TableInfo tables = 1;
+  int32 total = 2;
+}
+
+// 表描述
+message DescribeTableRequest {
+  string table_name = 1;
+}
+
+message DescribeTableResponse {
+  TableInfo table_info = 1;
+  TableStats stats = 2;
+}
+
+// 表信息
+message TableInfo {
+  string name = 1;
+  TableConfig config = 2;
+  string created_at = 3;
+  string last_write = 4;
+  string status = 5;  // active, archived, deleting
+}
+
+// 表配置
+message TableConfig {
+  int32 buffer_size = 1;
+  int32 flush_interval_seconds = 2;
+  int32 retention_days = 3;
+  bool backup_enabled = 4;
+  map<string, string> properties = 5;
+}
+
+// 表统计
+message TableStats {
+  int64 record_count = 1;
+  int64 file_count = 2;
+  int64 size_bytes = 3;
+  string oldest_record = 4;
+  string newest_record = 5;
 }
 
 message TriggerBackupRequest {

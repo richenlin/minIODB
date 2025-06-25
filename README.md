@@ -15,6 +15,7 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 - **服务健壮** - 内置故障恢复和自动重试机制
 - **高可用** - 支持数据备份和灾难恢复
 - **线性扩展** - 通过增加节点线性提升处理能力
+- **表级管理** - 支持多表数据隔离和差异化配置
 
 ## ✨ 核心特性
 
@@ -23,18 +24,22 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 - **元数据驱动** - Redis管理服务发现、节点状态和数据索引
 - **自动分片** - 基于一致性哈希的透明数据分片
 - **水平扩展** - 支持动态节点加入和数据重分布
+- **表级分离** - 支持多表数据逻辑隔离和独立管理
 
 ### 💾 存储特性
 - **列式存储** - 使用Apache Parquet格式，压缩率高
 - **多级缓存** - 内存缓冲区 + 磁盘存储的多级架构
 - **数据备份** - 支持自动和手动备份机制
 - **灾难恢复** - 基于时间范围和ID的数据恢复
+- **表级配置** - 每个表可以有独立的存储策略和保留策略
+- **智能分区** - 按表、ID和时间的三级分区存储
 
 ### 🔌 接口特性
 - **双协议支持** - 同时提供gRPC和RESTful API
 - **多语言客户端** - 支持Go、Java、Node.js等多种语言
 - **标准SQL** - 支持标准SQL查询语法
 - **流式处理** - 支持大数据量的流式读写
+- **表管理API** - 完整的表创建、删除、列表和描述接口
 
 ### 🛡️ 安全特性
 - **JWT认证** - 支持JWT令牌认证
@@ -97,6 +102,22 @@ curl http://localhost:8081/v1/health
 
 # 查看服务状态
 curl http://localhost:8081/v1/stats
+
+# 创建第一个表
+curl -X POST http://localhost:8081/v1/tables \
+  -H "Content-Type: application/json" \
+  -d '{
+    "table_name": "users",
+    "config": {
+      "buffer_size": 1000,
+      "flush_interval_seconds": 30,
+      "retention_days": 365,
+      "backup_enabled": true
+    }
+  }'
+
+# 列出所有表
+curl http://localhost:8081/v1/tables
 ```
 
 ## 📦 部署方式
@@ -137,12 +158,13 @@ kubectl apply -f miniodb/
 
 ### RESTful API
 
-#### 数据写入
+#### 数据写入（支持表概念）
 ```bash
 curl -X POST http://localhost:8081/v1/data \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
+    "table": "users",
     "id": "user-123",
     "timestamp": "2024-01-01T10:00:00Z",
     "payload": {
@@ -153,35 +175,72 @@ curl -X POST http://localhost:8081/v1/data \
   }'
 ```
 
-#### 数据查询
+#### 数据查询（支持表名）
 ```bash
 curl -X POST http://localhost:8081/v1/query \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "sql": "SELECT COUNT(*) FROM table WHERE id = '\''user-123'\'' AND age > 25"
+    "sql": "SELECT COUNT(*) FROM users WHERE age > 25"
   }'
 ```
 
-#### 数据备份
+#### 跨表查询
 ```bash
-curl -X POST http://localhost:8081/v1/backup/trigger \
+curl -X POST http://localhost:8081/v1/query \
+  -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "id": "user-123",
-    "day": "2024-01-01"
+    "sql": "SELECT u.name, o.amount FROM users u JOIN orders o ON u.id = o.user_id WHERE u.age > 25"
   }'
 ```
 
-#### 数据恢复
+#### 表管理API
+
+##### 创建表
 ```bash
-curl -X POST http://localhost:8081/v1/backup/recover \
+curl -X POST http://localhost:8081/v1/tables \
+  -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "id_range": {
-      "ids": ["user-123", "user-456"]
+    "table_name": "orders",
+    "config": {
+      "buffer_size": 2000,
+      "flush_interval_seconds": 15,
+      "retention_days": 2555,
+      "backup_enabled": true,
+      "properties": {
+        "description": "订单数据表",
+        "owner": "order-service"
+      }
     },
-    "force_overwrite": false
+    "if_not_exists": true
+  }'
+```
+
+##### 列出表
+```bash
+curl -X GET http://localhost:8081/v1/tables \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# 使用模式匹配
+curl -X GET "http://localhost:8081/v1/tables?pattern=user*" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+##### 表详情
+```bash
+curl -X GET http://localhost:8081/v1/tables/users \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+##### 删除表
+```bash
+curl -X DELETE http://localhost:8081/v1/tables/old_table \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "cascade": true,
+    "if_exists": true
   }'
 ```
 
@@ -189,13 +248,22 @@ curl -X POST http://localhost:8081/v1/backup/recover \
 
 ```protobuf
 service OlapService {
+  // 数据操作
   rpc Write(WriteRequest) returns (WriteResponse);
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc TriggerBackup(TriggerBackupRequest) returns (TriggerBackupResponse);
   rpc RecoverData(RecoverDataRequest) returns (RecoverDataResponse);
+  
+  // 系统管理
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
   rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
+  
+  // 表管理（新增）
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc DropTable(DropTableRequest) returns (DropTableResponse);
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
 }
 ```
 
@@ -211,6 +279,8 @@ import (
     "context"
     "log"
     "google.golang.org/grpc"
+    "google.golang.org/protobuf/types/known/timestamppb"
+    "google.golang.org/protobuf/types/known/structpb"
     pb "minIODB/api/proto/olap/v1"
 )
 
@@ -223,9 +293,29 @@ func main() {
 
     client := pb.NewOlapServiceClient(conn)
     
-    // 写入数据
+    // 创建表
+    _, err = client.CreateTable(context.Background(), &pb.CreateTableRequest{
+        TableName: "users",
+        Config: &pb.TableConfig{
+            BufferSize:           1000,
+            FlushIntervalSeconds: 30,
+            RetentionDays:        365,
+            BackupEnabled:        true,
+            Properties: map[string]string{
+                "description": "用户数据表",
+                "owner":       "user-service",
+            },
+        },
+        IfNotExists: true,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // 写入数据（指定表名）
     _, err = client.Write(context.Background(), &pb.WriteRequest{
-        Id: "user-123",
+        Table:     "users",  // 新增：指定表名
+        Id:        "user-123",
         Timestamp: timestamppb.Now(),
         Payload: &structpb.Struct{
             Fields: map[string]*structpb.Value{
@@ -237,6 +327,15 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
+    
+    // 查询数据
+    resp, err := client.Query(context.Background(), &pb.QueryRequest{
+        Sql: "SELECT COUNT(*) FROM users WHERE age > 25",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("Query result: %s", resp.ResultJson)
 }
 ```
 
@@ -245,7 +344,25 @@ func main() {
 OlapServiceGrpc.OlapServiceBlockingStub stub = 
     OlapServiceGrpc.newBlockingStub(channel);
 
+// 创建表
+CreateTableRequest createTableRequest = CreateTableRequest.newBuilder()
+    .setTableName("users")
+    .setConfig(TableConfig.newBuilder()
+        .setBufferSize(1000)
+        .setFlushIntervalSeconds(30)
+        .setRetentionDays(365)
+        .setBackupEnabled(true)
+        .putProperties("description", "用户数据表")
+        .putProperties("owner", "user-service")
+        .build())
+    .setIfNotExists(true)
+    .build();
+
+CreateTableResponse createResp = stub.createTable(createTableRequest);
+
+// 写入数据（指定表名）
 WriteRequest request = WriteRequest.newBuilder()
+    .setTable("users")  // 新增：指定表名
     .setId("user-123")
     .setTimestamp(Timestamps.fromMillis(System.currentTimeMillis()))
     .setPayload(Struct.newBuilder()
@@ -270,7 +387,31 @@ const client = new olapProto.olap.v1.OlapService(
     grpc.credentials.createInsecure()
 );
 
+// 创建表
+client.createTable({
+    table_name: 'users',
+    config: {
+        buffer_size: 1000,
+        flush_interval_seconds: 30,
+        retention_days: 365,
+        backup_enabled: true,
+        properties: {
+            description: '用户数据表',
+            owner: 'user-service'
+        }
+    },
+    if_not_exists: true
+}, (error, response) => {
+    if (error) {
+        console.error('Create table error:', error);
+    } else {
+        console.log('Table created:', response);
+    }
+});
+
+// 写入数据（指定表名）
 client.write({
+    table: 'users',  // 新增：指定表名
     id: 'user-123',
     timestamp: { seconds: Math.floor(Date.now() / 1000) },
     payload: {
@@ -306,6 +447,7 @@ client.write({
     │  - Request Parsing & Validation │
     │  - Query Coordination           │
     │  - Result Aggregation           │
+    │  - Table Management (NEW)       │
     └────────────────┬────────────────┘
                      │
         ┌────────────┼────────────┐
@@ -314,7 +456,8 @@ client.write({
 ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
 │   Redis     │ │ Worker Node │ │ Worker Node │
 │ Metadata    │ │   + DuckDB  │ │   + DuckDB  │
-│ & Discovery │ │             │ │             │
+│ & Discovery │ │ + TableMgr  │ │ + TableMgr  │
+│ + TableMeta │ │             │ │             │
 └─────────────┘ └─────────────┘ └─────────────┘
                        │            │
                        └────────────┘
@@ -322,6 +465,7 @@ client.write({
                     ┌─────────▼─────────┐
                     │   MinIO Cluster   │
                     │ (Object Storage)  │
+                    │  TABLE/ID/DATE/   │
                     └───────────────────┘
 ```
 
@@ -332,51 +476,57 @@ client.write({
 - **负载均衡** - 请求分发和负载均衡
 - **认证授权** - JWT令牌验证和权限控制
 - **结果聚合** - 多节点查询结果聚合
+- **表管理** - 表的创建、删除、列表和描述管理
 
 #### 2. 计算节点层
 - **DuckDB引擎** - 高性能OLAP查询引擎
-- **数据缓冲** - 内存缓冲区管理
-- **文件生成** - Parquet文件生成和上传
-- **查询执行** - 分布式查询执行
+- **数据缓冲** - 内存缓冲区管理，支持表级分离
+- **文件生成** - Parquet文件生成和上传，按表分区
+- **查询执行** - 分布式查询执行，支持跨表查询
+- **表管理器** - 表级配置和生命周期管理
 
 #### 3. 元数据层
 - **服务发现** - 节点注册和健康检查
-- **数据索引** - 文件位置和元数据索引
+- **数据索引** - 文件位置和元数据索引，支持表级索引
 - **哈希环** - 一致性哈希数据分片
 - **配置管理** - 集群配置和状态管理
+- **表元数据** - 表配置、统计信息和权限管理
 
 #### 4. 存储层
 - **主存储** - MinIO对象存储集群
 - **备份存储** - 独立的备份存储
 - **数据格式** - Apache Parquet列式存储
-- **数据组织** - 按ID和时间分区存储
+- **数据组织** - 按表、ID和时间的三级分区存储
 
 ## 🔄 核心流程
 
-### 数据写入流程
-1. 客户端发送写入请求到API网关
-2. 网关根据ID计算目标节点（一致性哈希）
-3. 目标节点将数据写入内存缓冲区
-4. 缓冲区达到阈值时批量生成Parquet文件
-5. 文件上传到MinIO主存储
-6. 更新Redis中的数据索引
-7. 异步备份到备份存储（如果启用）
+### 数据写入流程（支持表）
+1. 客户端发送写入请求到API网关（包含表名）
+2. 网关验证表是否存在，如启用自动创建则自动创建表
+3. 根据表名和ID计算目标节点（一致性哈希）
+4. 目标节点将数据写入表级内存缓冲区
+5. 缓冲区达到表级阈值时批量生成Parquet文件
+6. 文件上传到MinIO主存储的表分区路径
+7. 更新Redis中的表级数据索引
+8. 异步备份到备份存储（如果表启用备份）
 
-### 数据查询流程
+### 数据查询流程（支持跨表）
 1. 客户端发送查询请求到API网关
-2. 网关解析SQL并确定涉及的数据范围
-3. 查询Redis获取相关文件列表
-4. 将查询任务分发到相关计算节点
-5. 各节点使用DuckDB执行子查询
-6. 网关聚合所有节点的查询结果
-7. 返回最终结果给客户端
+2. 网关解析SQL并提取涉及的表名和数据范围
+3. 验证表级权限和表存在性
+4. 查询Redis获取相关表的文件列表
+5. 将查询任务分发到相关计算节点
+6. 各节点使用DuckDB执行子查询（支持跨表JOIN）
+7. 网关聚合所有节点的查询结果
+8. 返回最终结果给客户端
 
-### 节点扩容流程
-1. 新节点启动并注册到Redis
-2. 系统检测到节点变化
-3. 重新计算一致性哈希环
-4. 新数据自动路由到新节点
-5. 历史数据保持原有分布（可选重分布）
+### 表管理流程
+1. 客户端发送表管理请求（创建/删除/列表/描述）
+2. 网关验证权限和表名合法性
+3. 表管理器执行相应操作
+4. 更新Redis中的表元数据
+5. 对于删除操作，级联删除MinIO中的表数据
+6. 返回操作结果给客户端
 
 ## 📊 性能特点
 
@@ -439,6 +589,50 @@ security:
   mode: "token"
   jwt_secret: "your-secret-key"
   enable_tls: false
+
+# 表管理配置
+tables:
+  # 默认表配置
+  default_config:
+    buffer_size: 1000
+    flush_interval: 30s
+    retention_days: 365
+    backup_enabled: true
+  
+  # 表级配置覆盖
+  users:
+    buffer_size: 2000
+    flush_interval: 60s
+    retention_days: 2555  # 7年
+    backup_enabled: true
+    properties:
+      description: "用户数据表"
+      owner: "user-service"
+  
+  orders:
+    buffer_size: 5000
+    flush_interval: 10s
+    retention_days: 2555
+    backup_enabled: true
+    properties:
+      description: "订单数据表"
+      owner: "order-service"
+  
+  logs:
+    buffer_size: 10000
+    flush_interval: 5s
+    retention_days: 30
+    backup_enabled: false
+    properties:
+      description: "应用日志表"
+      owner: "log-service"
+
+# 表管理配置
+table_management:
+  auto_create_tables: true      # 是否自动创建表
+  default_table: "default"      # 默认表名（向后兼容）
+  max_tables: 1000             # 最大表数量限制
+  table_name_pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,63}$"  # 表名规则
 ```
 
 完整配置说明请参考：[配置文档](docs/configuration.md)
@@ -475,15 +669,21 @@ go test -tags=integration ./test/...
 ### Prometheus指标
 ```yaml
 # 系统指标
-miniodb_requests_total{method="write",status="success"}
-miniodb_requests_duration_seconds{method="query"}
-miniodb_buffer_size_bytes{node="node-1"}
-miniodb_storage_objects_total{bucket="olap-data"}
+miniodb_requests_total{method="write",status="success",table="users"}
+miniodb_requests_duration_seconds{method="query",table="orders"}
+miniodb_buffer_size_bytes{node="node-1",table="users"}
+miniodb_storage_objects_total{bucket="olap-data",table="users"}
+
+# 表级指标
+miniodb_table_record_count{table="users"}
+miniodb_table_file_count{table="orders"}
+miniodb_table_size_bytes{table="logs"}
+miniodb_table_buffer_utilization{table="users"}
 
 # 业务指标
-miniodb_data_points_total{id="user-123"}
-miniodb_query_latency_seconds{sql_type="select"}
-miniodb_backup_files_total{status="success"}
+miniodb_data_points_total{id="user-123",table="users"}
+miniodb_query_latency_seconds{sql_type="select",table="users"}
+miniodb_backup_files_total{status="success",table="orders"}
 ```
 
 ### 健康检查
@@ -493,6 +693,9 @@ curl http://localhost:8081/v1/health
 
 # 详细状态检查
 curl http://localhost:8081/v1/stats
+
+# 表级状态检查
+curl http://localhost:8081/v1/tables/users
 ```
 
 ## 🔍 故障排除
@@ -517,13 +720,44 @@ curl http://localhost:9000/minio/health/live
 mc ls minio/olap-data
 ```
 
-#### 3. 查询性能慢
+#### 3. 表相关问题
+
+##### 表不存在错误
+```bash
+# 检查表是否存在
+curl http://localhost:8081/v1/tables | jq '.tables[] | select(.name=="your_table")'
+
+# 创建缺失的表
+curl -X POST http://localhost:8081/v1/tables \
+  -H "Content-Type: application/json" \
+  -d '{"table_name": "your_table", "if_not_exists": true}'
+```
+
+##### 表配置问题
+```bash
+# 查看表配置
+curl http://localhost:8081/v1/tables/your_table | jq '.table_info.config'
+
+# 检查表级Redis配置
+redis-cli hgetall "table:your_table:config"
+```
+
+##### 表数据查询慢
+```bash
+# 查看表统计信息
+curl http://localhost:8081/v1/tables/your_table | jq '.stats'
+
+# 检查表级索引
+redis-cli keys "index:table:your_table:*" | wc -l
+```
+
+#### 4. 查询性能慢
 ```bash
 # 查看查询统计
 curl http://localhost:8081/v1/stats | jq '.query_stats'
 
-# 检查索引状态
-redis-cli keys "index:*" | wc -l
+# 检查表级缓冲区状态
+curl http://localhost:8081/v1/stats | jq '.buffer_stats'
 ```
 
 更多故障排除请参考：[故障排除指南](docs/troubleshooting.md)

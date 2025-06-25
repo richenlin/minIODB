@@ -18,33 +18,21 @@ func DefaultConfig() *Config {
 			Addr:     "localhost:6379",
 			Password: "",
 			DB:       0,
-			Bucket:   "default",
 		},
-		Minio: MinioConfig{
+		MinIO: MinioConfig{
 			Endpoint:        "localhost:9000",
 			AccessKeyID:     "minioadmin",
 			SecretAccessKey: "minioadmin",
 			UseSSL:          false,
-			Region:          "us-east-1",
 		},
 		Server: ServerConfig{
-			GRPCPort: "50051",
-			RESTPort: "8080",
+			GrpcPort: "50051",
+			RestPort: "8080",
 			NodeID:   "node-1",
 		},
 		Buffer: BufferConfig{
 			BufferSize:    1000,
 			FlushInterval: 30 * time.Second,
-		},
-		Log: LogConfig{
-			Level:  "info",
-			Format: "json",
-			Output: "stdout",
-		},
-		Monitoring: MonitoringConfig{
-			Enabled: false,
-			Port:    "9090",
-			Path:    "/metrics",
 		},
 		Security: SecurityConfig{
 			Mode: "none",
@@ -54,40 +42,28 @@ func DefaultConfig() *Config {
 
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
-	
+
 	// 验证Redis配置
 	assert.Equal(t, "standalone", config.Redis.Mode)
 	assert.Equal(t, "localhost:6379", config.Redis.Addr)
 	assert.Equal(t, "", config.Redis.Password)
 	assert.Equal(t, 0, config.Redis.DB)
-	assert.Equal(t, "default", config.Redis.Bucket)
-	
+
 	// 验证MinIO配置
-	assert.Equal(t, "localhost:9000", config.Minio.Endpoint)
-	assert.Equal(t, "minioadmin", config.Minio.AccessKeyID)
-	assert.Equal(t, "minioadmin", config.Minio.SecretAccessKey)
-	assert.Equal(t, false, config.Minio.UseSSL)
-	assert.Equal(t, "us-east-1", config.Minio.Region)
-	
+	assert.Equal(t, "localhost:9000", config.MinIO.Endpoint)
+	assert.Equal(t, "minioadmin", config.MinIO.AccessKeyID)
+	assert.Equal(t, "minioadmin", config.MinIO.SecretAccessKey)
+	assert.Equal(t, false, config.MinIO.UseSSL)
+
 	// 验证服务器配置
-	assert.Equal(t, "50051", config.Server.GRPCPort)
-	assert.Equal(t, "8080", config.Server.RESTPort)
+	assert.Equal(t, "50051", config.Server.GrpcPort)
+	assert.Equal(t, "8080", config.Server.RestPort)
 	assert.Equal(t, "node-1", config.Server.NodeID)
-	
+
 	// 验证缓冲区配置
 	assert.Equal(t, 1000, config.Buffer.BufferSize)
 	assert.Equal(t, 30*time.Second, config.Buffer.FlushInterval)
-	
-	// 验证日志配置
-	assert.Equal(t, "info", config.Log.Level)
-	assert.Equal(t, "json", config.Log.Format)
-	assert.Equal(t, "stdout", config.Log.Output)
-	
-	// 验证监控配置
-	assert.Equal(t, false, config.Monitoring.Enabled)
-	assert.Equal(t, "9090", config.Monitoring.Port)
-	assert.Equal(t, "/metrics", config.Monitoring.Path)
-	
+
 	// 验证安全配置
 	assert.Equal(t, "none", config.Security.Mode)
 }
@@ -131,27 +107,27 @@ monitoring:
 security:
   mode: none
 `
-	
+
 	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
 	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
 	tmpFile.Close()
-	
+
 	// 加载配置
 	config, err := LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
-	
+
 	// 验证配置
 	assert.Equal(t, "standalone", config.Redis.Mode)
 	assert.Equal(t, "localhost:6379", config.Redis.Addr)
-	assert.Equal(t, "localhost:9000", config.Minio.Endpoint)
-	assert.Equal(t, "minioadmin", config.Minio.AccessKeyID)
-	assert.Equal(t, "minioadmin", config.Minio.SecretAccessKey)
-	assert.Equal(t, "50051", config.Server.GRPCPort)
-	assert.Equal(t, "8080", config.Server.RESTPort)
+	assert.Equal(t, "localhost:9000", config.MinIO.Endpoint)
+	assert.Equal(t, "minioadmin", config.MinIO.AccessKeyID)
+	assert.Equal(t, "minioadmin", config.MinIO.SecretAccessKey)
+	assert.Equal(t, "50051", config.Server.GrpcPort)
+	assert.Equal(t, "8080", config.Server.RestPort)
 	assert.Equal(t, "node-1", config.Server.NodeID)
 }
 
@@ -168,18 +144,18 @@ redis:
   db: 0
   bucket: default
 `
-	
+
 	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
 	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
 	tmpFile.Close()
-	
+
 	config, err := LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, "sentinel", config.Redis.Mode)
 	assert.Equal(t, "mymaster", config.Redis.MasterName)
 	assert.Equal(t, []string{"localhost:26379", "localhost:26380"}, config.Redis.SentinelAddrs)
@@ -196,18 +172,18 @@ redis:
   password: ""
   bucket: default
 `
-	
+
 	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
 	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
 	tmpFile.Close()
-	
+
 	config, err := LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, "cluster", config.Redis.Mode)
 	assert.Equal(t, []string{"localhost:7000", "localhost:7001", "localhost:7002"}, config.Redis.ClusterAddrs)
 }
@@ -224,22 +200,22 @@ backup:
     use_ssl: false
     region: us-west-1
 `
-	
+
 	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
 	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
 	tmpFile.Close()
-	
+
 	config, err := LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
-	
+
 	assert.True(t, config.Backup.Enabled)
 	assert.Equal(t, 3600, config.Backup.Interval)
-	assert.Equal(t, "backup.minio.local:9000", config.Backup.Minio.Endpoint)
-	assert.Equal(t, "backupadmin", config.Backup.Minio.AccessKeyID)
+	assert.Equal(t, "backup.minio.local:9000", config.Backup.MinIO.Endpoint)
+	assert.Equal(t, "backupadmin", config.Backup.MinIO.AccessKeyID)
 }
 
 func TestLoadConfig_FileNotFound(t *testing.T) {
@@ -251,11 +227,11 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
 	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	_, err = tmpFile.WriteString("invalid: yaml: content: [")
 	require.NoError(t, err)
 	tmpFile.Close()
-	
+
 	_, err = LoadConfig(tmpFile.Name())
 	assert.Error(t, err)
 }
@@ -271,11 +247,11 @@ func TestValidateConfig_ValidConfig(t *testing.T) {
 func TestValidateConfig_InvalidRedisMode(t *testing.T) {
 	config := DefaultConfig()
 	config.Redis.Mode = "invalid"
-	
+
 	validator := NewConfigValidator(*config)
 	results, err := validator.ValidateAll()
 	require.NoError(t, err)
-	
+
 	// 检查是否有错误结果
 	hasError := false
 	for _, result := range results {
@@ -290,11 +266,11 @@ func TestValidateConfig_InvalidRedisMode(t *testing.T) {
 func TestValidateConfig_MissingRedisAddr(t *testing.T) {
 	config := DefaultConfig()
 	config.Redis.Addr = ""
-	
+
 	validator := NewConfigValidator(*config)
 	results, err := validator.ValidateAll()
 	require.NoError(t, err)
-	
+
 	// 检查是否有Redis相关的错误
 	hasRedisError := false
 	for _, result := range results {
@@ -308,12 +284,12 @@ func TestValidateConfig_MissingRedisAddr(t *testing.T) {
 
 func TestValidateConfig_MissingMinIOEndpoint(t *testing.T) {
 	config := DefaultConfig()
-	config.Minio.Endpoint = ""
-	
+	config.MinIO.Endpoint = ""
+
 	validator := NewConfigValidator(*config)
 	results, err := validator.ValidateAll()
 	require.NoError(t, err)
-	
+
 	// 检查是否有MinIO相关的错误
 	hasMinIOError := false
 	for _, result := range results {
@@ -327,12 +303,12 @@ func TestValidateConfig_MissingMinIOEndpoint(t *testing.T) {
 
 func TestValidateConfig_InvalidServerPort(t *testing.T) {
 	config := DefaultConfig()
-	config.Server.GRPCPort = "invalid"
-	
+	config.Server.GrpcPort = "invalid"
+
 	validator := NewConfigValidator(*config)
 	results, err := validator.ValidateAll()
 	require.NoError(t, err)
-	
+
 	// 检查是否有服务器相关的错误
 	hasServerError := false
 	for _, result := range results {
