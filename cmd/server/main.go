@@ -23,6 +23,7 @@ import (
 	"minIODB/internal/ingest"
 	"minIODB/internal/logger"
 	"minIODB/internal/query"
+	"minIODB/internal/service"
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
@@ -159,13 +160,19 @@ func main() {
 }
 
 func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader) *grpc.Server {
-	grpcServer := grpc.NewServer()
+	// 创建统一的service层
+	olapService, err := service.NewOlapService(*cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
+	if err != nil {
+		logger.Fatal("Failed to create OLAP service", "error", err)
+	}
 	
 	// 创建gRPC服务
-	grpcService, err := grpcTransport.NewServer(redisClient.GetClient(), primaryMinio, backupMinio, *cfg)
+	grpcService, err := grpcTransport.NewServer(olapService, *cfg)
 	if err != nil {
 		logger.Fatal("Failed to create gRPC service", "error", err)
 	}
+	
+	grpcServer := grpc.NewServer()
 	
 	// 注册服务
 	pb.RegisterOlapServiceServer(grpcServer, grpcService)
@@ -190,8 +197,14 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 }
 
 func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader, bufferManager *buffer.Manager) *restTransport.Server {
+	// 创建统一的service层
+	olapService, err := service.NewOlapService(*cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
+	if err != nil {
+		logger.Fatal("Failed to create OLAP service", "error", err)
+	}
+
 	// 创建REST服务器
-	restServer := restTransport.NewServer(ingester, querier, bufferManager, redisClient, primaryMinio, backupMinio, cfg)
+	restServer := restTransport.NewServer(olapService, cfg)
 	
 	// 设置协调器
 	restServer.SetCoordinators(writeCoord, queryCoord)

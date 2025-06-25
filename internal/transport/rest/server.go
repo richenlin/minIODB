@@ -1,7 +1,6 @@
 package rest
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -9,31 +8,22 @@ import (
 	"time"
 
 	olapv1 "minIODB/api/proto/olap/v1"
-	"minIODB/internal/buffer"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
-	"minIODB/internal/ingest"
 	"minIODB/internal/metrics"
-	"minIODB/internal/query"
 	"minIODB/internal/security"
-	"minIODB/internal/storage"
+	"minIODB/internal/service"
 
 	"github.com/gin-gonic/gin"
-	"github.com/minio/minio-go/v7"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server RESTful API服务器
 type Server struct {
-	ingester         *ingest.Ingester
-	querier          *query.Querier
-	bufferManager    *buffer.Manager
+	olapService      *service.OlapService
 	writeCoordinator *coordinator.WriteCoordinator
 	queryCoordinator *coordinator.QueryCoordinator
-	redisClient      *storage.RedisClient
-	primaryMinio     storage.Uploader
-	backupMinio      storage.Uploader
 	cfg              *config.Config
 	router           *gin.Engine
 	server           *http.Server
@@ -117,8 +107,39 @@ type RecoverDataResponse struct {
 	RecoveredKeys  []string `json:"recovered_keys"` // 恢复的数据键列表
 }
 
+// StatsResponse 统计信息响应
+type StatsResponse struct {
+	Timestamp   string            `json:"timestamp"`
+	BufferStats map[string]int64  `json:"buffer_stats"`
+	RedisStats  map[string]int64  `json:"redis_stats"`
+	MinioStats  map[string]int64  `json:"minio_stats"`
+}
+
+// HealthResponse 健康检查响应
+type HealthResponse struct {
+	Status    string            `json:"status"`
+	Timestamp string            `json:"timestamp"`
+	Version   string            `json:"version"`
+	Details   map[string]string `json:"details"`
+}
+
+// NodeInfo 节点信息
+type NodeInfo struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Type     string `json:"type"`
+	Address  string `json:"address"`
+	LastSeen int64  `json:"last_seen"`
+}
+
+// NodesResponse 节点列表响应
+type NodesResponse struct {
+	Nodes []NodeInfo `json:"nodes"`
+	Total int32      `json:"total"`
+}
+
 // NewServer 创建新的REST服务器
-func NewServer(ingester *ingest.Ingester, querier *query.Querier, bufferManager *buffer.Manager, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader, cfg *config.Config) *Server {
+func NewServer(olapService *service.OlapService, cfg *config.Config) *Server {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
@@ -143,12 +164,7 @@ func NewServer(ingester *ingest.Ingester, querier *query.Querier, bufferManager 
 	securityMiddleware := security.NewSecurityMiddleware(authManager)
 
 	server := &Server{
-		ingester:           ingester,
-		querier:            querier,
-		bufferManager:      bufferManager,
-		redisClient:        redisClient,
-		primaryMinio:       primaryMinio,
-		backupMinio:        backupMinio,
+		olapService:        olapService,
 		cfg:                cfg,
 		router:             router,
 		authManager:        authManager,
@@ -202,81 +218,70 @@ func (s *Server) setupRoutes() {
 			// 数据查询
 			authRequired.POST("/query", s.queryData)
 			
-			// 手动备份
+			// 备份相关
 			authRequired.POST("/backup/trigger", s.triggerBackup)
+			authRequired.POST("/backup/recover", s.recoverData)
 			
-			// 数据恢复
-			authRequired.POST("/recover", s.recoverData)
-			
-			// 系统状态
+			// 系统信息
 			authRequired.GET("/stats", s.getStats)
-			
-			// 节点信息
 			authRequired.GET("/nodes", s.getNodes)
 		}
 	}
 }
 
-// healthCheck 健康检查端点
+// healthCheck 健康检查
 func (s *Server) healthCheck(c *gin.Context) {
-	// 记录HTTP指标
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/health")
-	
-	// 检查Redis连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	if err := s.redisClient.Ping(ctx); err != nil {
-		httpMetrics.Finish("503")
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "redis_unavailable",
-			Code:    503,
-			Message: "Redis connection failed",
+	restMetrics := metrics.NewRESTMetrics("HealthCheck")
+	defer restMetrics.Finish("success")
+
+	// 委托给service层处理
+	grpcResp, err := s.olapService.HealthCheck(c.Request.Context(), &olapv1.HealthCheckRequest{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "internal_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Health check failed: %v", err),
 		})
 		return
 	}
 
-	httpMetrics.Finish("200")
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "healthy",
-		"timestamp": time.Now().Format(time.RFC3339),
-		"version":   "1.0.0",
-	})
+	// 转换为REST响应格式
+	response := HealthResponse{
+		Status:    grpcResp.Status,
+		Timestamp: grpcResp.Timestamp,
+		Version:   grpcResp.Version,
+		Details:   grpcResp.Details,
+	}
+
+	if grpcResp.Status == "healthy" {
+		c.JSON(http.StatusOK, response)
+	} else {
+		c.JSON(http.StatusServiceUnavailable, response)
+	}
 }
 
-// writeData 处理数据写入请求
+// writeData 写入数据
 func (s *Server) writeData(c *gin.Context) {
-	// 记录HTTP指标
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/data")
-	
+	restMetrics := metrics.NewRESTMetrics("WriteData")
+	defer restMetrics.Finish("success")
+
 	var req WriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "invalid_request",
-			Code:    400,
-			Message: err.Error(),
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
 		})
 		return
-	}
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.GetUserFromContext(c); ok {
-			log.Printf("Write request from user: %s (ID: %s) for data ID: %s", user.Username, user.ID, req.ID)
-		}
-	} else {
-		log.Printf("Received Write request for ID: %s", req.ID)
 	}
 
 	// 转换为gRPC请求格式
 	payloadStruct, err := structpb.NewStruct(req.Payload)
 	if err != nil {
-		httpMetrics.Finish("500")
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "payload_conversion_error",
-			Code:    500,
-			Message: "Failed to convert payload",
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "payload_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid payload format: %v", err),
 		})
 		return
 	}
@@ -287,438 +292,258 @@ func (s *Server) writeData(c *gin.Context) {
 		Payload:   payloadStruct,
 	}
 
-	// 执行写入
-	err = s.ingester.IngestData(grpcReq)
+	// 委托给service层处理
+	grpcResp, err := s.olapService.Write(c.Request.Context(), grpcReq)
 	if err != nil {
-		log.Printf("Failed to ingest data: %v", err)
-		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "ingest_error",
-			Code:    500,
-			Message: "Failed to ingest data",
+			Error:   "write_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Write operation failed: %v", err),
 		})
 		return
 	}
 
-	httpMetrics.Finish("200")
-	c.JSON(http.StatusOK, WriteResponse{
-		Success: true,
-		Message: "Data written successfully",
-		NodeID:  s.cfg.Server.NodeID,
-	})
+	// 转换为REST响应格式
+	response := WriteResponse{
+		Success: grpcResp.Success,
+		Message: grpcResp.Message,
+		NodeID:  s.cfg.Server.NodeID, // 添加节点ID信息
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
-// queryData 处理数据查询请求
+// queryData 查询数据
 func (s *Server) queryData(c *gin.Context) {
-	// 记录HTTP指标
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/query")
-	
+	restMetrics := metrics.NewRESTMetrics("QueryData")
+	defer restMetrics.Finish("success")
+
 	var req QueryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "invalid_request",
-			Code:    400,
-			Message: err.Error(),
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
 		})
 		return
 	}
 
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.GetUserFromContext(c); ok {
-			log.Printf("Query request from user: %s (ID: %s) with SQL: %s", user.Username, user.ID, req.SQL)
-		}
-	} else {
-		log.Printf("Received Query request with SQL: %s", req.SQL)
+	// 转换为gRPC请求格式
+	grpcReq := &olapv1.QueryRequest{
+		Sql: req.SQL,
 	}
 
-	// 执行查询
-	result, err := s.querier.ExecuteQuery(req.SQL)
+	// 委托给service层处理
+	grpcResp, err := s.olapService.Query(c.Request.Context(), grpcReq)
 	if err != nil {
-		log.Printf("Failed to execute query: %v", err)
-		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "query_execution_failed",
-			Code:    500,
-			Message: fmt.Sprintf("Failed to execute query: %v", err),
+			Error:   "query_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Query execution failed: %v", err),
 		})
 		return
 	}
 
-	httpMetrics.Finish("200")
-	c.JSON(http.StatusOK, QueryResponse{
-		ResultJSON: result,
-	})
+	// 转换为REST响应格式
+	response := QueryResponse{
+		ResultJSON: grpcResp.ResultJson,
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
-// triggerBackup 处理手动备份请求
+// triggerBackup 触发备份
 func (s *Server) triggerBackup(c *gin.Context) {
-	// 记录HTTP指标
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/backup/trigger")
-	
+	restMetrics := metrics.NewRESTMetrics("TriggerBackup")
+	defer restMetrics.Finish("success")
+
 	var req TriggerBackupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "invalid_request",
-			Code:    400,
-			Message: err.Error(),
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
 		})
 		return
 	}
 
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.GetUserFromContext(c); ok {
-			log.Printf("TriggerBackup request from user: %s (ID: %s) for ID %s, Day %s", user.Username, user.ID, req.ID, req.Day)
-		}
-	} else {
-		log.Printf("Received TriggerBackup request for ID %s, Day %s", req.ID, req.Day)
+	// 转换为gRPC请求格式
+	grpcReq := &olapv1.TriggerBackupRequest{
+		Id:  req.ID,
+		Day: req.Day,
 	}
 
-	if s.backupMinio == nil {
-		httpMetrics.Finish("503")
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "backup_not_enabled",
-			Code:    503,
-			Message: "Backup is not enabled in configuration",
-		})
-		return
-	}
-
-	// 创建带超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	redisKey := fmt.Sprintf("index:id:%s:%s", req.ID, req.Day)
-	objectNames, err := s.redisClient.SMembers(ctx, redisKey)
+	// 委托给service层处理
+	grpcResp, err := s.olapService.TriggerBackup(c.Request.Context(), grpcReq)
 	if err != nil {
-		log.Printf("Failed to get objects from redis: %v", err)
-		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "redis_query_failed",
-			Code:    500,
-			Message: "Failed to query objects from Redis",
+			Error:   "backup_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Backup operation failed: %v", err),
 		})
 		return
 	}
 
-	if len(objectNames) == 0 {
-		httpMetrics.Finish("200")
-		c.JSON(http.StatusOK, TriggerBackupResponse{
-			Success:       true,
-			Message:       "No objects found to back up",
-			FilesBackedUp: 0,
-		})
-		return
+	// 转换为REST响应格式
+	response := TriggerBackupResponse{
+		Success:       grpcResp.Success,
+		Message:       grpcResp.Message,
+		FilesBackedUp: grpcResp.FilesBackedUp,
 	}
 
-	var successCount int32 = 0
-	for _, objName := range objectNames {
-		src := minio.CopySrcOptions{
-			Bucket: "olap-data", // Primary bucket
-			Object: objName,
-		}
-		dst := minio.CopyDestOptions{
-			Bucket: s.cfg.Backup.Minio.Bucket,
-			Object: objName,
-		}
-		_, err := s.backupMinio.CopyObject(ctx, dst, src)
-		if err != nil {
-			log.Printf("ERROR: failed to back up object %s: %v", objName, err)
-			// Continue with other objects
-		} else {
-			successCount++
-		}
-	}
-
-	httpMetrics.Finish("200")
-	c.JSON(http.StatusOK, TriggerBackupResponse{
-		Success:       true,
-		Message:       fmt.Sprintf("Backup process completed. Backed up %d files.", successCount),
-		FilesBackedUp: successCount,
-	})
+	c.JSON(http.StatusOK, response)
 }
 
-// getStats 获取系统统计信息
-func (s *Server) getStats(c *gin.Context) {
-	stats := map[string]interface{}{
-		"timestamp": time.Now().Format(time.RFC3339),
-		"buffer_stats": map[string]interface{}{
-			"size": s.bufferManager.Size(),
-		},
-		"redis_stats": map[string]interface{}{
-			"connected": true,
-		},
-	}
-
-	c.JSON(http.StatusOK, stats)
-}
-
-// getNodes 获取集群节点信息
-func (s *Server) getNodes(c *gin.Context) {
-	// 这里需要从服务注册中获取节点信息
-	// 由于没有直接访问serviceRegistry的方式，返回基本信息
-	nodes := []map[string]interface{}{
-		{
-			"id":     s.cfg.Server.NodeID,
-			"status": "healthy",
-			"type":   "local",
-		},
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"nodes": nodes,
-		"total": len(nodes),
-	})
-}
-
-// recoverData 处理数据恢复请求
+// recoverData 恢复数据
 func (s *Server) recoverData(c *gin.Context) {
-	// 记录HTTP指标
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/recover")
-	
+	restMetrics := metrics.NewRESTMetrics("RecoverData")
+	defer restMetrics.Finish("success")
+
 	var req RecoverDataRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "invalid_request",
-			Code:    400,
-			Message: err.Error(),
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
 		})
 		return
 	}
 
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.GetUserFromContext(c); ok {
-			log.Printf("RecoverData request from user: %s (ID: %s)", user.Username, user.ID)
+	// 转换为gRPC请求格式
+	grpcReq := &olapv1.RecoverDataRequest{
+		ForceOverwrite: req.ForceOverwrite,
+	}
+
+	// 根据请求类型设置恢复模式
+	if req.IDRange != nil {
+		grpcReq.RecoveryMode = &olapv1.RecoverDataRequest_IdRange{
+			IdRange: &olapv1.IdRangeFilter{
+				Ids:       req.IDRange.IDs,
+				IdPattern: req.IDRange.IDPattern,
+			},
 		}
-	} else {
-		log.Printf("Received RecoverData request")
-	}
-
-	if s.backupMinio == nil {
-		httpMetrics.Finish("503")
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "backup_not_enabled",
-			Code:    503,
-			Message: "Backup is not enabled in configuration",
-		})
-		return
-	}
-
-	// 创建带超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	var dataKeys []string
-	var err error
-
-	// 根据不同的恢复模式获取需要恢复的数据键
-	if req.NodeID != nil {
-		dataKeys, err = s.getDataKeysByNodeId(ctx, *req.NodeID)
-	} else if req.IDRange != nil {
-		dataKeys, err = s.getDataKeysByIdRange(ctx, req.IDRange)
 	} else if req.TimeRange != nil {
-		dataKeys, err = s.getDataKeysByTimeRange(ctx, req.TimeRange)
+		grpcReq.RecoveryMode = &olapv1.RecoverDataRequest_TimeRange{
+			TimeRange: &olapv1.TimeRangeFilter{
+				StartDate: req.TimeRange.StartDate,
+				EndDate:   req.TimeRange.EndDate,
+				Ids:       req.TimeRange.IDs,
+			},
+		}
 	} else {
-		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "invalid_recovery_mode",
-			Code:    400,
-			Message: "Must specify one of: node_id, id_range, or time_range",
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: "Either id_range or time_range must be specified",
 		})
 		return
 	}
 
+	// 委托给service层处理
+	grpcResp, err := s.olapService.RecoverData(c.Request.Context(), grpcReq)
 	if err != nil {
-		log.Printf("Failed to get data keys: %v", err)
-		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "data_key_query_failed",
-			Code:    500,
-			Message: "Failed to query data keys for recovery",
+			Error:   "recovery_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Data recovery failed: %v", err),
 		})
 		return
 	}
 
-	if len(dataKeys) == 0 {
-		httpMetrics.Finish("200")
-		c.JSON(http.StatusOK, RecoverDataResponse{
-			Success:        true,
-			Message:        "No data found to recover",
-			FilesRecovered: 0,
-			RecoveredKeys:  []string{},
-		})
-		return
+	// 转换为REST响应格式
+	response := RecoverDataResponse{
+		Success:        grpcResp.Success,
+		Message:        grpcResp.Message,
+		FilesRecovered: grpcResp.FilesRecovered,
+		RecoveredKeys:  grpcResp.RecoveredKeys,
 	}
 
-	log.Printf("Found %d data keys to recover", len(dataKeys))
-
-	var totalFilesRecovered int32 = 0
-	var recoveredKeys []string
-
-	// 对每个数据键进行恢复
-	for _, dataKey := range dataKeys {
-		filesRecovered, err := s.recoverDataForKey(ctx, dataKey, req.ForceOverwrite)
-		if err != nil {
-			log.Printf("ERROR: failed to recover data for key %s: %v", dataKey, err)
-			continue
-		}
-		totalFilesRecovered += filesRecovered
-		if filesRecovered > 0 {
-			recoveredKeys = append(recoveredKeys, dataKey)
-		}
-	}
-
-	httpMetrics.Finish("200")
-	c.JSON(http.StatusOK, RecoverDataResponse{
-		Success:        true,
-		Message:        fmt.Sprintf("Recovery process completed. Recovered %d files from %d keys.", totalFilesRecovered, len(recoveredKeys)),
-		FilesRecovered: totalFilesRecovered,
-		RecoveredKeys:  recoveredKeys,
-	})
+	c.JSON(http.StatusOK, response)
 }
 
-// Start 启动REST服务器
+// getStats 获取统计信息
+func (s *Server) getStats(c *gin.Context) {
+	restMetrics := metrics.NewRESTMetrics("GetStats")
+	defer restMetrics.Finish("success")
+
+	// 委托给service层处理
+	grpcResp, err := s.olapService.GetStats(c.Request.Context(), &olapv1.GetStatsRequest{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "stats_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Failed to get stats: %v", err),
+		})
+		return
+	}
+
+	// 转换为REST响应格式
+	response := StatsResponse{
+		Timestamp:   grpcResp.Timestamp,
+		BufferStats: grpcResp.BufferStats,
+		RedisStats:  grpcResp.RedisStats,
+		MinioStats:  grpcResp.MinioStats,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// getNodes 获取节点信息
+func (s *Server) getNodes(c *gin.Context) {
+	restMetrics := metrics.NewRESTMetrics("GetNodes")
+	defer restMetrics.Finish("success")
+
+	// 委托给service层处理
+	grpcResp, err := s.olapService.GetNodes(c.Request.Context(), &olapv1.GetNodesRequest{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "nodes_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Failed to get nodes: %v", err),
+		})
+		return
+	}
+
+	// 转换为REST响应格式
+	var nodes []NodeInfo
+	for _, node := range grpcResp.Nodes {
+		nodes = append(nodes, NodeInfo{
+			ID:       node.Id,
+			Status:   node.Status,
+			Type:     node.Type,
+			Address:  node.Address,
+			LastSeen: node.LastSeen,
+		})
+	}
+
+	response := NodesResponse{
+		Nodes: nodes,
+		Total: grpcResp.Total,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// Start 启动服务器
 func (s *Server) Start(port string) error {
 	s.server = &http.Server{
 		Addr:    port,
 		Handler: s.router,
 	}
-	
-	log.Printf("Starting REST server on port %s", port)
-	return s.server.ListenAndServe()
+
+	log.Printf("REST server starting on %s", port)
+	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("failed to start REST server: %w", err)
+	}
+
+	return nil
 }
 
 // Stop 停止服务器
 func (s *Server) Stop(ctx context.Context) error {
+	log.Println("Stopping REST server...")
 	if s.server != nil {
 		return s.server.Shutdown(ctx)
 	}
 	return nil
-}
-
-// getDataKeysByNodeId 根据节点ID获取数据键
-func (s *Server) getDataKeysByNodeId(ctx context.Context, nodeId string) ([]string, error) {
-	nodeDataKey := fmt.Sprintf("node:data:%s", nodeId)
-	return s.redisClient.SMembers(ctx, nodeDataKey)
-}
-
-// getDataKeysByIdRange 根据ID范围获取数据键
-func (s *Server) getDataKeysByIdRange(ctx context.Context, idRange *IDRangeFilter) ([]string, error) {
-	var allKeys []string
-
-	// 处理具体的ID列表
-	for _, id := range idRange.IDs {
-		pattern := fmt.Sprintf("index:id:%s:*", id)
-		keys, err := s.redisClient.Keys(ctx, pattern)
-		if err != nil {
-			return nil, err
-		}
-		allKeys = append(allKeys, keys...)
-	}
-
-	// 处理ID模式匹配
-	if idRange.IDPattern != "" {
-		pattern := fmt.Sprintf("index:id:%s:*", idRange.IDPattern)
-		keys, err := s.redisClient.Keys(ctx, pattern)
-		if err != nil {
-			return nil, err
-		}
-		allKeys = append(allKeys, keys...)
-	}
-
-	return allKeys, nil
-}
-
-// getDataKeysByTimeRange 根据时间范围获取数据键
-func (s *Server) getDataKeysByTimeRange(ctx context.Context, timeRange *TimeRangeFilter) ([]string, error) {
-	var allKeys []string
-
-	// 解析时间范围
-	startDate, err := time.Parse("2006-01-02", timeRange.StartDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid start date format: %w", err)
-	}
-	endDate, err := time.Parse("2006-01-02", timeRange.EndDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid end date format: %w", err)
-	}
-
-	// 生成日期范围内的所有日期
-	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
-		dayStr := d.Format("2006-01-02")
-
-		if len(timeRange.IDs) > 0 {
-			// 如果指定了ID列表，只查询这些ID
-			for _, id := range timeRange.IDs {
-				pattern := fmt.Sprintf("index:id:%s:%s", id, dayStr)
-				keys, err := s.redisClient.Keys(ctx, pattern)
-				if err != nil {
-					return nil, err
-				}
-				allKeys = append(allKeys, keys...)
-			}
-		} else {
-			// 否则查询该日期的所有数据
-			pattern := fmt.Sprintf("index:id:*:%s", dayStr)
-			keys, err := s.redisClient.Keys(ctx, pattern)
-			if err != nil {
-				return nil, err
-			}
-			allKeys = append(allKeys, keys...)
-		}
-	}
-
-	return allKeys, nil
-}
-
-// recoverDataForKey 恢复特定数据键的所有文件
-func (s *Server) recoverDataForKey(ctx context.Context, dataKey string, forceOverwrite bool) (int32, error) {
-	// 从备份存储获取文件列表
-	backupFiles, err := s.redisClient.SMembers(ctx, dataKey)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get backup files from redis: %w", err)
-	}
-
-	if len(backupFiles) == 0 {
-		log.Printf("No backup files found for key %s", dataKey)
-		return 0, nil
-	}
-
-	var successCount int32 = 0
-
-	for _, fileName := range backupFiles {
-		// 检查主存储中是否已存在该文件
-		if !forceOverwrite {
-			exists, err := s.primaryMinio.ObjectExists(ctx, s.cfg.Minio.Bucket, fileName)
-			if err == nil && exists {
-				log.Printf("File %s already exists in primary storage, skipping (use force_overwrite to override)", fileName)
-				continue
-			}
-		}
-
-		// 从备份存储获取数据
-		data, err := s.backupMinio.GetObject(ctx, s.cfg.Backup.Minio.Bucket, fileName, minio.GetObjectOptions{})
-		if err != nil {
-			log.Printf("ERROR: failed to get backup file %s: %v", fileName, err)
-			continue
-		}
-
-		// 恢复到主存储
-		reader := bytes.NewReader(data)
-		_, err = s.primaryMinio.PutObject(ctx, s.cfg.Minio.Bucket, fileName, reader, int64(len(data)), minio.PutObjectOptions{})
-		if err != nil {
-			log.Printf("ERROR: failed to recover file %s: %v", fileName, err)
-			continue
-		}
-
-		successCount++
-		log.Printf("Successfully recovered file %s", fileName)
-	}
-
-	return successCount, nil
 } 
