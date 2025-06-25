@@ -4,22 +4,26 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config holds the application configuration
+// Config 应用配置
 type Config struct {
-	Redis  RedisConfig
-	Minio  MinioConfig
-	Server ServerConfig
-	Backup BackupConfig
+	Redis      RedisConfig      `mapstructure:"redis"`
+	Minio      MinioConfig      `mapstructure:"minio"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Backup     BackupConfig     `mapstructure:"backup"`
+	Buffer     BufferConfig     `mapstructure:"buffer"`
+	Log        LogConfig        `mapstructure:"log"`
+	Monitoring MonitoringConfig `mapstructure:"monitoring"`
+	Security   SecurityConfig   `mapstructure:"security"`
 }
 
-// RedisConfig holds Redis connection details
+// RedisConfig Redis配置
 type RedisConfig struct {
-	Addr     string
-	Password string
-	DB       int
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
 }
 
-// MinioConfig holds Minio connection details
+// MinioConfig MinIO配置
 type MinioConfig struct {
 	Endpoint        string `mapstructure:"endpoint"`
 	AccessKeyID     string `mapstructure:"access_key_id"`
@@ -28,31 +32,103 @@ type MinioConfig struct {
 	Bucket          string `mapstructure:"bucket"`
 }
 
-// ServerConfig holds server configuration
+// ServerConfig 服务器配置
 type ServerConfig struct {
-	GrpcPort string `mapstructure:"grpc_port"`
-	RestPort string `mapstructure:"rest_port"`
+	GRPCPort string `mapstructure:"grpc_port"`
+	RESTPort string `mapstructure:"rest_port"`
+	NodeID   string `mapstructure:"node_id"`
 }
 
-// BackupConfig holds the data backup configuration
+// BackupConfig 备份配置
 type BackupConfig struct {
-	Enabled bool
-	Minio   MinioConfig
+	Enabled bool        `mapstructure:"enabled"`
+	Minio   MinioConfig `mapstructure:"minio"`
 }
 
-// LoadConfig loads configuration from a file
-func LoadConfig(path string) (config Config, err error) {
-	viper.AddConfigPath(path)
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
+// BufferConfig 缓冲区配置
+type BufferConfig struct {
+	MaxSize      int `mapstructure:"max_size"`
+	FlushTimeout int `mapstructure:"flush_timeout"`
+	BatchSize    int `mapstructure:"batch_size"`
+}
 
+// LogConfig 日志配置
+type LogConfig struct {
+	Level  string `mapstructure:"level"`
+	Format string `mapstructure:"format"`
+	Output string `mapstructure:"output"`
+	File   string `mapstructure:"file"`
+}
+
+// MonitoringConfig 监控配置
+type MonitoringConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`
+	Port       string `mapstructure:"port"`
+	Path       string `mapstructure:"path"`
+	Prometheus bool   `mapstructure:"prometheus"`
+}
+
+// SecurityConfig 安全配置
+type SecurityConfig struct {
+	EnableTLS  bool   `mapstructure:"enable_tls"`
+	CertFile   string `mapstructure:"cert_file"`
+	KeyFile    string `mapstructure:"key_file"`
+	EnableAuth bool   `mapstructure:"enable_auth"`
+	AuthToken  string `mapstructure:"auth_token"`
+}
+
+// LoadConfig 加载配置文件
+func LoadConfig(path string) (*Config, error) {
+	viper.SetConfigFile(path)
 	viper.AutomaticEnv()
 
-	err = viper.ReadInConfig()
-	if err != nil {
-		return
+	if err := viper.ReadInConfig(); err != nil {
+		return nil, err
 	}
 
-	err = viper.Unmarshal(&config)
-	return
+	config := &Config{}
+	if err := viper.Unmarshal(config); err != nil {
+		return nil, err
+	}
+
+	setDefaults(config)
+	return config, nil
+}
+
+// setDefaults 设置默认值
+func setDefaults(config *Config) {
+	// Buffer defaults
+	if config.Buffer.MaxSize == 0 {
+		config.Buffer.MaxSize = 1000
+	}
+	if config.Buffer.FlushTimeout == 0 {
+		config.Buffer.FlushTimeout = 30
+	}
+	if config.Buffer.BatchSize == 0 {
+		config.Buffer.BatchSize = 100
+	}
+
+	// Log defaults
+	if config.Log.Level == "" {
+		config.Log.Level = "info"
+	}
+	if config.Log.Format == "" {
+		config.Log.Format = "json"
+	}
+	if config.Log.Output == "" {
+		config.Log.Output = "stdout"
+	}
+
+	// Monitoring defaults
+	if config.Monitoring.Port == "" {
+		config.Monitoring.Port = ":9090"
+	}
+	if config.Monitoring.Path == "" {
+		config.Monitoring.Path = "/metrics"
+	}
+
+	// Server defaults
+	if config.Server.NodeID == "" {
+		config.Server.NodeID = "node-1"
+	}
 }

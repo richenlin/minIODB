@@ -6,17 +6,23 @@ toolchain go1.24.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0
+	github.com/gin-gonic/gin v1.9.1
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/go-redis/redismock/v8 v8.11.5
 	github.com/golang/mock v1.6.0
+	github.com/hashicorp/consul/api v1.25.1
 	github.com/marcboeker/go-duckdb v1.8.5
 	github.com/minio/minio-go/v7 v7.0.94
+	github.com/prometheus/client_golang v1.17.0
+	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
 	github.com/xitongsys/parquet-go v1.6.2
 	github.com/xitongsys/parquet-go-source v0.0.0-20200817004010-026bad9b25d0
+	go.etcd.io/etcd/client/v3 v3.5.10
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
