@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/spf13/viper"
+	"time"
 )
 
 // Config 应用配置
@@ -14,6 +15,7 @@ type Config struct {
 	Log        LogConfig        `mapstructure:"log"`
 	Monitoring MonitoringConfig `mapstructure:"monitoring"`
 	Security   SecurityConfig   `mapstructure:"security"`
+	Pool       PoolConfig       `mapstructure:"pool"`
 }
 
 // RedisConfig Redis配置
@@ -21,6 +23,21 @@ type RedisConfig struct {
 	Addr     string `mapstructure:"addr"`
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
+	Bucket   string `mapstructure:"bucket"`
+	
+	// 连接池配置
+	PoolSize       int           `mapstructure:"pool_size"`        // 连接池大小
+	MinIdleConns   int           `mapstructure:"min_idle_conns"`   // 最小空闲连接数
+	MaxConnAge     time.Duration `mapstructure:"max_conn_age"`     // 连接最大生存时间
+	PoolTimeout    time.Duration `mapstructure:"pool_timeout"`     // 获取连接超时
+	IdleTimeout    time.Duration `mapstructure:"idle_timeout"`     // 空闲连接超时
+	IdleCheckFreq  time.Duration `mapstructure:"idle_check_freq"`  // 空闲连接检查频率
+	DialTimeout    time.Duration `mapstructure:"dial_timeout"`     // 连接超时
+	ReadTimeout    time.Duration `mapstructure:"read_timeout"`     // 读取超时
+	WriteTimeout   time.Duration `mapstructure:"write_timeout"`    // 写入超时
+	MaxRetries     int           `mapstructure:"max_retries"`      // 最大重试次数
+	MinRetryBackoff time.Duration `mapstructure:"min_retry_backoff"` // 最小重试间隔
+	MaxRetryBackoff time.Duration `mapstructure:"max_retry_backoff"` // 最大重试间隔
 }
 
 // MinioConfig MinIO配置
@@ -29,7 +46,29 @@ type MinioConfig struct {
 	AccessKeyID     string `mapstructure:"access_key_id"`
 	SecretAccessKey string `mapstructure:"secret_access_key"`
 	UseSSL          bool   `mapstructure:"use_ssl"`
-	Bucket          string `mapstructure:"bucket"`
+	Region          string `mapstructure:"region"`
+	
+	// HTTP连接池配置
+	MaxIdleConns          int           `mapstructure:"max_idle_conns"`           // 最大空闲连接数
+	MaxIdleConnsPerHost   int           `mapstructure:"max_idle_conns_per_host"`  // 每个主机最大空闲连接数
+	MaxConnsPerHost       int           `mapstructure:"max_conns_per_host"`       // 每个主机最大连接数
+	IdleConnTimeout       time.Duration `mapstructure:"idle_conn_timeout"`        // 空闲连接超时
+	
+	// 超时配置
+	DialTimeout            time.Duration `mapstructure:"dial_timeout"`             // 连接超时
+	TLSHandshakeTimeout    time.Duration `mapstructure:"tls_handshake_timeout"`    // TLS握手超时
+	ResponseHeaderTimeout  time.Duration `mapstructure:"response_header_timeout"`  // 响应头超时
+	ExpectContinueTimeout  time.Duration `mapstructure:"expect_continue_timeout"`  // Expect Continue超时
+	
+	// 重试和请求配置
+	MaxRetries     int           `mapstructure:"max_retries"`      // 最大重试次数
+	RetryDelay     time.Duration `mapstructure:"retry_delay"`      // 重试延迟
+	RequestTimeout time.Duration `mapstructure:"request_timeout"`  // 请求超时
+	
+	// Keep-Alive配置
+	KeepAlive         time.Duration `mapstructure:"keep_alive"`          // Keep-Alive时间
+	DisableKeepAlive  bool          `mapstructure:"disable_keep_alive"`  // 禁用Keep-Alive
+	DisableCompression bool         `mapstructure:"disable_compression"` // 禁用压缩
 }
 
 // ServerConfig 服务器配置
@@ -48,9 +87,22 @@ type BackupConfig struct {
 
 // BufferConfig 缓冲区配置
 type BufferConfig struct {
-	MaxSize      int `mapstructure:"max_size"`
-	FlushTimeout int `mapstructure:"flush_timeout"`
-	BatchSize    int `mapstructure:"batch_size"`
+	// 基础配置
+	BufferSize    int           `mapstructure:"buffer_size"`    // 缓冲区大小
+	FlushInterval time.Duration `mapstructure:"flush_interval"` // 刷新间隔
+	
+	// 并发配置
+	WorkerPoolSize   int           `mapstructure:"worker_pool_size"`   // 工作池大小
+	TaskQueueSize    int           `mapstructure:"task_queue_size"`    // 任务队列大小
+	BatchFlushSize   int           `mapstructure:"batch_flush_size"`   // 批量刷新大小
+	EnableBatching   bool          `mapstructure:"enable_batching"`    // 启用批量处理
+	FlushTimeout     time.Duration `mapstructure:"flush_timeout"`      // 刷新超时
+	MaxRetries       int           `mapstructure:"max_retries"`        // 最大重试次数
+	RetryDelay       time.Duration `mapstructure:"retry_delay"`        // 重试延迟
+	
+	// 性能优化配置
+	EnableConcurrent bool `mapstructure:"enable_concurrent"` // 启用并发缓冲区
+	EnableMetrics    bool `mapstructure:"enable_metrics"`    // 启用指标收集
 }
 
 // LogConfig 日志配置
@@ -81,6 +133,14 @@ type SecurityConfig struct {
 	EnableTLS   bool     `mapstructure:"enable_tls"`   // 是否启用TLS
 	CertFile    string   `mapstructure:"cert_file"`    // 证书文件路径
 	KeyFile     string   `mapstructure:"key_file"`     // 私钥文件路径
+}
+
+// PoolConfig 连接池配置
+type PoolConfig struct {
+	Redis          RedisConfig  `mapstructure:"redis"`
+	MinIO          MinioConfig  `mapstructure:"minio"`
+	BackupMinIO    *MinioConfig `mapstructure:"backup_minio,omitempty"` // 可选的备份MinIO配置
+	HealthCheckInterval time.Duration `mapstructure:"health_check_interval"` // 健康检查间隔
 }
 
 // LoadConfig 加载配置文件

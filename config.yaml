@@ -2,6 +2,20 @@ redis:
   addr: "localhost:6379"
   password: ""
   db: 0
+  bucket: "olap-data"
+  # 连接池配置
+  pool_size: 100              # 连接池大小
+  min_idle_conns: 10          # 最小空闲连接数
+  max_conn_age: 1800s         # 连接最大生存时间 (30分钟)
+  pool_timeout: 4s            # 获取连接超时
+  idle_timeout: 300s          # 空闲连接超时 (5分钟)
+  idle_check_freq: 60s        # 空闲连接检查频率
+  dial_timeout: 5s            # 连接超时
+  read_timeout: 3s            # 读取超时
+  write_timeout: 3s           # 写入超时
+  max_retries: 3              # 最大重试次数
+  min_retry_backoff: 8ms      # 最小重试间隔
+  max_retry_backoff: 512ms    # 最大重试间隔
 
 minio:
   endpoint: "localhost:9000"
@@ -23,18 +37,49 @@ backup:
     access_key_id: "minioadmin"
     secret_access_key: "minioadmin"
     use_ssl: false
-    bucket: "olap-backup"
+    region: "us-east-1"
+    # HTTP连接池配置
+    max_idle_conns: 100           # 最大空闲连接数
+    max_idle_conns_per_host: 50   # 每个主机最大空闲连接数
+    max_conns_per_host: 100       # 每个主机最大连接数
+    idle_conn_timeout: 90s        # 空闲连接超时
+    # 超时配置
+    dial_timeout: 30s             # 连接超时
+    tls_handshake_timeout: 10s    # TLS握手超时
+    response_header_timeout: 30s  # 响应头超时
+    expect_continue_timeout: 1s   # Expect Continue超时
+    # 重试和请求配置
+    max_retries: 3                # 最大重试次数
+    retry_delay: 100ms            # 重试延迟
+    request_timeout: 120s         # 请求超时
+    # Keep-Alive配置
+    keep_alive: 30s               # Keep-Alive时间
+    disable_keep_alive: false     # 禁用Keep-Alive
+    disable_compression: false    # 禁用压缩
 
 buffer:
-  max_size: 1000
-  flush_timeout: 30
-  batch_size: 100
+  # 基础配置
+  buffer_size: 1000           # 缓冲区大小
+  flush_interval: 30s         # 刷新间隔
+  
+  # 并发配置
+  worker_pool_size: 10        # 工作池大小
+  task_queue_size: 100        # 任务队列大小
+  batch_flush_size: 5         # 批量刷新大小
+  enable_batching: true       # 启用批量处理
+  flush_timeout: 60s          # 刷新超时
+  max_retries: 3              # 最大重试次数
+  retry_delay: 1s             # 重试延迟
+  
+  # 性能优化配置
+  enable_concurrent: true     # 启用并发缓冲区
+  enable_metrics: true        # 启用指标收集
 
 log:
   level: "info"
   format: "json"
   output: "both"
-  filename: "logs/miniodb.log"
+  filename: "logs/minIODB.log"
   max_size: 100
   max_backups: 5
   max_age: 30
@@ -42,7 +87,7 @@ log:
 
 monitoring:
   enabled: true
-  port: ":9090"
+  port: ":8082"
   path: "/metrics"
   prometheus: true
 
@@ -77,4 +122,76 @@ auth:
     - "superuser"
   user_roles:
     - "user"
-    - "api" 
+    - "api"
+
+# 连接池配置
+pool:
+  # Redis连接池配置
+  redis:
+    addr: "localhost:6379"
+    password: ""
+    db: 0
+    bucket: "olap-data"
+    pool_size: 100
+    min_idle_conns: 10
+    max_conn_age: 1800s
+    pool_timeout: 4s
+    idle_timeout: 300s
+    idle_check_freq: 60s
+    dial_timeout: 5s
+    read_timeout: 3s
+    write_timeout: 3s
+    max_retries: 3
+    min_retry_backoff: 8ms
+    max_retry_backoff: 512ms
+  
+  # MinIO连接池配置
+  minio:
+    endpoint: "localhost:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    region: "us-east-1"
+    # HTTP连接池配置
+    max_idle_conns: 100
+    max_idle_conns_per_host: 50
+    max_conns_per_host: 100
+    idle_conn_timeout: 90s
+    # 超时配置
+    dial_timeout: 30s
+    tls_handshake_timeout: 10s
+    response_header_timeout: 30s
+    expect_continue_timeout: 1s
+    # 重试和请求配置
+    max_retries: 3
+    retry_delay: 100ms
+    request_timeout: 120s
+    # Keep-Alive配置
+    keep_alive: 30s
+    disable_keep_alive: false
+    disable_compression: false
+  
+  # 备份MinIO连接池配置（可选）
+  backup_minio:
+    endpoint: "backup.localhost:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    region: "us-east-1"
+    max_idle_conns: 50
+    max_idle_conns_per_host: 25
+    max_conns_per_host: 50
+    idle_conn_timeout: 90s
+    dial_timeout: 30s
+    tls_handshake_timeout: 10s
+    response_header_timeout: 30s
+    expect_continue_timeout: 1s
+    max_retries: 3
+    retry_delay: 100ms
+    request_timeout: 120s
+    keep_alive: 30s
+    disable_keep_alive: false
+    disable_compression: false
+  
+  # 健康检查间隔
+  health_check_interval: 30s 
