@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package olap.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "minIODB/api/proto/olap/v1;olapv1";
+
+service OlapService {
+  // 写入数据
+  rpc Write (WriteRequest) returns (WriteResponse);
+  // 执行查询
+  rpc Query (QueryRequest) returns (QueryResponse);
+  // 手动触发数据备份
+  rpc TriggerBackup(TriggerBackupRequest) returns (TriggerBackupResponse);
+  // 从备份节点恢复数据
+  rpc RecoverData(RecoverDataRequest) returns (RecoverDataResponse);
+}
+
+message WriteRequest {
+  string id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  google.protobuf.Struct payload = 3;
+}
+
+message WriteResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message QueryRequest {
+  string sql = 1;
+}
+
+message QueryResponse {
+  // 结果可以用JSON字符串或者更复杂的结构表示
+  string result_json = 1;
+}
+
+message TriggerBackupRequest {
+  string id = 1;
+  string day = 2; // format: YYYY-MM-DD
+}
+
+message TriggerBackupResponse {
+  bool success = 1;
+  string message = 2;
+  int32 files_backed_up = 3;
+}
+
+message RecoverDataRequest {
+  // 恢复模式：可以按ID范围、时间范围或节点ID恢复
+  oneof recovery_mode {
+    string node_id = 1;        // 恢复特定节点的所有数据
+    IdRangeFilter id_range = 2; // 恢复特定ID范围的数据
+    TimeRangeFilter time_range = 3; // 恢复特定时间范围的数据
+  }
+  bool force_overwrite = 4; // 是否强制覆盖已存在的数据
+}
+
+message IdRangeFilter {
+  repeated string ids = 1;     // 具体的ID列表
+  string id_pattern = 2;       // ID模式匹配，如 "user-*"
+}
+
+message TimeRangeFilter {
+  string start_date = 1;       // 开始日期 YYYY-MM-DD
+  string end_date = 2;         // 结束日期 YYYY-MM-DD
+  repeated string ids = 3;     // 可选：限制特定ID
+}
+
+message RecoverDataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 files_recovered = 3;
+  repeated string recovered_keys = 4; // 恢复的数据键列表
+} 

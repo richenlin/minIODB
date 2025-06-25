@@ -1,0 +1,24 @@
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+minio:
+  endpoint: "localhost:9000"
+  access_key_id: "minioadmin"
+  secret_access_key: "minioadmin"
+  use_ssl: false
+
+server:
+  grpc_port: ":50051"
+  rest_port: ":8080"
+
+# Data backup configuration
+backup:
+  enabled: false
+  minio:
+    endpoint: "localhost:9002" # A different port for a local backup instance
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    bucket: "olap-backup" 
