@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"minIODB/internal/buffer"
 	"minIODB/internal/config"
@@ -117,8 +119,10 @@ func (q *Querier) getDataFiles(ctx context.Context, filter *QueryFilter) ([]stri
 		bufferKey := fmt.Sprintf("%s/%s", filter.ID, filter.Day)
 		bufferedRows := q.buffer.Get(bufferKey)
 		if len(bufferedRows) > 0 {
-			tempFilePath := filepath.Join("temp_parquet", fmt.Sprintf("buffer_query_%s.parquet", strings.ReplaceAll(bufferKey, "/", "_")))
-			if err := q.buffer.WriteTempParquetFile(tempFilePath, bufferedRows); err == nil {
+			tempFilePath := q.createTempFilePath(bufferKey)
+			if err := q.ensureTempDir(); err != nil {
+				log.Printf("WARN: failed to create temp directory: %v", err)
+			} else if err := q.buffer.WriteTempParquetFile(tempFilePath, bufferedRows); err == nil {
 				allFiles = append(allFiles, tempFilePath)
 				log.Printf("Wrote %d buffered rows to %s", len(bufferedRows), tempFilePath)
 			} else {
@@ -142,6 +146,10 @@ func (q *Querier) getDataFiles(ctx context.Context, filter *QueryFilter) ([]stri
 			}
 		}
 		log.Printf("Found %d files for ID %s", len(allFiles), filter.ID)
+		
+		// 获取缓冲区中该ID的所有数据
+		allBufferFiles := q.getBufferFilesForID(filter.ID)
+		allFiles = append(allFiles, allBufferFiles...)
 	} else if filter.Day != "" {
 		// 按天查询：获取该天所有ID的数据
 		pattern := fmt.Sprintf("index:id:*:%s", filter.Day)
@@ -159,6 +167,10 @@ func (q *Querier) getDataFiles(ctx context.Context, filter *QueryFilter) ([]stri
 			}
 		}
 		log.Printf("Found %d files for day %s", len(allFiles), filter.Day)
+		
+		// 获取缓冲区中该天的所有数据
+		allBufferFiles := q.getBufferFilesForDay(filter.Day)
+		allFiles = append(allFiles, allBufferFiles...)
 	} else {
 		// 全表扫描：获取所有数据（谨慎使用）
 		pattern := "index:id:*"
@@ -176,9 +188,108 @@ func (q *Querier) getDataFiles(ctx context.Context, filter *QueryFilter) ([]stri
 			}
 		}
 		log.Printf("Full table scan: found %d files", len(allFiles))
+		
+		// 获取缓冲区中的所有数据（全表扫描）
+		allBufferFiles := q.getAllBufferFiles()
+		allFiles = append(allFiles, allBufferFiles...)
 	}
 	
 	return allFiles, nil
+}
+
+// getBufferFilesForID 获取指定ID在缓冲区中的所有数据文件
+func (q *Querier) getBufferFilesForID(id string) []string {
+	var bufferFiles []string
+	
+	// 获取缓冲区中所有匹配该ID的键
+	allBufferKeys := q.buffer.GetAllKeys()
+	for _, bufferKey := range allBufferKeys {
+		// bufferKey格式为 "id/day"
+		if strings.HasPrefix(bufferKey, id+"/") {
+			bufferedRows := q.buffer.Get(bufferKey)
+			if len(bufferedRows) > 0 {
+				tempFilePath := q.createTempFilePath(bufferKey)
+				if err := q.ensureTempDir(); err != nil {
+					log.Printf("WARN: failed to create temp directory: %v", err)
+					continue
+				}
+				if err := q.buffer.WriteTempParquetFile(tempFilePath, bufferedRows); err == nil {
+					bufferFiles = append(bufferFiles, tempFilePath)
+					log.Printf("Wrote %d buffered rows for ID %s to %s", len(bufferedRows), id, tempFilePath)
+				} else {
+					log.Printf("WARN: could not write buffer to temp parquet file for ID %s: %v", id, err)
+				}
+			}
+		}
+	}
+	
+	return bufferFiles
+}
+
+// getBufferFilesForDay 获取指定日期在缓冲区中的所有数据文件
+func (q *Querier) getBufferFilesForDay(day string) []string {
+	var bufferFiles []string
+	
+	// 获取缓冲区中所有匹配该日期的键
+	allBufferKeys := q.buffer.GetAllKeys()
+	for _, bufferKey := range allBufferKeys {
+		// bufferKey格式为 "id/day"
+		if strings.HasSuffix(bufferKey, "/"+day) {
+			bufferedRows := q.buffer.Get(bufferKey)
+			if len(bufferedRows) > 0 {
+				tempFilePath := q.createTempFilePath(bufferKey)
+				if err := q.ensureTempDir(); err != nil {
+					log.Printf("WARN: failed to create temp directory: %v", err)
+					continue
+				}
+				if err := q.buffer.WriteTempParquetFile(tempFilePath, bufferedRows); err == nil {
+					bufferFiles = append(bufferFiles, tempFilePath)
+					log.Printf("Wrote %d buffered rows for day %s to %s", len(bufferedRows), day, tempFilePath)
+				} else {
+					log.Printf("WARN: could not write buffer to temp parquet file for day %s: %v", day, err)
+				}
+			}
+		}
+	}
+	
+	return bufferFiles
+}
+
+// getAllBufferFiles 获取缓冲区中的所有数据文件（用于全表扫描）
+func (q *Querier) getAllBufferFiles() []string {
+	var bufferFiles []string
+	
+	// 获取缓冲区中所有的键
+	allBufferKeys := q.buffer.GetAllKeys()
+	for _, bufferKey := range allBufferKeys {
+		bufferedRows := q.buffer.Get(bufferKey)
+		if len(bufferedRows) > 0 {
+			tempFilePath := q.createTempFilePath(bufferKey)
+			if err := q.ensureTempDir(); err != nil {
+				log.Printf("WARN: failed to create temp directory: %v", err)
+				continue
+			}
+			if err := q.buffer.WriteTempParquetFile(tempFilePath, bufferedRows); err == nil {
+				bufferFiles = append(bufferFiles, tempFilePath)
+				log.Printf("Wrote %d buffered rows for full scan to %s", len(bufferedRows), tempFilePath)
+			} else {
+				log.Printf("WARN: could not write buffer to temp parquet file for full scan: %v", err)
+			}
+		}
+	}
+	
+	return bufferFiles
+}
+
+// createTempFilePath 创建临时文件路径
+func (q *Querier) createTempFilePath(bufferKey string) string {
+	safeKey := strings.ReplaceAll(bufferKey, "/", "_")
+	return filepath.Join("temp_parquet", fmt.Sprintf("buffer_query_%s_%d.parquet", safeKey, time.Now().UnixNano()))
+}
+
+// ensureTempDir 确保临时目录存在
+func (q *Querier) ensureTempDir() error {
+	return os.MkdirAll("temp_parquet", 0755)
 }
 
 // ExecuteQuery performs the actual query against buffer and persistent storage.
@@ -202,7 +313,26 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 		return "[]", nil // No data found, return empty JSON array
 	}
 
-	// 3. 构造并执行最终的DuckDB查询
+	// 3. 记录临时文件以便后续清理
+	var tempFiles []string
+	for _, file := range allFiles {
+		if strings.HasPrefix(file, "temp_parquet/") {
+			tempFiles = append(tempFiles, file)
+		}
+	}
+	
+	// 确保查询结束后清理临时文件
+	defer func() {
+		for _, tempFile := range tempFiles {
+			if err := os.Remove(tempFile); err != nil && !os.IsNotExist(err) {
+				log.Printf("WARN: failed to remove temp file %s: %v", tempFile, err)
+			} else {
+				log.Printf("Cleaned up temp file: %s", tempFile)
+			}
+		}
+	}()
+
+	// 4. 构造并执行最终的DuckDB查询
 	fileList := "'" + strings.Join(allFiles, "','") + "'"
 	finalQuery := strings.Replace(sqlQuery, "FROM table", fmt.Sprintf("FROM read_parquet([%s])", fileList), 1)
 	
@@ -214,7 +344,7 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 	}
 	defer rows.Close()
 
-	// 4. 将结果序列化为JSON
+	// 5. 将结果序列化为JSON
 	columns, err := rows.Columns()
 	if err != nil {
 		return "", err

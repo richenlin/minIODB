@@ -299,3 +299,15 @@ func (b *SharedBuffer) PendingWrites() int {
 	}
 	return total
 }
+
+// GetAllKeys returns all buffer keys currently in memory
+func (b *SharedBuffer) GetAllKeys() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	
+	keys := make([]string, 0, len(b.buffer))
+	for key := range b.buffer {
+		keys = append(keys, key)
+	}
+	return keys
+}

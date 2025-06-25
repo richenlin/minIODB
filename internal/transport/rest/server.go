@@ -15,6 +15,7 @@ import (
 	"minIODB/internal/ingest"
 	"minIODB/internal/metrics"
 	"minIODB/internal/query"
+	"minIODB/internal/security"
 	"minIODB/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +37,10 @@ type Server struct {
 	cfg              *config.Config
 	router           *gin.Engine
 	server           *http.Server
+	
+	// 安全相关
+	authManager        *security.AuthManager
+	securityMiddleware *security.SecurityMiddleware
 }
 
 // WriteRequest REST API写入请求
@@ -118,22 +123,59 @@ func NewServer(ingester *ingest.Ingester, querier *query.Querier, bufferManager 
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
-	router.Use(gin.Logger())
-	router.Use(gin.Recovery())
-
-	server := &Server{
-		ingester:      ingester,
-		querier:       querier,
-		bufferManager: bufferManager,
-		redisClient:   redisClient,
-		primaryMinio:  primaryMinio,
-		backupMinio:   backupMinio,
-		cfg:           cfg,
-		router:        router,
+	
+	// 初始化认证管理器
+	authConfig := &security.AuthConfig{
+		Mode:            cfg.Security.Mode,
+		JWTSecret:       cfg.Security.JWTSecret,
+		TokenExpiration: 24 * time.Hour,
+		Issuer:          "miniodb",
+		Audience:        "miniodb-rest",
+		ValidTokens:     cfg.Security.ValidTokens,
 	}
 
+	authManager, err := security.NewAuthManager(authConfig)
+	if err != nil {
+		log.Fatalf("Failed to create auth manager: %v", err)
+	}
+
+	// 创建安全中间件
+	securityMiddleware := security.NewSecurityMiddleware(authManager)
+
+	server := &Server{
+		ingester:           ingester,
+		querier:            querier,
+		bufferManager:      bufferManager,
+		redisClient:        redisClient,
+		primaryMinio:       primaryMinio,
+		backupMinio:        backupMinio,
+		cfg:                cfg,
+		router:             router,
+		authManager:        authManager,
+		securityMiddleware: securityMiddleware,
+	}
+
+	server.setupMiddleware()
 	server.setupRoutes()
+	
+	log.Printf("REST server initialized with authentication mode: %s", cfg.Security.Mode)
+	
 	return server
+}
+
+// setupMiddleware 设置中间件
+func (s *Server) setupMiddleware() {
+	// 基础中间件
+	s.router.Use(gin.Logger())
+	s.router.Use(gin.Recovery())
+	
+	// 安全中间件
+	s.router.Use(s.securityMiddleware.CORS())
+	s.router.Use(s.securityMiddleware.SecurityHeaders())
+	s.router.Use(s.securityMiddleware.RequestLogger())
+	
+	// 可选的限流中间件
+	s.router.Use(s.securityMiddleware.RateLimiter(60)) // 每分钟60个请求
 }
 
 // SetCoordinators 设置协调器
@@ -147,26 +189,31 @@ func (s *Server) setupRoutes() {
 	// API版本前缀
 	v1 := s.router.Group("/v1")
 	{
-		// 健康检查
+		// 不需要认证的路由
 		v1.GET("/health", s.healthCheck)
 		
-		// 数据写入
-		v1.POST("/data", s.writeData)
-		
-		// 数据查询
-		v1.POST("/query", s.queryData)
-		
-		// 手动备份
-		v1.POST("/backup/trigger", s.triggerBackup)
-		
-		// 数据恢复
-		v1.POST("/recover", s.recoverData)
-		
-		// 系统状态
-		v1.GET("/stats", s.getStats)
-		
-		// 节点信息
-		v1.GET("/nodes", s.getNodes)
+		// 需要认证的路由组
+		authRequired := v1.Group("")
+		authRequired.Use(s.securityMiddleware.AuthRequired())
+		{
+			// 数据写入
+			authRequired.POST("/data", s.writeData)
+			
+			// 数据查询
+			authRequired.POST("/query", s.queryData)
+			
+			// 手动备份
+			authRequired.POST("/backup/trigger", s.triggerBackup)
+			
+			// 数据恢复
+			authRequired.POST("/recover", s.recoverData)
+			
+			// 系统状态
+			authRequired.GET("/stats", s.getStats)
+			
+			// 节点信息
+			authRequired.GET("/nodes", s.getNodes)
+		}
 	}
 }
 
@@ -200,7 +247,7 @@ func (s *Server) healthCheck(c *gin.Context) {
 // writeData 处理数据写入请求
 func (s *Server) writeData(c *gin.Context) {
 	// 记录HTTP指标
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/write")
+	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/data")
 	
 	var req WriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -213,58 +260,42 @@ func (s *Server) writeData(c *gin.Context) {
 		return
 	}
 
-	// 转换为protobuf格式
-	payload, err := structpb.NewStruct(req.Payload)
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.GetUserFromContext(c); ok {
+			log.Printf("Write request from user: %s (ID: %s) for data ID: %s", user.Username, user.ID, req.ID)
+		}
+	} else {
+		log.Printf("Received Write request for ID: %s", req.ID)
+	}
+
+	// 转换为gRPC请求格式
+	payloadStruct, err := structpb.NewStruct(req.Payload)
 	if err != nil {
-		httpMetrics.Finish("400")
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "invalid_payload",
-			Code:    400,
-			Message: "Failed to parse payload",
+		httpMetrics.Finish("500")
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "payload_conversion_error",
+			Code:    500,
+			Message: "Failed to convert payload",
 		})
 		return
 	}
 
-	protoReq := &olapv1.WriteRequest{
+	grpcReq := &olapv1.WriteRequest{
 		Id:        req.ID,
 		Timestamp: timestamppb.New(req.Timestamp),
-		Payload:   payload,
+		Payload:   payloadStruct,
 	}
 
-	// 使用协调器路由写入请求
-	var nodeID string
-	var writeErr error
-	
-	if s.writeCoordinator != nil {
-		nodeID, writeErr = s.writeCoordinator.RouteWrite(protoReq)
-		if writeErr != nil {
-			log.Printf("Failed to route write request: %v", writeErr)
-			httpMetrics.Finish("500")
-			c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Error:   "write_routing_failed",
-				Code:    500,
-				Message: "Failed to route write request",
-			})
-			return
-		}
-		
-		// 如果是本地写入
-		if nodeID == "local" {
-			writeErr = s.ingester.IngestData(protoReq)
-		}
-	} else {
-		// 直接本地写入
-		writeErr = s.ingester.IngestData(protoReq)
-		nodeID = "local"
-	}
-
-	if writeErr != nil {
-		log.Printf("Failed to write data: %v", writeErr)
+	// 执行写入
+	err = s.ingester.IngestData(grpcReq)
+	if err != nil {
+		log.Printf("Failed to ingest data: %v", err)
 		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "write_failed",
+			Error:   "ingest_error",
 			Code:    500,
-			Message: "Failed to write data",
+			Message: "Failed to ingest data",
 		})
 		return
 	}
@@ -273,17 +304,15 @@ func (s *Server) writeData(c *gin.Context) {
 	c.JSON(http.StatusOK, WriteResponse{
 		Success: true,
 		Message: "Data written successfully",
-		NodeID:  nodeID,
+		NodeID:  s.cfg.Server.NodeID,
 	})
 }
 
-// queryData 处理查询请求
+// queryData 处理数据查询请求
 func (s *Server) queryData(c *gin.Context) {
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/v1/query")
-	defer func() {
-		httpMetrics.Finish("200")
-	}()
-
+	// 记录HTTP指标
+	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/query")
+	
 	var req QueryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		httpMetrics.Finish("400")
@@ -295,91 +324,88 @@ func (s *Server) queryData(c *gin.Context) {
 		return
 	}
 
-	// 验证请求
-	if req.SQL == "" {
-		httpMetrics.Finish("400")
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "query_required",
-			Code:    400,
-			Message: "Query is required",
-		})
-		return
-	}
-
-	// 使用协调器执行分布式查询
-	var result string
-	var queryErr error
-	
-	if s.queryCoordinator != nil {
-		result, queryErr = s.queryCoordinator.ExecuteDistributedQuery(req.SQL)
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.GetUserFromContext(c); ok {
+			log.Printf("Query request from user: %s (ID: %s) with SQL: %s", user.Username, user.ID, req.SQL)
+		}
 	} else {
-		// 直接本地查询
-		result, queryErr = s.querier.ExecuteQuery(req.SQL)
+		log.Printf("Received Query request with SQL: %s", req.SQL)
 	}
 
-	if queryErr != nil {
-		log.Printf("Query failed: %v", queryErr)
+	// 执行查询
+	result, err := s.querier.ExecuteQuery(req.SQL)
+	if err != nil {
+		log.Printf("Failed to execute query: %v", err)
 		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "query_failed",
+			Error:   "query_execution_failed",
 			Code:    500,
-			Message: queryErr.Error(),
+			Message: fmt.Sprintf("Failed to execute query: %v", err),
 		})
 		return
 	}
 
+	httpMetrics.Finish("200")
 	c.JSON(http.StatusOK, QueryResponse{
 		ResultJSON: result,
 	})
 }
 
-// triggerBackup 手动触发备份
+// triggerBackup 处理手动备份请求
 func (s *Server) triggerBackup(c *gin.Context) {
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/v1/backup/trigger")
-	defer func() {
-		httpMetrics.Finish("200")
-	}()
-
+	// 记录HTTP指标
+	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/backup/trigger")
+	
 	var req TriggerBackupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error:   "invalid_request",
 			Code:    400,
-			Message: "Invalid request format",
+			Message: err.Error(),
 		})
 		return
 	}
 
-	// 检查备份存储是否可用
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.GetUserFromContext(c); ok {
+			log.Printf("TriggerBackup request from user: %s (ID: %s) for ID %s, Day %s", user.Username, user.ID, req.ID, req.Day)
+		}
+	} else {
+		log.Printf("Received TriggerBackup request for ID %s, Day %s", req.ID, req.Day)
+	}
+
 	if s.backupMinio == nil {
 		httpMetrics.Finish("503")
 		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "backup_disabled",
+			Error:   "backup_not_enabled",
 			Code:    503,
 			Message: "Backup is not enabled in configuration",
 		})
 		return
 	}
 
-	ctx := context.Background()
-	log.Printf("Triggering backup for ID: %s, Day: %s", req.ID, req.Day)
+	// 创建带超时的上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	// 从Redis获取需要备份的对象列表
-	dataKey := fmt.Sprintf("index:id:%s:%s", req.ID, req.Day)
-	objectNames, err := s.redisClient.SMembers(ctx, dataKey)
+	redisKey := fmt.Sprintf("index:id:%s:%s", req.ID, req.Day)
+	objectNames, err := s.redisClient.SMembers(ctx, redisKey)
 	if err != nil {
-		log.Printf("Failed to get object names from Redis: %v", err)
+		log.Printf("Failed to get objects from redis: %v", err)
 		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "redis_error",
+			Error:   "redis_query_failed",
 			Code:    500,
-			Message: fmt.Sprintf("Failed to get object names: %v", err),
+			Message: "Failed to query objects from Redis",
 		})
 		return
 	}
 
 	if len(objectNames) == 0 {
+		httpMetrics.Finish("200")
 		c.JSON(http.StatusOK, TriggerBackupResponse{
 			Success:       true,
 			Message:       "No objects found to back up",
@@ -388,36 +414,26 @@ func (s *Server) triggerBackup(c *gin.Context) {
 		return
 	}
 
-	// 执行备份逻辑
 	var successCount int32 = 0
 	for _, objName := range objectNames {
-		// 检查备份中是否已存在
-		exists, err := s.backupMinio.ObjectExists(ctx, s.cfg.Backup.Minio.Bucket, objName)
-		if err != nil {
-			log.Printf("Failed to check backup object existence: %v", err)
-			continue
+		src := minio.CopySrcOptions{
+			Bucket: "olap-data", // Primary bucket
+			Object: objName,
 		}
-
-		if !exists {
-			// 从主存储读取数据
-			data, err := s.primaryMinio.GetObject(ctx, s.cfg.Minio.Bucket, objName, minio.GetObjectOptions{})
-			if err != nil {
-				log.Printf("Failed to get object for backup: %v", err)
-				continue
-			}
-
-			// 写入备份存储
-			reader := bytes.NewReader(data)
-			_, err = s.backupMinio.PutObject(ctx, s.cfg.Backup.Minio.Bucket, objName, reader, int64(len(data)), minio.PutObjectOptions{})
-			if err != nil {
-				log.Printf("Failed to backup object: %v", err)
-				continue
-			}
-
+		dst := minio.CopyDestOptions{
+			Bucket: s.cfg.Backup.Minio.Bucket,
+			Object: objName,
+		}
+		_, err := s.backupMinio.CopyObject(ctx, dst, src)
+		if err != nil {
+			log.Printf("ERROR: failed to back up object %s: %v", objName, err)
+			// Continue with other objects
+		} else {
 			successCount++
 		}
 	}
 
+	httpMetrics.Finish("200")
 	c.JSON(http.StatusOK, TriggerBackupResponse{
 		Success:       true,
 		Message:       fmt.Sprintf("Backup process completed. Backed up %d files.", successCount),
@@ -458,48 +474,44 @@ func (s *Server) getNodes(c *gin.Context) {
 	})
 }
 
-// recoverData handles data recovery requests
+// recoverData 处理数据恢复请求
 func (s *Server) recoverData(c *gin.Context) {
-	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/v1/recover")
-	defer func() {
-		httpMetrics.Finish("200")
-	}()
-
+	// 记录HTTP指标
+	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/recover")
+	
 	var req RecoverDataRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error:   "invalid_request",
 			Code:    400,
-			Message: "Invalid request format",
+			Message: err.Error(),
 		})
 		return
 	}
 
-	// 验证请求 - 至少需要一种恢复模式
-	if req.NodeID == nil && req.IDRange == nil && req.TimeRange == nil {
-		httpMetrics.Finish("400")
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "recovery_mode_required",
-			Code:    400,
-			Message: "At least one recovery mode must be specified",
-		})
-		return
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.GetUserFromContext(c); ok {
+			log.Printf("RecoverData request from user: %s (ID: %s)", user.Username, user.ID)
+		}
+	} else {
+		log.Printf("Received RecoverData request")
 	}
 
-	// 检查备份存储是否可用
 	if s.backupMinio == nil {
 		httpMetrics.Finish("503")
 		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "backup_disabled",
+			Error:   "backup_not_enabled",
 			Code:    503,
 			Message: "Backup is not enabled in configuration",
 		})
 		return
 	}
 
-	ctx := context.Background()
-	log.Printf("Starting data recovery with mode: %+v", req)
+	// 创建带超时的上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	var dataKeys []string
 	var err error
@@ -511,20 +523,29 @@ func (s *Server) recoverData(c *gin.Context) {
 		dataKeys, err = s.getDataKeysByIdRange(ctx, req.IDRange)
 	} else if req.TimeRange != nil {
 		dataKeys, err = s.getDataKeysByTimeRange(ctx, req.TimeRange)
+	} else {
+		httpMetrics.Finish("400")
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "invalid_recovery_mode",
+			Code:    400,
+			Message: "Must specify one of: node_id, id_range, or time_range",
+		})
+		return
 	}
 
 	if err != nil {
 		log.Printf("Failed to get data keys: %v", err)
 		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "data_keys_error",
+			Error:   "data_key_query_failed",
 			Code:    500,
-			Message: fmt.Sprintf("Failed to get data keys: %v", err),
+			Message: "Failed to query data keys for recovery",
 		})
 		return
 	}
 
 	if len(dataKeys) == 0 {
+		httpMetrics.Finish("200")
 		c.JSON(http.StatusOK, RecoverDataResponse{
 			Success:        true,
 			Message:        "No data found to recover",
@@ -552,14 +573,13 @@ func (s *Server) recoverData(c *gin.Context) {
 		}
 	}
 
-	response := RecoverDataResponse{
+	httpMetrics.Finish("200")
+	c.JSON(http.StatusOK, RecoverDataResponse{
 		Success:        true,
-		Message:        fmt.Sprintf("Recovery completed. Recovered %d files for %d data keys.", totalFilesRecovered, len(recoveredKeys)),
+		Message:        fmt.Sprintf("Recovery process completed. Recovered %d files from %d keys.", totalFilesRecovered, len(recoveredKeys)),
 		FilesRecovered: totalFilesRecovered,
 		RecoveredKeys:  recoveredKeys,
-	}
-
-	c.JSON(http.StatusOK, response)
+	})
 }
 
 // Start 启动REST服务器

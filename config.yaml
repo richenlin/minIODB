@@ -8,21 +8,22 @@ minio:
   access_key_id: "minioadmin"
   secret_access_key: "minioadmin"
   use_ssl: false
-  bucket: "main-data"
+  bucket: "olap-data"
 
 server:
-  grpc_port: ":50051"
-  rest_port: ":8080"
+  grpc_port: ":8080"
+  rest_port: ":8081"
   node_id: "node-1"
 
 backup:
-  enabled: false
+  enabled: true
+  interval: 3600  # 备份间隔（秒）
   minio:
-    endpoint: "localhost:9001"
-    access_key_id: "backup_user"
-    secret_access_key: "backup_password"
+    endpoint: "localhost:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
     use_ssl: false
-    bucket: "olap-backup-bucket"
+    bucket: "olap-backup"
 
 buffer:
   max_size: 1000
@@ -32,8 +33,12 @@ buffer:
 log:
   level: "info"
   format: "json"
-  output: "stdout"
-  file: ""
+  output: "both"
+  filename: "logs/miniodb.log"
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+  compress: true
 
 monitoring:
   enabled: true
@@ -42,11 +47,12 @@ monitoring:
   prometheus: true
 
 security:
-  enable_tls: false
-  cert_file: ""
-  key_file: ""
-  enable_auth: false
-  auth_token: ""
+  mode: "none"                    # "none" 或 "token"
+  jwt_secret: ""                  # JWT密钥，留空自动生成
+  valid_tokens: []                # 预设的有效token列表
+  enable_tls: false              # 是否启用TLS
+  cert_file: "certs/server.crt"  # 证书文件路径
+  key_file: "certs/server.key"   # 私钥文件路径
 
 # 新增认证配置
 auth:

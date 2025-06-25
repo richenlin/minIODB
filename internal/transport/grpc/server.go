@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"time"
 
 	olapv1 "minIODB/api/proto/olap/v1"
@@ -12,10 +13,12 @@ import (
 	"minIODB/internal/ingest"
 	"minIODB/internal/metrics"
 	"minIODB/internal/query"
+	"minIODB/internal/security"
 	"minIODB/internal/storage"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"
+	"google.golang.org/grpc"
 )
 
 // Server is the implementation of the OlapServiceServer
@@ -28,6 +31,11 @@ type Server struct {
 	primaryMinio storage.Uploader
 	backupMinio  storage.Uploader
 	cfg          config.Config
+	
+	// 认证相关
+	authManager     *security.AuthManager
+	grpcInterceptor *security.GRPCInterceptor
+	grpcServer      *grpc.Server
 }
 
 // NewServer creates a new gRPC server
@@ -39,15 +47,72 @@ func NewServer(redisClient *redis.Client, primaryMinio storage.Uploader, backupM
 		return nil, err
 	}
 
-	return &Server{
-		ingester:     ingest.NewIngester(buf),
-		querier:      querier,
-		buffer:       buf,
-		redisClient:  redisClient,
-		primaryMinio: primaryMinio,
-		backupMinio:  backupMinio,
-		cfg:          cfg,
-	}, nil
+	// 初始化认证管理器
+	authConfig := &security.AuthConfig{
+		Mode:            cfg.Security.Mode,
+		JWTSecret:       cfg.Security.JWTSecret,
+		TokenExpiration: 24 * time.Hour,
+		Issuer:          "miniodb",
+		Audience:        "miniodb-grpc",
+		ValidTokens:     cfg.Security.ValidTokens,
+	}
+
+	authManager, err := security.NewAuthManager(authConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auth manager: %w", err)
+	}
+
+	// 创建gRPC拦截器
+	grpcInterceptor := security.NewGRPCInterceptor(authManager)
+
+	server := &Server{
+		ingester:        ingest.NewIngester(buf),
+		querier:         querier,
+		buffer:          buf,
+		redisClient:     redisClient,
+		primaryMinio:    primaryMinio,
+		backupMinio:     backupMinio,
+		cfg:             cfg,
+		authManager:     authManager,
+		grpcInterceptor: grpcInterceptor,
+	}
+
+	// 创建gRPC服务器，集成拦截器
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(grpcInterceptor.UnaryServerInterceptor()),
+		grpc.StreamInterceptor(grpcInterceptor.StreamServerInterceptor()),
+	)
+
+	// 注册服务
+	olapv1.RegisterOlapServiceServer(grpcServer, server)
+	server.grpcServer = grpcServer
+
+	log.Printf("gRPC server initialized with authentication mode: %s", cfg.Security.Mode)
+
+	return server, nil
+}
+
+// Start 启动gRPC服务器
+func (s *Server) Start(port string) error {
+	lis, err := net.Listen("tcp", port)
+	if err != nil {
+		return fmt.Errorf("failed to listen on port %s: %w", port, err)
+	}
+
+	log.Printf("gRPC server starting on port %s", port)
+	if err := s.grpcServer.Serve(lis); err != nil {
+		return fmt.Errorf("failed to serve gRPC server: %w", err)
+	}
+
+	return nil
+}
+
+// Stop 停止gRPC服务器
+func (s *Server) Stop() {
+	if s.grpcServer != nil {
+		log.Println("Stopping gRPC server...")
+		s.grpcServer.GracefulStop()
+	}
 }
 
 // Write implements the Write rpc
@@ -55,7 +120,14 @@ func (s *Server) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.W
 	// 记录gRPC指标
 	grpcMetrics := metrics.NewGRPCMetrics("Write")
 	
-	log.Printf("Received Write request for ID: %s", req.Id)
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("Write request from user: %s (ID: %s) for data ID: %s", user.Username, user.ID, req.Id)
+		}
+	} else {
+		log.Printf("Received Write request for ID: %s", req.Id)
+	}
 
 	err := s.ingester.IngestData(req)
 	if err != nil {
@@ -73,7 +145,14 @@ func (s *Server) Query(ctx context.Context, req *olapv1.QueryRequest) (*olapv1.Q
 	// 记录gRPC指标
 	grpcMetrics := metrics.NewGRPCMetrics("Query")
 	
-	log.Printf("Received Query request with SQL: %s", req.Sql)
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("Query request from user: %s (ID: %s) with SQL: %s", user.Username, user.ID, req.Sql)
+		}
+	} else {
+		log.Printf("Received Query request with SQL: %s", req.Sql)
+	}
 
 	result, err := s.querier.ExecuteQuery(req.Sql)
 	if err != nil {
@@ -90,7 +169,14 @@ func (s *Server) TriggerBackup(ctx context.Context, req *olapv1.TriggerBackupReq
 	// 记录gRPC指标
 	grpcMetrics := metrics.NewGRPCMetrics("TriggerBackup")
 	
-	log.Printf("Received TriggerBackup request for ID %s, Day %s", req.Id, req.Day)
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("TriggerBackup request from user: %s (ID: %s) for ID %s, Day %s", user.Username, user.ID, req.Id, req.Day)
+		}
+	} else {
+		log.Printf("Received TriggerBackup request for ID %s, Day %s", req.Id, req.Day)
+	}
 
 	if s.backupMinio == nil {
 		grpcMetrics.Finish("error")
@@ -330,12 +416,6 @@ func (s *Server) recoverDataForKey(ctx context.Context, dataKey string, forceOve
 	}
 
 	return successCount, nil
-}
-
-// Stop gracefully stops the server's components
-func (s *Server) Stop() {
-	s.buffer.Stop()
-	s.querier.Close()
 }
 
 // HealthCheck implements the health check RPC

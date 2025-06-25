@@ -75,11 +75,12 @@ type MonitoringConfig struct {
 
 // SecurityConfig 安全配置
 type SecurityConfig struct {
-	EnableTLS  bool   `mapstructure:"enable_tls"`
-	CertFile   string `mapstructure:"cert_file"`
-	KeyFile    string `mapstructure:"key_file"`
-	EnableAuth bool   `mapstructure:"enable_auth"`
-	AuthToken  string `mapstructure:"auth_token"`
+	Mode        string   `mapstructure:"mode"`         // "none" 或 "token"
+	JWTSecret   string   `mapstructure:"jwt_secret"`   // JWT密钥
+	ValidTokens []string `mapstructure:"valid_tokens"` // 预设的有效token列表
+	EnableTLS   bool     `mapstructure:"enable_tls"`   // 是否启用TLS
+	CertFile    string   `mapstructure:"cert_file"`    // 证书文件路径
+	KeyFile     string   `mapstructure:"key_file"`     // 私钥文件路径
 }
 
 // LoadConfig 加载配置文件
