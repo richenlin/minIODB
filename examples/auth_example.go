@@ -103,6 +103,10 @@ func demonstrateRESTAuth(token string) {
 	fmt.Printf("  - POST /v1/recover (数据恢复)\n")
 	fmt.Printf("  - GET /v1/stats (系统状态)\n")
 	fmt.Printf("  - GET /v1/nodes (节点信息)\n")
+	fmt.Printf("  - POST /v1/tables (创建表)\n")
+	fmt.Printf("  - GET /v1/tables (列出表)\n")
+	fmt.Printf("  - GET /v1/tables/{table_name} (描述表)\n")
+	fmt.Printf("  - DELETE /v1/tables/{table_name} (删除表)\n")
 	
 	fmt.Printf("\n不需要认证的端点:\n")
 	fmt.Printf("  - GET /v1/health (健康检查)\n")
