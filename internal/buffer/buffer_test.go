@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"minIODB/internal/config"
 	mock_storage "minIODB/internal/storage/mock"
 
 	"github.com/go-redis/redismock/v8"
@@ -29,13 +30,14 @@ func TestSharedBuffer_FlushOnSize(t *testing.T) {
 	redisClient, redisMock := redismock.NewClientMock()
 	mockUploader := mock_storage.NewMockUploader(ctrl)
 
-	b := NewSharedBuffer(redisClient, mockUploader, nil, "", testBufferSize, testFlushInterval)
+	// 创建一个基本的配置
+	cfg, _ := config.LoadConfig("")
+	b := NewSharedBuffer(redisClient, mockUploader, nil, "", cfg)
 	b.flushDone = make(chan struct{}, 1)
 
-	row := DataRow{ID: "test-id", Timestamp: time.Now().UnixNano(), Payload: "{}"}
+	row := DataRow{Table: "test", ID: "test-id", Timestamp: time.Now().UnixNano(), Payload: "{}"}
 	dayStr := time.Unix(0, row.Timestamp).Format("2006-01-02")
-	bufferKey := fmt.Sprintf("%s/%s", row.ID, dayStr)
-	redisKey := fmt.Sprintf("index:id:%s", bufferKey)
+	redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", row.Table, row.ID, dayStr)
 
 	// Expectations - 使用正则表达式匹配任意值
 	redisMock.Regexp().ExpectSAdd(redisKey, `.*`).SetVal(1)
@@ -64,13 +66,14 @@ func TestSharedBuffer_FlushOnTime(t *testing.T) {
 	redisClient, redisMock := redismock.NewClientMock()
 	mockUploader := mock_storage.NewMockUploader(ctrl)
 
-	b := NewSharedBuffer(redisClient, mockUploader, nil, "", 100, testFlushInterval)
+	// 创建一个基本的配置
+	cfg, _ := config.LoadConfig("")
+	b := NewSharedBuffer(redisClient, mockUploader, nil, "", cfg)
 	b.flushDone = make(chan struct{}, 1)
 
-	row := DataRow{ID: "timed-id", Timestamp: time.Now().UnixNano(), Payload: "{}"}
+	row := DataRow{Table: "test", ID: "timed-id", Timestamp: time.Now().UnixNano(), Payload: "{}"}
 	dayStr := time.Unix(0, row.Timestamp).Format("2006-01-02")
-	bufferKey := fmt.Sprintf("%s/%s", row.ID, dayStr)
-	redisKey := fmt.Sprintf("index:id:%s", bufferKey)
+	redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", row.Table, row.ID, dayStr)
 
 	// Expectations - 使用正则表达式匹配任意值
 	redisMock.Regexp().ExpectSAdd(redisKey, `.*`).SetVal(1)
@@ -100,13 +103,14 @@ func TestSharedBuffer_AutomaticBackup(t *testing.T) {
 	mockBackup := mock_storage.NewMockUploader(ctrl)
 
 	backupBucketName := "olap-backup"
-	b := NewSharedBuffer(redisClient, mockPrimary, mockBackup, backupBucketName, testBufferSize, testFlushInterval)
+	// 创建一个基本的配置
+	cfg, _ := config.LoadConfig("")
+	b := NewSharedBuffer(redisClient, mockPrimary, mockBackup, backupBucketName, cfg)
 	b.flushDone = make(chan struct{}, 1)
 
-	row := DataRow{ID: "backup-test-id", Timestamp: time.Now().UnixNano(), Payload: "{}"}
+	row := DataRow{Table: "test", ID: "backup-test-id", Timestamp: time.Now().UnixNano(), Payload: "{}"}
 	dayStr := time.Unix(0, row.Timestamp).Format("2006-01-02")
-	bufferKey := fmt.Sprintf("%s/%s", row.ID, dayStr)
-	redisKey := fmt.Sprintf("index:id:%s", bufferKey)
+	redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", row.Table, row.ID, dayStr)
 
 	// Expectations
 	// Primary

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -32,7 +31,7 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	minioClient, err := storage.NewMinioClientWrapper(cfg.Minio)
+	minioClient, err := storage.NewMinioClientWrapper(cfg.MinIO)
 	if err != nil {
 		log.Fatalf("Failed to create MinIO client: %v", err)
 	}
@@ -43,13 +42,12 @@ func main() {
 		minioClient,
 		nil, // 不使用备份
 		"",
-		10,                // 小缓冲区大小，便于测试
-		30*time.Second,    // 30秒刷新间隔
+		cfg,
 	)
 	defer sharedBuffer.Stop()
 
 	// 4. 创建查询引擎
-	querier, err := query.NewQuerier(redisClient.GetClient(), minioClient, cfg.Minio, sharedBuffer)
+	querier, err := query.NewQuerier(redisClient.GetClient(), minioClient, cfg.MinIO, sharedBuffer)
 	if err != nil {
 		log.Fatalf("Failed to create querier: %v", err)
 	}
@@ -57,7 +55,7 @@ func main() {
 
 	// 5. 向缓冲区写入测试数据
 	fmt.Println("\n--- 写入测试数据到缓冲区 ---")
-	
+
 	testData := []struct {
 		id      string
 		payload map[string]interface{}
@@ -69,16 +67,16 @@ func main() {
 	}
 
 	today := time.Now().Format("2006-01-02")
-	
+
 	for i, data := range testData {
 		payloadJson, _ := json.Marshal(data.payload)
 		dataRow := buffer.DataRow{
 			Table:     "users", // 指定表名
 			ID:        data.id,
-			Timestamp: time.Now().Add(time.Duration(i)*time.Minute).UnixNano(),
+			Timestamp: time.Now().Add(time.Duration(i) * time.Minute).UnixNano(),
 			Payload:   string(payloadJson),
 		}
-		
+
 		sharedBuffer.Add(dataRow)
 		fmt.Printf("添加数据: Table=users, ID=%s, Payload=%s\n", data.id, string(payloadJson))
 	}
@@ -90,9 +88,9 @@ func main() {
 	fmt.Println("\n--- 测试缓冲区查询功能 ---")
 
 	testQueries := []struct {
-		name  string
-		sql   string
-		desc  string
+		name string
+		sql  string
+		desc string
 	}{
 		{
 			name: "精确查询（表+ID+Day）",
@@ -125,13 +123,13 @@ func main() {
 		fmt.Printf("\n🔍 %s\n", testQuery.name)
 		fmt.Printf("描述: %s\n", testQuery.desc)
 		fmt.Printf("SQL: %s\n", testQuery.sql)
-		
+
 		result, err := querier.ExecuteQuery(testQuery.sql)
 		if err != nil {
 			fmt.Printf("❌ 查询失败: %v\n", err)
 			continue
 		}
-		
+
 		// 美化JSON输出
 		var jsonResult interface{}
 		if err := json.Unmarshal([]byte(result), &jsonResult); err == nil {
@@ -146,13 +144,13 @@ func main() {
 	fmt.Println("\n--- 缓冲区状态信息 ---")
 	fmt.Printf("缓冲区大小: %d 个键\n", sharedBuffer.Size())
 	fmt.Printf("待写入数据: %d 条记录\n", sharedBuffer.PendingWrites())
-	
+
 	allKeys := sharedBuffer.GetAllKeys()
 	fmt.Printf("缓冲区键列表: %v\n", allKeys)
 
 	// 8. 演示实时数据写入和查询
 	fmt.Println("\n--- 实时数据写入和查询演示 ---")
-	
+
 	// 写入新数据
 	newDataRow := buffer.DataRow{
 		Table:     "users", // 指定表名
@@ -189,4 +187,4 @@ func createPayloadStruct(data map[string]interface{}) *structpb.Struct {
 // 辅助函数：创建时间戳
 func createTimestamp(t time.Time) *timestamppb.Timestamp {
 	return timestamppb.New(t)
-} 
+}
