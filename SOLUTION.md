@@ -43,9 +43,9 @@
 |  - Query Coordination                    |
 |  - Result Aggregation                    |
 +------------------------------------------+
-      ^   |   ^   |
-      |   |   |   |  (Service Discovery & Query Planning)
-      |   v   |   v
+      ^   |                    ^   |
+      |   |                    |   |  (Service Discovery & Query Planning)
+      |   v                    |   v
 +----------------+      +---------------------------------+
 | Redis          |      | Worker Nodes (Go Service)       |
 | ---------------|      |---------------------------------|
