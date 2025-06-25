@@ -280,3 +280,22 @@ func (b *SharedBuffer) WriteTempParquetFile(filePath string, rows []DataRow) err
 	// This just calls the private method. The logic is already there.
 	return b.writeParquetFile(filePath, rows)
 }
+
+// Size returns the current buffer size (number of buffered keys)
+func (b *SharedBuffer) Size() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.buffer)
+}
+
+// PendingWrites returns the total number of pending write operations
+func (b *SharedBuffer) PendingWrites() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	
+	total := 0
+	for _, rows := range b.buffer {
+		total += len(rows)
+	}
+	return total
+}

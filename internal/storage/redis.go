@@ -203,4 +203,32 @@ func (r *RedisClient) Expire(ctx context.Context, key string, expiration time.Du
 // Close 关闭连接
 func (r *RedisClient) Close() error {
 	return r.client.Close()
+}
+
+// Keys 获取匹配模式的键列表
+func (r *RedisClient) Keys(ctx context.Context, pattern string) ([]string, error) {
+	redisMetrics := metrics.NewRedisMetrics("Keys")
+	
+	result, err := r.client.Keys(ctx, pattern).Result()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return nil, err
+	}
+	
+	redisMetrics.Finish("success")
+	return result, nil
+}
+
+// Info 获取Redis服务器信息
+func (r *RedisClient) Info(ctx context.Context) (string, error) {
+	redisMetrics := metrics.NewRedisMetrics("Info")
+	
+	result, err := r.client.Info(ctx).Result()
+	if err != nil {
+		redisMetrics.Finish("error")
+		return "", err
+	}
+	
+	redisMetrics.Finish("success")
+	return result, nil
 } 

@@ -5,7 +5,7 @@ package olap.v1;
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "minIODB/api/proto/olap/v1;olapv1";
+option go_package = "./;olapv1";
 
 service OlapService {
   // 写入数据
@@ -16,6 +16,12 @@ service OlapService {
   rpc TriggerBackup(TriggerBackupRequest) returns (TriggerBackupResponse);
   // 从备份节点恢复数据
   rpc RecoverData(RecoverDataRequest) returns (RecoverDataResponse);
+  // 健康检查
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  // 获取系统统计信息
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  // 获取集群节点信息
+  rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
 }
 
 message WriteRequest {
@@ -75,4 +81,43 @@ message RecoverDataResponse {
   string message = 2;
   int32 files_recovered = 3;
   repeated string recovered_keys = 4; // 恢复的数据键列表
+}
+
+message HealthCheckRequest {
+  // 健康检查请求，暂无特殊参数
+}
+
+message HealthCheckResponse {
+  string status = 1;     // 健康状态：healthy, unhealthy
+  string timestamp = 2;  // 检查时间戳
+  string version = 3;    // 服务版本
+  map<string, string> details = 4; // 详细信息
+}
+
+message GetStatsRequest {
+  // 获取统计信息请求，暂无特殊参数
+}
+
+message GetStatsResponse {
+  string timestamp = 1;  // 统计时间戳
+  map<string, int64> buffer_stats = 2;  // 缓冲区统计
+  map<string, int64> redis_stats = 3;   // Redis统计
+  map<string, int64> minio_stats = 4;   // MinIO统计
+}
+
+message GetNodesRequest {
+  // 获取节点信息请求，暂无特殊参数
+}
+
+message NodeInfo {
+  string id = 1;         // 节点ID
+  string status = 2;     // 节点状态
+  string type = 3;       // 节点类型
+  string address = 4;    // 节点地址
+  int64 last_seen = 5;   // 最后活跃时间
+}
+
+message GetNodesResponse {
+  repeated NodeInfo nodes = 1;  // 节点列表
+  int32 total = 2;             // 节点总数
 } 

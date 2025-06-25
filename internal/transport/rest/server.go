@@ -2,7 +2,6 @@ package rest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -44,11 +43,11 @@ type WriteRequest struct {
 	Payload   map[string]interface{} `json:"payload" binding:"required"`
 }
 
-// WriteResponse REST API写入响应
+// WriteResponse REST API写入响应 - 扩展了gRPC版本，添加了NodeID字段用于分布式环境
 type WriteResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
-	NodeID  string `json:"node_id,omitempty"`
+	NodeID  string `json:"node_id,omitempty"` // 扩展字段：处理请求的节点ID
 }
 
 // QueryRequest REST API查询请求
@@ -56,11 +55,9 @@ type QueryRequest struct {
 	SQL string `json:"sql" binding:"required"`
 }
 
-// QueryResponse REST API查询响应
+// QueryResponse REST API查询响应 - 与gRPC API保持一致
 type QueryResponse struct {
-	Success    bool   `json:"success"`
-	ResultJSON string `json:"result_json"`
-	Message    string `json:"message,omitempty"`
+	ResultJSON string `json:"result_json"` // 与gRPC的result_json字段保持一致
 }
 
 // TriggerBackupRequest REST API备份请求
@@ -83,17 +80,34 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-// RecoverDataRequest 数据恢复请求结构
+// RecoverDataRequest 数据恢复请求结构 - 与gRPC API保持一致
 type RecoverDataRequest struct {
-	BackupID string `json:"backup_id" binding:"required"`
-	Options  map[string]interface{} `json:"options,omitempty"`
+	// 恢复模式：可以按ID范围、时间范围或节点ID恢复
+	NodeID       *string           `json:"node_id,omitempty"`        // 恢复特定节点的所有数据
+	IDRange      *IDRangeFilter    `json:"id_range,omitempty"`       // 恢复特定ID范围的数据
+	TimeRange    *TimeRangeFilter  `json:"time_range,omitempty"`     // 恢复特定时间范围的数据
+	ForceOverwrite bool            `json:"force_overwrite"`          // 是否强制覆盖已存在的数据
 }
 
-// RecoverDataResponse 数据恢复响应结构
+// IDRangeFilter ID范围过滤器
+type IDRangeFilter struct {
+	IDs       []string `json:"ids,omitempty"`        // 具体的ID列表
+	IDPattern string   `json:"id_pattern,omitempty"` // ID模式匹配，如 "user-*"
+}
+
+// TimeRangeFilter 时间范围过滤器
+type TimeRangeFilter struct {
+	StartDate string   `json:"start_date"`         // 开始日期 YYYY-MM-DD
+	EndDate   string   `json:"end_date"`           // 结束日期 YYYY-MM-DD
+	IDs       []string `json:"ids,omitempty"`      // 可选：限制特定ID
+}
+
+// RecoverDataResponse 数据恢复响应结构 - 与gRPC API保持一致
 type RecoverDataResponse struct {
-	Success  bool   `json:"success"`
-	Message  string `json:"message"`
-	BackupID string `json:"backup_id"`
+	Success        bool     `json:"success"`
+	Message        string   `json:"message"`
+	FilesRecovered int32    `json:"files_recovered"`
+	RecoveredKeys  []string `json:"recovered_keys"` // 恢复的数据键列表
 }
 
 // NewServer 创建新的REST服务器
@@ -313,7 +327,6 @@ func (s *Server) queryData(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, QueryResponse{
-		Success:    true,
 		ResultJSON: result,
 	})
 }
@@ -446,32 +459,87 @@ func (s *Server) recoverData(c *gin.Context) {
 		return
 	}
 
-	// 验证请求
-	if req.BackupID == "" {
+	// 验证请求 - 至少需要一种恢复模式
+	if req.NodeID == nil && req.IDRange == nil && req.TimeRange == nil {
 		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "backup_id_required",
+			Error:   "recovery_mode_required",
 			Code:    400,
-			Message: "Backup ID is required",
+			Message: "At least one recovery mode must be specified",
 		})
 		return
 	}
 
-	// 执行数据恢复逻辑
-	// 这里应该从MinIO或其他存储中恢复数据
-	log.Printf("Starting data recovery for backup ID: %s", req.BackupID)
+	// 检查备份存储是否可用
+	if s.backupMinio == nil {
+		httpMetrics.Finish("503")
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error:   "backup_disabled",
+			Code:    503,
+			Message: "Backup is not enabled in configuration",
+		})
+		return
+	}
 
-	// 模拟恢复过程
-	// 实际实现中应该：
-	// 1. 验证备份ID的有效性
-	// 2. 从MinIO获取备份数据
-	// 3. 恢复数据到Redis/系统中
-	// 4. 验证恢复结果
+	ctx := context.Background()
+	log.Printf("Starting data recovery with mode: %+v", req)
+
+	var dataKeys []string
+	var err error
+
+	// 根据不同的恢复模式获取需要恢复的数据键
+	if req.NodeID != nil {
+		dataKeys, err = s.getDataKeysByNodeId(ctx, *req.NodeID)
+	} else if req.IDRange != nil {
+		dataKeys, err = s.getDataKeysByIdRange(ctx, req.IDRange)
+	} else if req.TimeRange != nil {
+		dataKeys, err = s.getDataKeysByTimeRange(ctx, req.TimeRange)
+	}
+
+	if err != nil {
+		log.Printf("Failed to get data keys: %v", err)
+		httpMetrics.Finish("500")
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "data_keys_error",
+			Code:    500,
+			Message: fmt.Sprintf("Failed to get data keys: %v", err),
+		})
+		return
+	}
+
+	if len(dataKeys) == 0 {
+		c.JSON(http.StatusOK, RecoverDataResponse{
+			Success:        true,
+			Message:        "No data found to recover",
+			FilesRecovered: 0,
+			RecoveredKeys:  []string{},
+		})
+		return
+	}
+
+	log.Printf("Found %d data keys to recover", len(dataKeys))
+
+	var totalFilesRecovered int32 = 0
+	var recoveredKeys []string
+
+	// 对每个数据键进行恢复
+	for _, dataKey := range dataKeys {
+		filesRecovered, err := s.recoverDataForKey(ctx, dataKey, req.ForceOverwrite)
+		if err != nil {
+			log.Printf("ERROR: failed to recover data for key %s: %v", dataKey, err)
+			continue
+		}
+		totalFilesRecovered += filesRecovered
+		if filesRecovered > 0 {
+			recoveredKeys = append(recoveredKeys, dataKey)
+		}
+	}
 
 	response := RecoverDataResponse{
-		Success: true,
-		Message: "数据恢复成功",
-		BackupID: req.BackupID,
+		Success:        true,
+		Message:        fmt.Sprintf("Recovery completed. Recovered %d files for %d data keys.", totalFilesRecovered, len(recoveredKeys)),
+		FilesRecovered: totalFilesRecovered,
+		RecoveredKeys:  recoveredKeys,
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -494,4 +562,125 @@ func (s *Server) Stop(ctx context.Context) error {
 		return s.server.Shutdown(ctx)
 	}
 	return nil
+}
+
+// getDataKeysByNodeId 根据节点ID获取数据键
+func (s *Server) getDataKeysByNodeId(ctx context.Context, nodeId string) ([]string, error) {
+	nodeDataKey := fmt.Sprintf("node:data:%s", nodeId)
+	return s.redisClient.SMembers(ctx, nodeDataKey)
+}
+
+// getDataKeysByIdRange 根据ID范围获取数据键
+func (s *Server) getDataKeysByIdRange(ctx context.Context, idRange *IDRangeFilter) ([]string, error) {
+	var allKeys []string
+
+	// 处理具体的ID列表
+	for _, id := range idRange.IDs {
+		pattern := fmt.Sprintf("index:id:%s:*", id)
+		keys, err := s.redisClient.Keys(ctx, pattern)
+		if err != nil {
+			return nil, err
+		}
+		allKeys = append(allKeys, keys...)
+	}
+
+	// 处理ID模式匹配
+	if idRange.IDPattern != "" {
+		pattern := fmt.Sprintf("index:id:%s:*", idRange.IDPattern)
+		keys, err := s.redisClient.Keys(ctx, pattern)
+		if err != nil {
+			return nil, err
+		}
+		allKeys = append(allKeys, keys...)
+	}
+
+	return allKeys, nil
+}
+
+// getDataKeysByTimeRange 根据时间范围获取数据键
+func (s *Server) getDataKeysByTimeRange(ctx context.Context, timeRange *TimeRangeFilter) ([]string, error) {
+	var allKeys []string
+
+	// 解析时间范围
+	startDate, err := time.Parse("2006-01-02", timeRange.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid start date format: %w", err)
+	}
+	endDate, err := time.Parse("2006-01-02", timeRange.EndDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid end date format: %w", err)
+	}
+
+	// 生成日期范围内的所有日期
+	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
+		dayStr := d.Format("2006-01-02")
+
+		if len(timeRange.IDs) > 0 {
+			// 如果指定了ID列表，只查询这些ID
+			for _, id := range timeRange.IDs {
+				pattern := fmt.Sprintf("index:id:%s:%s", id, dayStr)
+				keys, err := s.redisClient.Keys(ctx, pattern)
+				if err != nil {
+					return nil, err
+				}
+				allKeys = append(allKeys, keys...)
+			}
+		} else {
+			// 否则查询该日期的所有数据
+			pattern := fmt.Sprintf("index:id:*:%s", dayStr)
+			keys, err := s.redisClient.Keys(ctx, pattern)
+			if err != nil {
+				return nil, err
+			}
+			allKeys = append(allKeys, keys...)
+		}
+	}
+
+	return allKeys, nil
+}
+
+// recoverDataForKey 恢复特定数据键的所有文件
+func (s *Server) recoverDataForKey(ctx context.Context, dataKey string, forceOverwrite bool) (int32, error) {
+	// 从备份存储获取文件列表
+	backupFiles, err := s.redisClient.SMembers(ctx, dataKey)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get backup files from redis: %w", err)
+	}
+
+	if len(backupFiles) == 0 {
+		log.Printf("No backup files found for key %s", dataKey)
+		return 0, nil
+	}
+
+	var successCount int32 = 0
+
+	for _, fileName := range backupFiles {
+		// 检查主存储中是否已存在该文件
+		if !forceOverwrite {
+			exists, err := s.primaryMinio.ObjectExists(ctx, fileName)
+			if err == nil && exists {
+				log.Printf("File %s already exists in primary storage, skipping (use force_overwrite to override)", fileName)
+				continue
+			}
+		}
+
+		// 从备份存储获取数据
+		data, err := s.backupMinio.GetObject(ctx, fileName)
+		if err != nil {
+			log.Printf("ERROR: failed to get backup file %s: %v", fileName, err)
+			continue
+		}
+
+		// 恢复到主存储
+		err = s.primaryMinio.PutObject(ctx, fileName, data)
+		if err != nil {
+			log.Printf("ERROR: failed to recover file %s: %v", fileName, err)
+			continue
+		}
+
+		successCount++
+		log.Printf("Successfully recovered file %s", fileName)
+	}
+
+	return successCount, nil
 } 

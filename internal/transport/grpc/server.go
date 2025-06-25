@@ -337,3 +337,118 @@ func (s *Server) Stop() {
 	s.buffer.Stop()
 	s.querier.Close()
 }
+
+// HealthCheck implements the health check RPC
+func (s *Server) HealthCheck(ctx context.Context, req *olapv1.HealthCheckRequest) (*olapv1.HealthCheckResponse, error) {
+	log.Printf("Received HealthCheck request")
+
+	// 检查Redis连接
+	details := make(map[string]string)
+	status := "healthy"
+
+	if err := s.redisClient.Ping(ctx).Err(); err != nil {
+		status = "unhealthy"
+		details["redis"] = "connection failed"
+	} else {
+		details["redis"] = "connected"
+	}
+
+	// 检查MinIO连接
+	if s.primaryMinio != nil {
+		if exists, err := s.primaryMinio.BucketExists(ctx, "olap-data"); err != nil {
+			details["minio_primary"] = "connection failed"
+			if status == "healthy" {
+				status = "degraded"
+			}
+		} else if exists {
+			details["minio_primary"] = "connected"
+		} else {
+			details["minio_primary"] = "bucket not found"
+		}
+	}
+
+	if s.backupMinio != nil {
+		if exists, err := s.backupMinio.BucketExists(ctx, s.cfg.Backup.Minio.Bucket); err != nil {
+			details["minio_backup"] = "connection failed"
+		} else if exists {
+			details["minio_backup"] = "connected"
+		} else {
+			details["minio_backup"] = "bucket not found"
+		}
+	}
+
+	return &olapv1.HealthCheckResponse{
+		Status:    status,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Version:   "1.0.0",
+		Details:   details,
+	}, nil
+}
+
+// GetStats implements the system statistics RPC
+func (s *Server) GetStats(ctx context.Context, req *olapv1.GetStatsRequest) (*olapv1.GetStatsResponse, error) {
+	log.Printf("Received GetStats request")
+
+	// 获取缓冲区统计
+	bufferStats := make(map[string]int64)
+	if s.buffer != nil {
+		bufferStats["size"] = int64(s.buffer.Size())
+		bufferStats["pending_writes"] = int64(s.buffer.PendingWrites())
+	}
+
+	// 获取Redis统计
+	redisStats := make(map[string]int64)
+	if _, err := s.redisClient.Info(ctx).Result(); err == nil {
+		// 解析Redis info信息
+		redisStats["connected_clients"] = 1 // 简化统计
+		redisStats["used_memory"] = 0       // 需要解析info字符串
+	}
+
+	// 获取MinIO统计（简化版本）
+	minioStats := make(map[string]int64)
+	minioStats["primary_connected"] = 0
+	minioStats["backup_connected"] = 0
+	
+	if s.primaryMinio != nil {
+		if _, err := s.primaryMinio.BucketExists(ctx, "olap-data"); err == nil {
+			minioStats["primary_connected"] = 1
+		}
+	}
+	
+	if s.backupMinio != nil {
+		if _, err := s.backupMinio.BucketExists(ctx, s.cfg.Backup.Minio.Bucket); err == nil {
+			minioStats["backup_connected"] = 1
+		}
+	}
+
+	return &olapv1.GetStatsResponse{
+		Timestamp:   time.Now().Format(time.RFC3339),
+		BufferStats: bufferStats,
+		RedisStats:  redisStats,
+		MinioStats:  minioStats,
+	}, nil
+}
+
+// GetNodes implements the cluster nodes information RPC
+func (s *Server) GetNodes(ctx context.Context, req *olapv1.GetNodesRequest) (*olapv1.GetNodesResponse, error) {
+	log.Printf("Received GetNodes request")
+
+	// 构建节点信息
+	nodes := []*olapv1.NodeInfo{
+		{
+			Id:       s.cfg.Server.NodeID,
+			Status:   "healthy",
+			Type:     "local",
+			Address:  fmt.Sprintf(":%s", s.cfg.Server.GRPCPort),
+			LastSeen: time.Now().Unix(),
+		},
+	}
+
+	// 这里应该从服务注册中心获取其他节点信息
+	// 由于当前没有实现服务发现，只返回本地节点
+
+	return &olapv1.GetNodesResponse{
+		Nodes: nodes,
+		Total: int32(len(nodes)),
+	}, nil
+}
