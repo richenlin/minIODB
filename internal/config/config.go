@@ -41,8 +41,9 @@ type ServerConfig struct {
 
 // BackupConfig 备份配置
 type BackupConfig struct {
-	Enabled bool        `mapstructure:"enabled"`
-	Minio   MinioConfig `mapstructure:"minio"`
+	Enabled  bool        `mapstructure:"enabled"`
+	Interval int         `mapstructure:"interval"` // 备份间隔（秒）
+	Minio    MinioConfig `mapstructure:"minio"`
 }
 
 // BufferConfig 缓冲区配置
@@ -54,10 +55,14 @@ type BufferConfig struct {
 
 // LogConfig 日志配置
 type LogConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
-	Output string `mapstructure:"output"`
-	File   string `mapstructure:"file"`
+	Level      string `mapstructure:"level"`
+	Format     string `mapstructure:"format"`
+	Output     string `mapstructure:"output"`
+	File       string `mapstructure:"file"`
+	MaxSize    int    `mapstructure:"max_size"`    // 日志文件最大大小(MB)
+	MaxBackups int    `mapstructure:"max_backups"` // 保留的旧日志文件最大数量
+	MaxAge     int    `mapstructure:"max_age"`     // 保留旧日志文件的最大天数
+	Compress   bool   `mapstructure:"compress"`    // 是否压缩旧日志文件
 }
 
 // MonitoringConfig 监控配置
@@ -130,5 +135,10 @@ func setDefaults(config *Config) {
 	// Server defaults
 	if config.Server.NodeID == "" {
 		config.Server.NodeID = "node-1"
+	}
+	
+	// Backup defaults
+	if config.Backup.Interval == 0 {
+		config.Backup.Interval = 3600 // 默认1小时
 	}
 }

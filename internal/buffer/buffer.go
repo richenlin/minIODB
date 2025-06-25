@@ -166,13 +166,19 @@ func (b *SharedBuffer) flushBuffer(bufferKey string, rows []DataRow) {
 
 	// Upload to primary MinIO
 	minioMetrics := metrics.NewMinIOMetrics("upload_primary")
-	if err := b.primaryClient.BucketExists(ctx, minioBucket); err != nil {
+	exists, err := b.primaryClient.BucketExists(ctx, minioBucket)
+	if err != nil {
 		log.Printf("ERROR: primary bucket check failed: %v", err)
 		minioMetrics.Finish("error")
 		return
 	}
+	if !exists {
+		log.Printf("ERROR: primary bucket does not exist: %s", minioBucket)
+		minioMetrics.Finish("error")
+		return
+	}
 
-	_, err := b.primaryClient.FPutObject(ctx, minioBucket, objectName, localFilePath, minio.PutObjectOptions{})
+	_, err = b.primaryClient.FPutObject(ctx, minioBucket, objectName, localFilePath, minio.PutObjectOptions{})
 	if err != nil {
 		log.Printf("ERROR: failed to upload to primary MinIO: %v", err)
 		minioMetrics.Finish("error")
@@ -183,8 +189,12 @@ func (b *SharedBuffer) flushBuffer(bufferKey string, rows []DataRow) {
 	// Upload to backup MinIO if available
 	if b.backupClient != nil {
 		backupMetrics := metrics.NewMinIOMetrics("upload_backup")
-		if err := b.backupClient.BucketExists(ctx, b.backupBucket); err != nil {
+		exists, err := b.backupClient.BucketExists(ctx, b.backupBucket)
+		if err != nil {
 			log.Printf("ERROR: backup bucket check failed: %v", err)
+			backupMetrics.Finish("error")
+		} else if !exists {
+			log.Printf("ERROR: backup bucket does not exist: %s", b.backupBucket)
 			backupMetrics.Finish("error")
 		} else {
 			_, err = b.backupClient.FPutObject(ctx, b.backupBucket, objectName, localFilePath, minio.PutObjectOptions{})

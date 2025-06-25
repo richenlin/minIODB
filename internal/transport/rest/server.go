@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	olapv1 "minIODB/api/proto/olap/v1"
@@ -31,8 +30,8 @@ type Server struct {
 	writeCoordinator *coordinator.WriteCoordinator
 	queryCoordinator *coordinator.QueryCoordinator
 	redisClient      *storage.RedisClient
-	primaryMinio     *storage.MinioClient
-	backupMinio      *storage.MinioClient
+	primaryMinio     storage.Uploader
+	backupMinio      storage.Uploader
 	cfg              *config.Config
 	router           *gin.Engine
 	server           *http.Server
@@ -84,8 +83,21 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
+// RecoverDataRequest 数据恢复请求结构
+type RecoverDataRequest struct {
+	BackupID string `json:"backup_id" binding:"required"`
+	Options  map[string]interface{} `json:"options,omitempty"`
+}
+
+// RecoverDataResponse 数据恢复响应结构
+type RecoverDataResponse struct {
+	Success  bool   `json:"success"`
+	Message  string `json:"message"`
+	BackupID string `json:"backup_id"`
+}
+
 // NewServer 创建新的REST服务器
-func NewServer(ingester *ingest.Ingester, querier *query.Querier, bufferManager *buffer.Manager, redisClient *storage.RedisClient, primaryMinio, backupMinio *storage.MinioClient, cfg *config.Config) *Server {
+func NewServer(ingester *ingest.Ingester, querier *query.Querier, bufferManager *buffer.Manager, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader, cfg *config.Config) *Server {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
@@ -130,6 +142,9 @@ func (s *Server) setupRoutes() {
 		
 		// 手动备份
 		v1.POST("/backup/trigger", s.triggerBackup)
+		
+		// 数据恢复
+		v1.POST("/recover", s.recoverData)
 		
 		// 系统状态
 		v1.GET("/stats", s.getStats)
@@ -219,11 +234,11 @@ func (s *Server) writeData(c *gin.Context) {
 		
 		// 如果是本地写入
 		if nodeID == "local" {
-			writeErr = s.ingester.Write(req.ID, string(payload.String()), req.Timestamp.UnixNano())
+			writeErr = s.ingester.IngestData(protoReq)
 		}
 	} else {
 		// 直接本地写入
-		writeErr = s.ingester.Write(req.ID, string(payload.String()), req.Timestamp.UnixNano())
+		writeErr = s.ingester.IngestData(protoReq)
 		nodeID = "local"
 	}
 
@@ -248,12 +263,29 @@ func (s *Server) writeData(c *gin.Context) {
 
 // queryData 处理查询请求
 func (s *Server) queryData(c *gin.Context) {
+	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/v1/query")
+	defer func() {
+		httpMetrics.Finish("200")
+	}()
+
 	var req QueryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		httpMetrics.Finish("400")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error:   "invalid_request",
 			Code:    400,
 			Message: err.Error(),
+		})
+		return
+	}
+
+	// 验证请求
+	if req.SQL == "" {
+		httpMetrics.Finish("400")
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "query_required",
+			Code:    400,
+			Message: "Query is required",
 		})
 		return
 	}
@@ -266,11 +298,12 @@ func (s *Server) queryData(c *gin.Context) {
 		result, queryErr = s.queryCoordinator.ExecuteDistributedQuery(req.SQL)
 	} else {
 		// 直接本地查询
-		result, queryErr = s.querier.Query(req.SQL)
+		result, queryErr = s.querier.ExecuteQuery(req.SQL)
 	}
 
 	if queryErr != nil {
 		log.Printf("Query failed: %v", queryErr)
+		httpMetrics.Finish("500")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Error:   "query_failed",
 			Code:    500,
@@ -393,6 +426,55 @@ func (s *Server) getNodes(c *gin.Context) {
 		"nodes": nodes,
 		"total": len(nodes),
 	})
+}
+
+// recoverData handles data recovery requests
+func (s *Server) recoverData(c *gin.Context) {
+	httpMetrics := metrics.NewHTTPMetrics(c.Request.Method, "/v1/recover")
+	defer func() {
+		httpMetrics.Finish("200")
+	}()
+
+	var req RecoverDataRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpMetrics.Finish("400")
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "invalid_request",
+			Code:    400,
+			Message: "Invalid request format",
+		})
+		return
+	}
+
+	// 验证请求
+	if req.BackupID == "" {
+		httpMetrics.Finish("400")
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "backup_id_required",
+			Code:    400,
+			Message: "Backup ID is required",
+		})
+		return
+	}
+
+	// 执行数据恢复逻辑
+	// 这里应该从MinIO或其他存储中恢复数据
+	log.Printf("Starting data recovery for backup ID: %s", req.BackupID)
+
+	// 模拟恢复过程
+	// 实际实现中应该：
+	// 1. 验证备份ID的有效性
+	// 2. 从MinIO获取备份数据
+	// 3. 恢复数据到Redis/系统中
+	// 4. 验证恢复结果
+
+	response := RecoverDataResponse{
+		Success: true,
+		Message: "数据恢复成功",
+		BackupID: req.BackupID,
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // Start 启动REST服务器

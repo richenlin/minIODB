@@ -321,4 +321,21 @@ func getLocalIP() (string, error) {
 	
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	return localAddr.IP.String(), nil
+}
+
+// GetHealthyNodes 获取所有健康的节点
+func (sr *ServiceRegistry) GetHealthyNodes() ([]*NodeInfo, error) {
+	nodes, err := sr.DiscoverNodes()
+	if err != nil {
+		return nil, err
+	}
+	
+	var healthyNodes []*NodeInfo
+	for _, node := range nodes {
+		if sr.IsNodeHealthy(node.ID) {
+			healthyNodes = append(healthyNodes, node)
+		}
+	}
+	
+	return healthyNodes, nil
 } 

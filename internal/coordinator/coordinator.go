@@ -2,16 +2,14 @@ package coordinator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
-	olapv1 "minIODB/api/proto/olap/v1"
 	"minIODB/internal/discovery"
 	"minIODB/internal/utils"
+	pb "minIODB/api/proto/olap/v1"
 	"minIODB/pkg/consistenthash"
 
 	"github.com/go-redis/redis/v8"
@@ -72,7 +70,7 @@ func NewQueryCoordinator(redisClient *redis.Client, registry *discovery.ServiceR
 }
 
 // RouteWrite 路由写入请求到对应的节点
-func (wc *WriteCoordinator) RouteWrite(req *olapv1.WriteRequest) (string, error) {
+func (wc *WriteCoordinator) RouteWrite(req *pb.WriteRequest) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -129,14 +127,14 @@ func (wc *WriteCoordinator) RouteWrite(req *olapv1.WriteRequest) (string, error)
 }
 
 // sendWriteToNode 发送写入请求到指定节点
-func (wc *WriteCoordinator) sendWriteToNode(ctx context.Context, nodeAddr string, req *olapv1.WriteRequest) error {
+func (wc *WriteCoordinator) sendWriteToNode(ctx context.Context, nodeAddr string, req *pb.WriteRequest) error {
 	conn, err := grpc.DialContext(ctx, nodeAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return utils.NewRetryableError(fmt.Errorf("failed to connect to node %s: %w", nodeAddr, err))
 	}
 	defer conn.Close()
 
-	client := olapv1.NewOlapServiceClient(conn)
+	client := pb.NewOlapServiceClient(conn)
 	_, err = client.Write(ctx, req)
 	if err != nil {
 		return utils.NewRetryableError(fmt.Errorf("failed to write to node %s: %w", nodeAddr, err))
@@ -146,7 +144,7 @@ func (wc *WriteCoordinator) sendWriteToNode(ctx context.Context, nodeAddr string
 }
 
 // updateHashRing 更新哈希环
-func (wc *WriteCoordinator) updateHashRing(nodes []discovery.NodeInfo) {
+func (wc *WriteCoordinator) updateHashRing(nodes []*discovery.NodeInfo) {
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
 
@@ -262,8 +260,8 @@ func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, er
 	}
 	defer conn.Close()
 	
-	client := olapv1.NewOlapServiceClient(conn)
-	req := &olapv1.QueryRequest{Sql: sql}
+	client := pb.NewOlapServiceClient(conn)
+	req := &pb.QueryRequest{Sql: sql}
 	
 	resp, err := client.Query(ctx, req)
 	if err != nil {

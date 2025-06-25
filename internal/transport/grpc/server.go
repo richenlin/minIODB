@@ -138,6 +138,11 @@ func (s *Server) TriggerBackup(ctx context.Context, req *olapv1.TriggerBackupReq
 
 // RecoverData implements the data recovery RPC
 func (s *Server) RecoverData(ctx context.Context, req *olapv1.RecoverDataRequest) (*olapv1.RecoverDataResponse, error) {
+	grpcMetrics := metrics.NewGRPCMetrics("RecoverData")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
 	log.Printf("Received RecoverData request")
 
 	if s.backupMinio == nil {

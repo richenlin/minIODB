@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -26,7 +28,7 @@ import (
 	"minIODB/internal/query"
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
-	"minIODB/internal/transport/rest"
+	restTransport "minIODB/internal/transport/rest"
 	pb "minIODB/api/proto/olap/v1"
 )
 
@@ -57,14 +59,14 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	primaryMinio, err := storage.NewMinioClient(cfg.Minio)
+	primaryMinio, err := storage.NewMinioClientWrapper(cfg.Minio)
 	if err != nil {
 		logger.Fatal("Failed to create primary MinIO client", "error", err)
 	}
 
-	var backupMinio *storage.MinioClient
+	var backupMinio storage.Uploader
 	if cfg.Backup.Enabled {
-		backupMinio, err = storage.NewMinioClient(cfg.Backup.Minio)
+		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.Minio)
 		if err != nil {
 			logger.Fatal("Failed to create backup MinIO client", "error", err)
 		}
@@ -103,7 +105,7 @@ func main() {
 
 	// 初始化协调器
 	writeCoordinator := coordinator.NewWriteCoordinator(serviceRegistry)
-	queryCoordinator := coordinator.NewQueryCoordinator(redisClient, serviceRegistry)
+	queryCoord := coordinator.NewQueryCoordinator(redisClient.Client)
 
 	// 启动监控服务器
 	var monitoringServer *http.Server
@@ -111,14 +113,31 @@ func main() {
 		monitoringServer = startMonitoringServer(cfg)
 	}
 
-	// 启动gRPC服务器
-	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoordinator, queryCoordinator, redisClient, primaryMinio, backupMinio)
+	// 创建gRPC传输层
+	grpcServer, err := grpcTransport.NewServer(ingesterService, querierService, redisClient, *cfg)
+	if err != nil {
+		logger.Fatal("Failed to create gRPC server", "error", err)
+	}
 
 	// 启动REST服务器
-	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoordinator, queryCoordinator, redisClient, primaryMinio, backupMinio, bufferManager)
+	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoordinator, queryCoord, redisClient, primaryMinio, backupMinio, bufferManager)
 
 	// 启动缓冲区刷新goroutine
-	go startBufferFlusher(ctx, bufferManager, ingesterService, cfg)
+	go func() {
+		ticker := time.NewTicker(time.Duration(cfg.Buffer.FlushTimeout) * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := bufferManager.Flush(); err != nil {
+					logger.Error("Failed to flush buffer", "error", err)
+				}
+			}
+		}
+	}()
 
 	// 启动备份goroutine
 	if cfg.Backup.Enabled && backupMinio != nil {
@@ -133,7 +152,7 @@ func main() {
 	logger.Info("MinIODB server stopped")
 }
 
-func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio *storage.MinioClient) *grpc.Server {
+func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader) *grpc.Server {
 	grpcServer := grpc.NewServer()
 	
 	// 创建gRPC服务
@@ -145,14 +164,14 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	// 启用反射（用于调试）
 	reflection.Register(grpcServer)
 
-	// 启动服务器
+	// 启动gRPC服务器
 	go func() {
 		lis, err := net.Listen("tcp", cfg.Server.GRPCPort)
 		if err != nil {
 			logger.Fatal("Failed to listen on gRPC port", "port", cfg.Server.GRPCPort, "error", err)
 		}
 
-		logger.Info("gRPC server listening", "port", cfg.Server.GRPCPort)
+		logger.Info("gRPC server starting", "port", cfg.Server.GRPCPort)
 		if err := grpcServer.Serve(lis); err != nil {
 			logger.Fatal("Failed to serve gRPC", "error", err)
 		}
@@ -161,9 +180,9 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	return grpcServer
 }
 
-func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio *storage.MinioClient, bufferManager *buffer.Manager) *rest.Server {
+func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader, bufferManager *buffer.Manager) *restTransport.Server {
 	// 创建REST服务器
-	restServer := rest.NewServer(ingester, querier, bufferManager, redisClient, primaryMinio, backupMinio, cfg)
+	restServer := restTransport.NewServer(ingester, querier, bufferManager, redisClient, primaryMinio, backupMinio, cfg)
 	
 	// 设置协调器
 	restServer.SetCoordinators(writeCoord, queryCoord)
@@ -280,7 +299,7 @@ func startBackupRoutine(ctx context.Context, primaryMinio, backupMinio *storage.
 	}
 }
 
-func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer *grpc.Server, restServer *rest.Server, monitoringServer *http.Server) {
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer *grpc.Server, restServer *restTransport.Server, monitoringServer *http.Server) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 

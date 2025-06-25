@@ -237,7 +237,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 	cfg := v.cfg.Server
 	
 	// 检查GRPC端口
-	if cfg.GrpcPort == "" {
+	if cfg.GRPCPort == "" {
 		return &ValidationResult{
 			Component: "server",
 			Status:    "error",
@@ -245,19 +245,19 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 		}
 	}
 	
-	if port, err := strconv.Atoi(cfg.GrpcPort); err != nil || port <= 0 || port > 65535 {
+	if port, err := strconv.Atoi(cfg.GRPCPort); err != nil || port <= 0 || port > 65535 {
 		return &ValidationResult{
 			Component: "server",
 			Status:    "error",
 			Message:   "Invalid server GRPC port",
 			Details: map[string]interface{}{
-				"port": cfg.GrpcPort,
+				"port": cfg.GRPCPort,
 			},
 		}
 	}
 	
 	// 检查端口是否被占用
-	addr := fmt.Sprintf(":%s", cfg.GrpcPort)
+	addr := fmt.Sprintf(":%s", cfg.GRPCPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return &ValidationResult{
@@ -265,7 +265,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 			Status:    "error",
 			Message:   "Server GRPC port is already in use",
 			Details: map[string]interface{}{
-				"port":  cfg.GrpcPort,
+				"port":  cfg.GRPCPort,
 				"error": err.Error(),
 			},
 		}
@@ -273,19 +273,19 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 	listener.Close()
 	
 	// 检查REST端口（如果配置了）
-	if cfg.RestPort != "" {
-		if port, err := strconv.Atoi(cfg.RestPort); err != nil || port <= 0 || port > 65535 {
+	if cfg.RESTPort != "" {
+		if port, err := strconv.Atoi(cfg.RESTPort); err != nil || port <= 0 || port > 65535 {
 			return &ValidationResult{
 				Component: "server",
 				Status:    "error",
 				Message:   "Invalid server REST port",
 				Details: map[string]interface{}{
-					"port": cfg.RestPort,
+					"port": cfg.RESTPort,
 				},
 			}
 		}
 		
-		addr := fmt.Sprintf(":%s", cfg.RestPort)
+		addr := fmt.Sprintf(":%s", cfg.RESTPort)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
 			return &ValidationResult{
@@ -293,7 +293,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 				Status:    "error",
 				Message:   "Server REST port is already in use",
 				Details: map[string]interface{}{
-					"port":  cfg.RestPort,
+					"port":  cfg.RESTPort,
 					"error": err.Error(),
 				},
 			}
@@ -306,8 +306,8 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 		Status:    "ok",
 		Message:   "Server configuration is valid",
 		Details: map[string]interface{}{
-			"grpc_port": cfg.GrpcPort,
-			"rest_port": cfg.RestPort,
+			"grpc_port": cfg.GRPCPort,
+			"rest_port": cfg.RESTPort,
 		},
 	}
 }
