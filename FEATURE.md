@@ -13,7 +13,7 @@
 
 1、QueryNode提供RESTful、gRPC接口服务，验证输入并输出执行结果；
 
-2、ProxyNode提供服务注册发现、心跳监控、一致性哈希路由
+2、ProxyNode提供服务注册发现、心跳监控、一致性哈希路由、配置管理同步
 
 3、ProcessNode嵌入DuckDB, 提供数据分片、数据聚合、SQL预处理等查询引擎能力
 

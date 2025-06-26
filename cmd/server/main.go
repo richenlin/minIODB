@@ -113,15 +113,15 @@ func main() {
 	defer serviceRegistry.Stop()
 
 	// 初始化协调器
-	writeCoordinator := coordinator.NewWriteCoordinator(serviceRegistry)
-	queryCoord := coordinator.NewQueryCoordinator(redisClient.GetClient(), serviceRegistry)
+	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry)
+	queryCoord := coordinator.NewQueryCoordinator(redisClient.GetClient(), serviceRegistry, querierService)
 
 	// 创建gRPC传输层
-	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoordinator,
+	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoord,
 		queryCoord, redisClient, primaryMinio, backupMinio)
 
 	// 启动REST服务器
-	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoordinator,
+	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoord,
 		queryCoord, redisClient, primaryMinio, backupMinio, bufferManager)
 
 	// 启动指标服务器
