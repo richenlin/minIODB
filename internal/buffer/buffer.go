@@ -29,7 +29,6 @@ type DataRow struct {
 }
 
 const tempDir = "temp_parquet"
-const minioBucket = "olap-data"
 
 // SharedBuffer handles in-memory buffering and flushing to persistent storage.
 type SharedBuffer struct {
@@ -40,10 +39,10 @@ type SharedBuffer struct {
 	nodeID        string // 当前节点ID
 	config        *config.Config
 
-	buffer        map[string][]DataRow  // key: "{TABLE}/{ID}/{YYYY-MM-DD}"
-	tableConfigs  map[string]*config.TableConfig  // 表级配置缓存
-	mu            sync.RWMutex
-	shutdown      chan struct{}
+	buffer       map[string][]DataRow           // key: "{TABLE}/{ID}/{YYYY-MM-DD}"
+	tableConfigs map[string]*config.TableConfig // 表级配置缓存
+	mu           sync.RWMutex
+	shutdown     chan struct{}
 
 	// For testing only
 	flushDone chan struct{}
@@ -84,7 +83,7 @@ func (b *SharedBuffer) Add(row DataRow) {
 	bufferKey := fmt.Sprintf("%s/%s/%s", row.Table, row.ID, dayStr)
 
 	b.buffer[bufferKey] = append(b.buffer[bufferKey], row)
-	
+
 	// 更新缓冲区大小指标
 	metrics.UpdateBufferSize(fmt.Sprintf("table_%s", row.Table), float64(len(b.buffer[bufferKey])))
 
@@ -94,7 +93,7 @@ func (b *SharedBuffer) Add(row DataRow) {
 		copy(rowsToFlush, b.buffer[bufferKey])
 		go b.flushBuffer(bufferKey, rowsToFlush)
 		delete(b.buffer, bufferKey)
-		
+
 		// 记录缓冲区刷新指标
 		metrics.RecordBufferFlush(fmt.Sprintf("table_%s_triggered_by_size", row.Table))
 	}
@@ -106,13 +105,13 @@ func (b *SharedBuffer) getTableConfig(tableName string) *config.TableConfig {
 	if config, exists := b.tableConfigs[tableName]; exists {
 		return config
 	}
-	
+
 	// 从全局配置获取
 	config := b.config.GetTableConfig(tableName)
-	
+
 	// 缓存配置
 	b.tableConfigs[tableName] = config
-	
+
 	return config
 }
 
@@ -137,7 +136,7 @@ func (b *SharedBuffer) Get(key string) []DataRow {
 func (b *SharedBuffer) GetTableBufferKeys(tableName string) []string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	
+
 	prefix := tableName + "/"
 	var keys []string
 	for key := range b.buffer {
@@ -151,7 +150,7 @@ func (b *SharedBuffer) GetTableBufferKeys(tableName string) []string {
 func (b *SharedBuffer) runFlusher() {
 	// 为每个表创建独立的刷新定时器
 	tableTimers := make(map[string]*time.Ticker)
-	
+
 	// 主定时器，用于检查表级配置更新
 	mainTicker := time.NewTicker(1 * time.Minute)
 	defer mainTicker.Stop()
@@ -160,7 +159,7 @@ func (b *SharedBuffer) runFlusher() {
 		select {
 		case <-mainTicker.C:
 			b.mu.Lock()
-			
+
 			// 按表分组处理
 			tableBuffers := make(map[string][]string)
 			for key := range b.buffer {
@@ -170,11 +169,11 @@ func (b *SharedBuffer) runFlusher() {
 					tableBuffers[tableName] = append(tableBuffers[tableName], key)
 				}
 			}
-			
+
 			// 为每个表检查是否需要刷新
 			for tableName, keys := range tableBuffers {
 				tableConfig := b.getTableConfig(tableName)
-				
+
 				// 检查是否需要按时间刷新
 				for _, key := range keys {
 					rows := b.buffer[key]
@@ -186,16 +185,16 @@ func (b *SharedBuffer) runFlusher() {
 							copy(rowsToFlush, rows)
 							go b.flushBuffer(key, rowsToFlush)
 							delete(b.buffer, key)
-							
+
 							// 记录缓冲区刷新指标
 							metrics.RecordBufferFlush(fmt.Sprintf("table_%s_triggered_by_time", tableName))
 						}
 					}
 				}
 			}
-			
+
 			b.mu.Unlock()
-			
+
 		case <-b.shutdown:
 			b.mu.Lock()
 			for key, rows := range b.buffer {
@@ -209,7 +208,7 @@ func (b *SharedBuffer) runFlusher() {
 				}
 			}
 			b.mu.Unlock()
-			
+
 			// 清理定时器
 			for _, ticker := range tableTimers {
 				ticker.Stop()
@@ -225,7 +224,7 @@ func splitBufferKey(key string) []string {
 	parts := make([]string, 0, 3)
 	start := 0
 	slashCount := 0
-	
+
 	for i, char := range key {
 		if char == '/' {
 			if slashCount < 2 {
@@ -235,12 +234,12 @@ func splitBufferKey(key string) []string {
 			}
 		}
 	}
-	
+
 	// 添加最后一部分
 	if start < len(key) {
 		parts = append(parts, key[start:])
 	}
-	
+
 	return parts
 }
 
@@ -279,19 +278,19 @@ func (b *SharedBuffer) flushBuffer(bufferKey string, rows []DataRow) {
 
 	// Upload to primary MinIO
 	minioMetrics := metrics.NewMinIOMetrics("upload_primary")
-	exists, err := b.primaryClient.BucketExists(ctx, minioBucket)
+	exists, err := b.primaryClient.BucketExists(ctx, b.config.MinIO.Bucket)
 	if err != nil {
 		log.Printf("ERROR: primary bucket check failed: %v", err)
 		minioMetrics.Finish("error")
 		return
 	}
 	if !exists {
-		log.Printf("ERROR: primary bucket does not exist: %s", minioBucket)
+		log.Printf("ERROR: primary bucket does not exist: %s", b.config.MinIO.Bucket)
 		minioMetrics.Finish("error")
 		return
 	}
 
-	_, err = b.primaryClient.FPutObject(ctx, minioBucket, objectName, localFilePath, minio.PutObjectOptions{})
+	_, err = b.primaryClient.FPutObject(ctx, b.config.MinIO.Bucket, objectName, localFilePath, minio.PutObjectOptions{})
 	if err != nil {
 		log.Printf("ERROR: failed to upload to primary MinIO: %v", err)
 		minioMetrics.Finish("error")
@@ -345,23 +344,23 @@ func (b *SharedBuffer) flushBuffer(bufferKey string, rows []DataRow) {
 // updateTableStats 更新表统计信息
 func (b *SharedBuffer) updateTableStats(ctx context.Context, tableName string, recordCount int64) {
 	statsKey := fmt.Sprintf("table:%s:stats", tableName)
-	
+
 	// 增加记录数
 	if err := b.redisClient.HIncrBy(ctx, statsKey, "record_count", recordCount).Err(); err != nil {
 		log.Printf("WARN: failed to update record count for table %s: %v", tableName, err)
 	}
-	
+
 	// 增加文件数
 	if err := b.redisClient.HIncrBy(ctx, statsKey, "file_count", 1).Err(); err != nil {
 		log.Printf("WARN: failed to update file count for table %s: %v", tableName, err)
 	}
-	
+
 	// 更新最新记录时间
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := b.redisClient.HSet(ctx, statsKey, "newest_record", now).Err(); err != nil {
 		log.Printf("WARN: failed to update newest record time for table %s: %v", tableName, err)
 	}
-	
+
 	// 如果是第一次写入，设置最老记录时间
 	exists, err := b.redisClient.HExists(ctx, statsKey, "oldest_record").Result()
 	if err == nil && !exists {
@@ -450,7 +449,7 @@ func (b *SharedBuffer) GetAllKeys() []string {
 func (b *SharedBuffer) GetTableKeys(tableName string) []string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	
+
 	prefix := tableName + "/"
 	var keys []string
 	for key := range b.buffer {

@@ -528,8 +528,6 @@ func (s *OlapService) TriggerBackup(ctx context.Context, req *olapv1.TriggerBack
 
 // backupFile 备份单个文件
 func (s *OlapService) backupFile(ctx context.Context, objectName string) error {
-	const mainBucket = "olap-data"
-
 	// 检查备份存储中是否已存在该文件
 	exists, err := s.backupMinio.ObjectExists(ctx, s.cfg.Backup.MinIO.Bucket, objectName)
 	if err != nil {
@@ -550,7 +548,7 @@ func (s *OlapService) backupFile(ctx context.Context, objectName string) error {
 		},
 		// 源
 		minio.CopySrcOptions{
-			Bucket: mainBucket,
+			Bucket: s.cfg.MinIO.Bucket,
 			Object: objectName,
 		},
 	)
@@ -752,13 +750,22 @@ func (s *OlapService) RecoverData(ctx context.Context, req *olapv1.RecoverDataRe
 
 // recoverFile 恢复单个文件
 func (s *OlapService) recoverFile(ctx context.Context, objectName string) error {
-	const mainBucket = "olap-data"
+	// 检查主存储中是否已存在该文件
+	exists, err := s.primaryMinio.ObjectExists(ctx, s.cfg.MinIO.Bucket, objectName)
+	if err != nil {
+		return fmt.Errorf("failed to check if file exists in primary storage: %w", err)
+	}
+
+	if exists {
+		log.Printf("File %s already exists in primary storage, skipping", objectName)
+		return nil
+	}
 
 	// 从备份存储复制到主存储
-	_, err := s.primaryMinio.CopyObject(ctx,
+	_, err = s.primaryMinio.CopyObject(ctx,
 		// 目标
 		minio.CopyDestOptions{
-			Bucket: mainBucket,
+			Bucket: s.cfg.MinIO.Bucket,
 			Object: objectName,
 		},
 		// 源
@@ -767,9 +774,8 @@ func (s *OlapService) recoverFile(ctx context.Context, objectName string) error 
 			Object: objectName,
 		},
 	)
-
 	if err != nil {
-		return fmt.Errorf("failed to copy file from backup to main storage: %w", err)
+		return fmt.Errorf("failed to copy file from backup storage: %w", err)
 	}
 
 	log.Printf("Successfully recovered file: %s", objectName)

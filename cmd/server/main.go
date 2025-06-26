@@ -95,7 +95,7 @@ func main() {
 	)
 
 	ingesterService := ingest.NewIngester(sharedBuffer)
-	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg.MinIO, sharedBuffer, logger)
+	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg, sharedBuffer, logger)
 	if err != nil {
 		log.Fatalf("Failed to create querier service: %v", err)
 	}

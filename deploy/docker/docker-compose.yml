@@ -161,6 +161,8 @@ services:
         condition: service_healthy
       minio-backup:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/v1/health"]
       interval: 30s
@@ -177,6 +179,7 @@ services:
   minio-init:
     image: minio/mc:latest
     container_name: miniodb-minio-init
+    restart: "no"  # 初始化完成后不重启
     networks:
       - miniodb-network
     depends_on:
@@ -191,21 +194,14 @@ services:
       - MINIO_BACKUP_PASSWORD=${MINIO_BACKUP_PASSWORD:-minioadmin123}
       - MINIO_BUCKET=${MINIO_BUCKET:-miniodb-data}
       - MINIO_BACKUP_BUCKET=${MINIO_BACKUP_BUCKET:-miniodb-backup}
-    entrypoint: >
-      /bin/sh -c "
-      echo 'Waiting for MinIO services to start...';
-      sleep 10;
-      echo 'Configuring MinIO aliases...';
-      mc alias set minio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
-      mc alias set minio-backup http://minio-backup:9000 $$MINIO_BACKUP_USER $$MINIO_BACKUP_PASSWORD;
-      echo 'Creating buckets...';
-      mc mb minio/$$MINIO_BUCKET --ignore-existing;
-      mc mb minio-backup/$$MINIO_BACKUP_BUCKET --ignore-existing;
-      echo 'Setting bucket policies...';
-      mc policy set public minio/$$MINIO_BUCKET;
-      mc policy set public minio-backup/$$MINIO_BACKUP_BUCKET;
-      echo 'MinIO initialization completed.';
-      "
+    volumes:
+      - ./scripts/init-minio.sh:/usr/local/bin/init-minio.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/init-minio.sh"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # 数据卷定义
 volumes:

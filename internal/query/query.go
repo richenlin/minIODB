@@ -29,14 +29,15 @@ type Querier struct {
 	tableExtractor *SimpleTableExtractor
 	logger         *zap.Logger
 	tempDir        string
+	config         *config.Config
 }
 
 // NewQuerier 创建简化的查询处理器
 func NewQuerier(redisClient *redis.Client, minioClient storage.Uploader,
-	cfg config.MinioConfig, buf *buffer.SharedBuffer, logger *zap.Logger) (*Querier, error) {
+	cfg *config.Config, buf *buffer.SharedBuffer, logger *zap.Logger) (*Querier, error) {
 
 	// 初始化DuckDB
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", ":memory:")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
@@ -55,6 +56,7 @@ func NewQuerier(redisClient *redis.Client, minioClient storage.Uploader,
 		tableExtractor: NewSimpleTableExtractor(),
 		logger:         logger,
 		tempDir:        tempDir,
+		config:         cfg,
 	}, nil
 }
 
@@ -218,7 +220,7 @@ func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string
 	}
 
 	// 使用正确的MinIO方法下载文件
-	data, err := q.minioClient.GetObject(ctx, "olap-data", objectName, minio.GetObjectOptions{})
+	data, err := q.minioClient.GetObject(ctx, q.config.MinIO.Bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to download %s: %w", objectName, err)
 	}

@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  minio:
+    image: minio/minio:{{ minio.version | default('latest') }}
+    container_name: miniodb-minio
+    restart: unless-stopped
+    ports:
+      - "{{ minio.api_port | default(9000) }}:9000"
+      - "{{ minio.console_port | default(9001) }}:9001"
+    environment:
+      MINIO_ROOT_USER: {{ minio.root_user | default('minioadmin') }}
+      MINIO_ROOT_PASSWORD: {{ minio.root_password | default('minioadmin123') }}
+      MINIO_SERVER_URL: http://{{ ansible_default_ipv4.address }}:{{ minio.api_port | default(9000) }}
+      MINIO_BROWSER_REDIRECT_URL: http://{{ ansible_default_ipv4.address }}:{{ minio.console_port | default(9001) }}
+{% if minio.region is defined %}
+      MINIO_REGION: {{ minio.region }}
+{% endif %}
+{% if minio.site_name is defined %}
+      MINIO_SITE_NAME: {{ minio.site_name }}
+{% endif %}
+    volumes:
+      - {{ minio.data_path | default('/opt/miniodb/data/minio') }}:/data
+      - {{ minio.config_path | default('/opt/miniodb/config/minio') }}:/root/.minio
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ minio.log_max_size | default('10m') }}"
+        max-file: "{{ minio.log_max_file | default('3') }}"
+    networks:
+      - miniodb-network
+
+{% if minio.backup_enabled | default(true) %}
+  minio-backup:
+    image: minio/minio:{{ minio.version | default('latest') }}
+    container_name: miniodb-minio-backup
+    restart: unless-stopped
+    ports:
+      - "{{ minio.backup_api_port | default(9002) }}:9000"
+      - "{{ minio.backup_console_port | default(9003) }}:9001"
+    environment:
+      MINIO_ROOT_USER: {{ minio.backup_user | default('minioadmin') }}
+      MINIO_ROOT_PASSWORD: {{ minio.backup_password | default('minioadmin123') }}
+      MINIO_SERVER_URL: http://{{ ansible_default_ipv4.address }}:{{ minio.backup_api_port | default(9002) }}
+      MINIO_BROWSER_REDIRECT_URL: http://{{ ansible_default_ipv4.address }}:{{ minio.backup_console_port | default(9003) }}
+{% if minio.region is defined %}
+      MINIO_REGION: {{ minio.region }}
+{% endif %}
+{% if minio.site_name is defined %}
+      MINIO_SITE_NAME: {{ minio.site_name }}-backup
+{% endif %}
+    volumes:
+      - {{ minio.backup_data_path | default('/opt/miniodb/data/minio-backup') }}:/data
+      - {{ minio.backup_config_path | default('/opt/miniodb/config/minio-backup') }}:/root/.minio
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ minio.log_max_size | default('10m') }}"
+        max-file: "{{ minio.log_max_file | default('3') }}"
+    networks:
+      - miniodb-network
+{% endif %}
+
+  minio-init:
+    image: minio/mc:{{ minio.mc_version | default('latest') }}
+    container_name: miniodb-minio-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+{% if minio.backup_enabled | default(true) %}
+      minio-backup:
+        condition: service_healthy
+{% endif %}
+    environment:
+      MINIO_ROOT_USER: {{ minio.root_user | default('minioadmin') }}
+      MINIO_ROOT_PASSWORD: {{ minio.root_password | default('minioadmin123') }}
+{% if minio.backup_enabled | default(true) %}
+      MINIO_BACKUP_USER: {{ minio.backup_user | default('minioadmin') }}
+      MINIO_BACKUP_PASSWORD: {{ minio.backup_password | default('minioadmin123') }}
+{% endif %}
+      MINIO_BUCKET: {{ minio.bucket | default('miniodb-data') }}
+{% if minio.backup_enabled | default(true) %}
+      MINIO_BACKUP_BUCKET: {{ minio.backup_bucket | default('miniodb-backup') }}
+{% endif %}
+    volumes:
+      - {{ minio.scripts_path | default('/opt/miniodb/scripts') }}/init-minio.sh:/init-minio.sh:ro
+    entrypoint: ["/bin/bash", "/init-minio.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ minio.log_max_size | default('10m') }}"
+        max-file: "{{ minio.log_max_file | default('3') }}"
+    networks:
+      - miniodb-network
+
+networks:
+  miniodb-network:
+    name: miniodb-network
+    driver: bridge
+{% if minio.network_subnet is defined %}
+    ipam:
+      config:
+        - subnet: {{ minio.network_subnet }}
+{% endif %}
+
+volumes:
+  minio-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: {{ minio.data_path | default('/opt/miniodb/data/minio') }}
+{% if minio.backup_enabled | default(true) %}
+  minio-backup-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: {{ minio.backup_data_path | default('/opt/miniodb/data/minio-backup') }}
+{% endif %} 

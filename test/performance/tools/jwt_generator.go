@@ -16,7 +16,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-func main() {
+func main1() {
 	// 从环境变量或参数获取JWT密钥
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {

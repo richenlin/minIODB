@@ -1,0 +1,121 @@
+# Redis 部署任务
+---
+
+- name: 创建 Redis 用户
+  user:
+    name: "{{ system.user }}"
+    group: "{{ system.group }}"
+    uid: "{{ system.uid }}"
+    gid: "{{ system.gid }}"
+    system: yes
+    home: "/opt/miniodb"
+    shell: /bin/bash
+    create_home: yes
+  become: true
+
+- name: 创建 Redis 数据目录
+  file:
+    path: "{{ redis.data_path }}"
+    state: directory
+    owner: "{{ system.user }}"
+    group: "{{ system.group }}"
+    mode: '0755'
+  become: true
+
+- name: 创建 Redis 配置目录
+  file:
+    path: "{{ redis.config_path }}"
+    state: directory
+    owner: "{{ system.user }}"
+    group: "{{ system.group }}"
+    mode: '0755'
+  become: true
+
+- name: 创建 Redis 日志目录
+  file:
+    path: "{{ redis.log_path }}"
+    state: directory
+    owner: "{{ system.user }}"
+    group: "{{ system.group }}"
+    mode: '0755'
+  become: true
+
+- name: 复制 Redis 配置文件
+  template:
+    src: redis.conf.j2
+    dest: "{{ redis.config_path }}/redis.conf"
+    owner: "{{ system.user }}"
+    group: "{{ system.group }}"
+    mode: '0644'
+  become: true
+  notify: restart redis
+
+- name: 复制 Redis Docker Compose 配置
+  template:
+    src: docker-compose-redis.yml.j2
+    dest: "{{ redis.config_path }}/docker-compose.yml"
+    owner: "{{ system.user }}"
+    group: "{{ system.group }}"
+    mode: '0644'
+  become: true
+
+- name: 复制 Redis 环境变量文件
+  template:
+    src: redis.env.j2
+    dest: "{{ redis.config_path }}/redis.env"
+    owner: "{{ system.user }}"
+    group: "{{ system.group }}"
+    mode: '0600'
+  become: true
+
+- name: 启动 Redis 服务
+  docker_compose:
+    project_src: "{{ redis.config_path }}"
+    state: present
+    pull: yes
+  become: true
+  become_user: "{{ system.user }}"
+
+- name: 等待 Redis 服务启动
+  wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: "{{ redis.port }}"
+    delay: 10
+    timeout: 60
+    state: started
+
+- name: 验证 Redis 服务状态
+  command: >
+    docker exec miniodb-redis redis-cli
+    -h {{ ansible_default_ipv4.address }}
+    -p {{ redis.port }}
+    {% if redis.password is defined and redis.password != '' %}
+    -a {{ redis.password }}
+    {% endif %}
+    ping
+  register: redis_status
+  changed_when: false
+  failed_when: redis_status.stdout != "PONG"
+
+- name: 显示 Redis 服务状态
+  debug:
+    msg: "Redis 服务运行正常，响应: {{ redis_status.stdout }}"
+
+- name: 配置防火墙规则
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ system.firewall_ports }}"
+  become: true
+  when: ansible_os_family == "Debian"
+
+- name: 配置防火墙规则 (CentOS/RHEL)
+  firewalld:
+    port: "{{ item }}"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  loop: "{{ system.firewall_ports }}"
+  become: true
+  when: ansible_os_family == "RedHat" 

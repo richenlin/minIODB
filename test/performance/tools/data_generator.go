@@ -29,7 +29,15 @@ type WriteResponse struct {
 	NodeID  string `json:"node_id,omitempty"`
 }
 
-func main1() {
+// 配置参数
+type Config struct {
+	MaxRetries      int
+	RetryDelay      time.Duration
+	RequestInterval time.Duration
+	Timeout         time.Duration
+}
+
+func main() {
 	if len(os.Args) < 4 {
 		fmt.Println("使用方法: data_generator <API_URL> <总记录数> <并发数> [JWT_TOKEN]")
 		fmt.Println("示例: data_generator http://localhost:8081 1000 10 your-jwt-token")
@@ -52,11 +60,21 @@ func main1() {
 		}
 	}
 
+	// 配置参数
+	config := Config{
+		MaxRetries:      3,
+		RetryDelay:      100 * time.Millisecond,
+		RequestInterval: 10 * time.Millisecond, // 请求间隔
+		Timeout:         30 * time.Second,
+	}
+
 	log.Printf("开始生成测试数据...")
 	log.Printf("API URL: %s", apiURL)
 	log.Printf("总记录数: %d", totalRecords)
 	log.Printf("并发数: %d", concurrency)
 	log.Printf("JWT Token: %s", maskToken(jwtToken))
+	log.Printf("最大重试次数: %d", config.MaxRetries)
+	log.Printf("请求间隔: %v", config.RequestInterval)
 
 	var wg sync.WaitGroup
 	var successCount, errorCount int64
@@ -71,10 +89,8 @@ func main1() {
 		go func(workerID int) {
 			defer wg.Done()
 
-			client := &http.Client{
-				Timeout: 30 * time.Second,
-			}
-
+			// 创建优化的HTTP客户端
+			client := createOptimizedHTTPClient(config.Timeout)
 			apiEndpoint := apiURL + "/v1/data"
 
 			for j := 0; j < recordsPerWorker; j++ {
@@ -96,16 +112,38 @@ func main1() {
 					},
 				}
 
-				err := sendWriteRequest(client, apiEndpoint, testData, jwtToken)
+				// 发送请求（带重试机制）
+				success := false
+				for retry := 0; retry <= config.MaxRetries; retry++ {
+					err := sendWriteRequest(client, apiEndpoint, testData, jwtToken)
+					if err == nil {
+						success = true
+						break
+					}
+
+					if retry < config.MaxRetries {
+						// 指数退避
+						backoffDelay := config.RetryDelay * time.Duration(1<<retry)
+						time.Sleep(backoffDelay)
+						log.Printf("Worker %d 重试请求 %d/%d (延迟 %v): %v",
+							workerID, retry+1, config.MaxRetries, backoffDelay, err)
+					} else {
+						log.Printf("Worker %d 请求最终失败: %v", workerID, err)
+					}
+				}
 
 				mu.Lock()
-				if err != nil {
-					errorCount++
-					log.Printf("Worker %d 发送请求失败: %v", workerID, err)
-				} else {
+				if success {
 					successCount++
+				} else {
+					errorCount++
 				}
 				mu.Unlock()
+
+				// 请求间隔控制
+				if config.RequestInterval > 0 {
+					time.Sleep(config.RequestInterval)
+				}
 			}
 
 			log.Printf("Worker %d 完成所有请求", workerID)
@@ -119,10 +157,25 @@ func main1() {
 	log.Printf("总耗时: %v", duration)
 	log.Printf("成功请求: %d", successCount)
 	log.Printf("失败请求: %d", errorCount)
+	log.Printf("成功率: %.2f%%", float64(successCount)/float64(totalRecords)*100)
 	log.Printf("每秒请求数: %.2f", float64(totalRecords)/duration.Seconds())
+	log.Printf("有效吞吐量: %.2f QPS", float64(successCount)/duration.Seconds())
 }
 
-// sendWriteRequest 发送写入请求
+// createOptimizedHTTPClient 创建优化的HTTP客户端
+func createOptimizedHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,              // 最大空闲连接数
+			MaxIdleConnsPerHost: 100,              // 每个主机的最大空闲连接数
+			MaxConnsPerHost:     200,              // 每个主机的最大连接数
+			IdleConnTimeout:     90 * time.Second, // 空闲连接超时
+			DisableKeepAlives:   false,            // 启用Keep-Alive
+		},
+	}
+}
+
 func sendWriteRequest(client *http.Client, url string, req WriteRequest, jwtToken string) error {
 	jsonData, err := json.Marshal(req)
 	if err != nil {
@@ -136,6 +189,7 @@ func sendWriteRequest(client *http.Client, url string, req WriteRequest, jwtToke
 
 	// 设置请求头
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Connection", "keep-alive") // 明确启用Keep-Alive
 	if jwtToken != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+jwtToken)
 	}

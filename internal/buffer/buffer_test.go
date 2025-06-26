@@ -68,8 +68,8 @@ func TestSharedBuffer_FlushOnSize(t *testing.T) {
 	redisMock.ExpectHExists(fmt.Sprintf("table:%s:stats", row.Table), "oldest_record").SetVal(false)
 	redisMock.Regexp().ExpectHSet(fmt.Sprintf("table:%s:stats", row.Table), "oldest_record", `.*`).SetVal(1)
 
-	mockUploader.EXPECT().BucketExists(gomock.Any(), minioBucket).Return(true, nil)
-	mockUploader.EXPECT().FPutObject(gomock.Any(), minioBucket, gomock.Any(), gomock.Any(), gomock.Any()).Return(minio.UploadInfo{}, nil)
+	mockUploader.EXPECT().BucketExists(gomock.Any(), b.config.MinIO.Bucket).Return(true, nil)
+	mockUploader.EXPECT().FPutObject(gomock.Any(), b.config.MinIO.Bucket, gomock.Any(), gomock.Any(), gomock.Any()).Return(minio.UploadInfo{}, nil)
 
 	// Action - 添加足够的行来触发flush
 	b.Add(row)
@@ -118,6 +118,9 @@ func TestSharedBuffer_AutomaticBackup(t *testing.T) {
 		TableManagement: config.TableManagementConfig{
 			DefaultTable: "test",
 		},
+		MinIO: config.MinIOConfig{
+			Bucket: "olap-data",
+		},
 	}
 
 	b := NewSharedBuffer(redisClient, mockPrimary, mockBackup, backupBucketName, cfg)
@@ -130,8 +133,8 @@ func TestSharedBuffer_AutomaticBackup(t *testing.T) {
 
 	// Expectations
 	// Primary
-	mockPrimary.EXPECT().BucketExists(gomock.Any(), minioBucket).Return(true, nil)
-	mockPrimary.EXPECT().FPutObject(gomock.Any(), minioBucket, gomock.Any(), gomock.Any(), gomock.Any()).Return(minio.UploadInfo{}, nil)
+	mockPrimary.EXPECT().BucketExists(gomock.Any(), b.config.MinIO.Bucket).Return(true, nil)
+	mockPrimary.EXPECT().FPutObject(gomock.Any(), b.config.MinIO.Bucket, gomock.Any(), gomock.Any(), gomock.Any()).Return(minio.UploadInfo{}, nil)
 	// Backup
 	mockBackup.EXPECT().BucketExists(gomock.Any(), backupBucketName).Return(true, nil)
 	mockBackup.EXPECT().FPutObject(gomock.Any(), backupBucketName, gomock.Any(), gomock.Any(), gomock.Any()).Return(minio.UploadInfo{}, nil)

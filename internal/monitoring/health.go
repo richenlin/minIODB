@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"minIODB/internal/config"
 	"minIODB/internal/storage"
-	
+
 	"github.com/go-redis/redis/v8"
 )
 
@@ -23,17 +24,17 @@ const (
 
 // ComponentHealth 组件健康状态
 type ComponentHealth struct {
-	Name      string       `json:"name"`
-	Status    HealthStatus `json:"status"`
-	Message   string       `json:"message,omitempty"`
-	Timestamp time.Time    `json:"timestamp"`
+	Name      string        `json:"name"`
+	Status    HealthStatus  `json:"status"`
+	Message   string        `json:"message,omitempty"`
+	Timestamp time.Time     `json:"timestamp"`
 	Duration  time.Duration `json:"duration"`
 }
 
 // OverallHealth 整体健康状态
 type OverallHealth struct {
-	Status     HealthStatus       `json:"status"`
-	Components []ComponentHealth  `json:"components"`
+	Status     HealthStatus      `json:"status"`
+	Components []ComponentHealth `json:"components"`
 	Timestamp  time.Time         `json:"timestamp"`
 	Uptime     time.Duration     `json:"uptime"`
 }
@@ -43,16 +44,18 @@ type HealthChecker struct {
 	redisClient *redis.Client
 	minioClient storage.Uploader
 	db          *sql.DB
+	config      *config.Config
 	startTime   time.Time
 	mu          sync.RWMutex
 }
 
-// NewHealthChecker 创建健康检查器
-func NewHealthChecker(redisClient *redis.Client, minioClient storage.Uploader, db *sql.DB) *HealthChecker {
+// NewHealthChecker 创建新的健康检查器
+func NewHealthChecker(redisClient *redis.Client, minioClient storage.Uploader, db *sql.DB, cfg *config.Config) *HealthChecker {
 	return &HealthChecker{
 		redisClient: redisClient,
 		minioClient: minioClient,
 		db:          db,
+		config:      cfg,
 		startTime:   time.Now(),
 	}
 }
@@ -112,7 +115,7 @@ func (hc *HealthChecker) CheckHealth(ctx context.Context) *OverallHealth {
 // checkRedis 检查Redis连接
 func (hc *HealthChecker) checkRedis(ctx context.Context) ComponentHealth {
 	start := time.Now()
-	
+
 	// 创建带超时的上下文
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -154,13 +157,13 @@ func (hc *HealthChecker) checkRedis(ctx context.Context) ComponentHealth {
 // checkMinIO 检查MinIO连接
 func (hc *HealthChecker) checkMinIO(ctx context.Context) ComponentHealth {
 	start := time.Now()
-	
+
 	// 创建带超时的上下文
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// 检查存储桶是否存在
-	exists, err := hc.minioClient.BucketExists(checkCtx, "olap-data")
+	exists, err := hc.minioClient.BucketExists(checkCtx, hc.config.MinIO.Bucket)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -177,7 +180,7 @@ func (hc *HealthChecker) checkMinIO(ctx context.Context) ComponentHealth {
 		return ComponentHealth{
 			Name:      "minio",
 			Status:    HealthStatusDegraded,
-			Message:   "MinIO bucket 'olap-data' does not exist",
+			Message:   fmt.Sprintf("MinIO bucket '%s' does not exist", hc.config.MinIO.Bucket),
 			Timestamp: time.Now(),
 			Duration:  duration,
 		}
@@ -206,7 +209,7 @@ func (hc *HealthChecker) checkMinIO(ctx context.Context) ComponentHealth {
 // checkDatabase 检查数据库连接
 func (hc *HealthChecker) checkDatabase(ctx context.Context) ComponentHealth {
 	start := time.Now()
-	
+
 	if hc.db == nil {
 		return ComponentHealth{
 			Name:      "database",
@@ -258,10 +261,10 @@ func (hc *HealthChecker) checkDatabase(ctx context.Context) ComponentHealth {
 // checkSystemResources 检查系统资源
 func (hc *HealthChecker) checkSystemResources(ctx context.Context) ComponentHealth {
 	start := time.Now()
-	
+
 	// 这里可以添加系统资源检查，如内存、CPU等
 	// 目前简化为基本检查
-	
+
 	return ComponentHealth{
 		Name:      "system",
 		Status:    HealthStatusHealthy,
@@ -281,7 +284,7 @@ func (hc *HealthChecker) IsHealthy(ctx context.Context) bool {
 func (hc *HealthChecker) GetReadiness(ctx context.Context) bool {
 	// 就绪状态要求所有关键组件都正常
 	health := hc.CheckHealth(ctx)
-	
+
 	for _, component := range health.Components {
 		if component.Name == "redis" || component.Name == "minio" {
 			if component.Status == HealthStatusUnhealthy {
@@ -289,7 +292,7 @@ func (hc *HealthChecker) GetReadiness(ctx context.Context) bool {
 			}
 		}
 	}
-	
+
 	return true
 }
 
@@ -297,4 +300,4 @@ func (hc *HealthChecker) GetReadiness(ctx context.Context) bool {
 func (hc *HealthChecker) GetLiveness(ctx context.Context) bool {
 	// 存活状态只需要基本服务运行
 	return true
-} 
+}

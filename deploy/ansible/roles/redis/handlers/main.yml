@@ -1,0 +1,22 @@
+# Redis 处理程序
+---
+
+- name: restart redis
+  docker_compose:
+    project_src: "{{ redis.config_path }}"
+    state: present
+    restarted: yes
+  become: true
+  become_user: "{{ system.user }}"
+
+- name: stop redis
+  docker_compose:
+    project_src: "{{ redis.config_path }}"
+    state: absent
+  become: true
+  become_user: "{{ system.user }}"
+
+- name: reload redis config
+  command: docker exec miniodb-redis redis-cli CONFIG RELOAD
+  become: true
+  ignore_errors: true 

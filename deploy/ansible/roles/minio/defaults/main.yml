@@ -1,0 +1,141 @@
+# MinIO 角色默认配置
+---
+
+# MinIO 版本配置
+minio:
+  version: "latest"
+  mc_version: "latest"
+
+  # 主 MinIO 服务配置
+  root_user: "minioadmin"
+  root_password: "minioadmin123"
+  api_port: 9000
+  console_port: 9001
+  
+  # 备份 MinIO 服务配置
+  backup_enabled: true
+  backup_user: "minioadmin"
+  backup_password: "minioadmin123"
+  backup_api_port: 9002
+  backup_console_port: 9003
+  
+  # 存储桶配置
+  bucket: "miniodb-data"
+  backup_bucket: "miniodb-backup"
+  bucket_policy: "download"
+  backup_bucket_policy: "download"
+  
+  # 版本控制
+  versioning_enabled: true
+  
+  # 数据路径配置
+  data_path: "/opt/miniodb/data/minio"
+  backup_data_path: "/opt/miniodb/data/minio-backup"
+  config_path: "/opt/miniodb/config/minio"
+  backup_config_path: "/opt/miniodb/config/minio-backup"
+  scripts_path: "/opt/miniodb/scripts"
+  
+  # 日志配置
+  log_max_size: "10m"
+  log_max_file: "3"
+  
+  # 网络配置（可选）
+  # region: "us-east-1"
+  # site_name: "miniodb-cluster"
+  # network_subnet: "172.20.0.0/16"
+  
+  # 健康检查配置
+  health_check:
+    interval: 30
+    timeout: 20
+    retries: 3
+    start_period: 10
+  
+  # 安全配置
+  security:
+    enable_tls: false
+    # cert_file: "/opt/miniodb/certs/public.crt"
+    # key_file: "/opt/miniodb/certs/private.key"
+  
+  # 性能配置
+  performance:
+    # 并发连接数
+    max_connections: 1000
+    # 内存缓存大小
+    cache_size: "512Mi"
+
+# 系统配置
+system:
+  # MinIO 用户和组
+  user: "miniodb"
+  group: "miniodb"
+  uid: 1000
+  gid: 1000
+  
+  # 系统依赖
+  dependencies:
+    - curl
+    - wget
+    - unzip
+    - docker.io
+    - docker-compose
+  
+  # 防火墙端口配置
+  firewall_ports:
+    - "{{ minio.api_port }}/tcp"
+    - "{{ minio.console_port }}/tcp"
+    - "{{ minio.backup_api_port }}/tcp"
+    - "{{ minio.backup_console_port }}/tcp"
+
+# Docker 配置
+docker:
+  # Docker Compose 项目名称
+  project_name: "miniodb-minio"
+  
+  # 网络配置
+  network_name: "miniodb-network"
+  
+  # 重启策略
+  restart_policy: "unless-stopped"
+  
+  # 资源限制
+  resources:
+    memory: "1g"
+    cpus: "1.0"
+    
+  # 日志驱动配置
+  logging:
+    driver: "json-file"
+    max_size: "{{ minio.log_max_size }}"
+    max_file: "{{ minio.log_max_file }}"
+
+# 监控配置
+monitoring:
+  # 启用监控
+  enabled: true
+  
+  # 健康检查端点
+  health_endpoints:
+    - "http://localhost:{{ minio.api_port }}/minio/health/live"
+    - "http://localhost:{{ minio.backup_api_port }}/minio/health/live"
+  
+  # 指标收集
+  metrics:
+    enabled: false
+    port: 9090
+    path: "/metrics"
+
+# 备份配置
+backup:
+  # 自动备份
+  auto_backup: false
+  
+  # 备份调度
+  schedule: "0 2 * * *"  # 每天凌晨2点
+  
+  # 备份保留策略
+  retention:
+    days: 30
+    
+  # 备份存储位置
+  storage_path: "/opt/miniodb/backups" 
