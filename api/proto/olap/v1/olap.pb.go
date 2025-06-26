@@ -25,9 +25,10 @@ const (
 
 type WriteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Timestamp     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	Payload       *structpb.Struct       `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	Table         string                 `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`         // 表名（新增，可选，默认为"default"）
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`               // 记录ID
+	Timestamp     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // 时间戳
+	Payload       *structpb.Struct       `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`     // 数据载荷
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -60,6 +61,13 @@ func (x *WriteRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use WriteRequest.ProtoReflect.Descriptor instead.
 func (*WriteRequest) Descriptor() ([]byte, []int) {
 	return file_olap_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *WriteRequest) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
 }
 
 func (x *WriteRequest) GetId() string {
@@ -224,6 +232,665 @@ func (x *QueryResponse) GetResultJson() string {
 	return ""
 }
 
+// 创建表
+type CreateTableRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableName     string                 `protobuf:"bytes,1,opt,name=table_name,json=tableName,proto3" json:"table_name,omitempty"`
+	Config        *TableConfig           `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
+	IfNotExists   bool                   `protobuf:"varint,3,opt,name=if_not_exists,json=ifNotExists,proto3" json:"if_not_exists,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTableRequest) Reset() {
+	*x = CreateTableRequest{}
+	mi := &file_olap_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTableRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTableRequest) ProtoMessage() {}
+
+func (x *CreateTableRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTableRequest.ProtoReflect.Descriptor instead.
+func (*CreateTableRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CreateTableRequest) GetTableName() string {
+	if x != nil {
+		return x.TableName
+	}
+	return ""
+}
+
+func (x *CreateTableRequest) GetConfig() *TableConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *CreateTableRequest) GetIfNotExists() bool {
+	if x != nil {
+		return x.IfNotExists
+	}
+	return false
+}
+
+type CreateTableResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTableResponse) Reset() {
+	*x = CreateTableResponse{}
+	mi := &file_olap_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTableResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTableResponse) ProtoMessage() {}
+
+func (x *CreateTableResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTableResponse.ProtoReflect.Descriptor instead.
+func (*CreateTableResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CreateTableResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *CreateTableResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// 删除表
+type DropTableRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableName     string                 `protobuf:"bytes,1,opt,name=table_name,json=tableName,proto3" json:"table_name,omitempty"`
+	IfExists      bool                   `protobuf:"varint,2,opt,name=if_exists,json=ifExists,proto3" json:"if_exists,omitempty"`
+	Cascade       bool                   `protobuf:"varint,3,opt,name=cascade,proto3" json:"cascade,omitempty"` // 是否级联删除数据
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DropTableRequest) Reset() {
+	*x = DropTableRequest{}
+	mi := &file_olap_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DropTableRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DropTableRequest) ProtoMessage() {}
+
+func (x *DropTableRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DropTableRequest.ProtoReflect.Descriptor instead.
+func (*DropTableRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *DropTableRequest) GetTableName() string {
+	if x != nil {
+		return x.TableName
+	}
+	return ""
+}
+
+func (x *DropTableRequest) GetIfExists() bool {
+	if x != nil {
+		return x.IfExists
+	}
+	return false
+}
+
+func (x *DropTableRequest) GetCascade() bool {
+	if x != nil {
+		return x.Cascade
+	}
+	return false
+}
+
+type DropTableResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	FilesDeleted  int32                  `protobuf:"varint,3,opt,name=files_deleted,json=filesDeleted,proto3" json:"files_deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DropTableResponse) Reset() {
+	*x = DropTableResponse{}
+	mi := &file_olap_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DropTableResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DropTableResponse) ProtoMessage() {}
+
+func (x *DropTableResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DropTableResponse.ProtoReflect.Descriptor instead.
+func (*DropTableResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DropTableResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *DropTableResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *DropTableResponse) GetFilesDeleted() int32 {
+	if x != nil {
+		return x.FilesDeleted
+	}
+	return 0
+}
+
+// 列出表
+type ListTablesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pattern       string                 `protobuf:"bytes,1,opt,name=pattern,proto3" json:"pattern,omitempty"` // 表名模式匹配
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTablesRequest) Reset() {
+	*x = ListTablesRequest{}
+	mi := &file_olap_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTablesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTablesRequest) ProtoMessage() {}
+
+func (x *ListTablesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTablesRequest.ProtoReflect.Descriptor instead.
+func (*ListTablesRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListTablesRequest) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+type ListTablesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tables        []*TableInfo           `protobuf:"bytes,1,rep,name=tables,proto3" json:"tables,omitempty"`
+	Total         int32                  `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTablesResponse) Reset() {
+	*x = ListTablesResponse{}
+	mi := &file_olap_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTablesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTablesResponse) ProtoMessage() {}
+
+func (x *ListTablesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTablesResponse.ProtoReflect.Descriptor instead.
+func (*ListTablesResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ListTablesResponse) GetTables() []*TableInfo {
+	if x != nil {
+		return x.Tables
+	}
+	return nil
+}
+
+func (x *ListTablesResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+// 表描述
+type DescribeTableRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableName     string                 `protobuf:"bytes,1,opt,name=table_name,json=tableName,proto3" json:"table_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeTableRequest) Reset() {
+	*x = DescribeTableRequest{}
+	mi := &file_olap_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeTableRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeTableRequest) ProtoMessage() {}
+
+func (x *DescribeTableRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeTableRequest.ProtoReflect.Descriptor instead.
+func (*DescribeTableRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DescribeTableRequest) GetTableName() string {
+	if x != nil {
+		return x.TableName
+	}
+	return ""
+}
+
+type DescribeTableResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableInfo     *TableInfo             `protobuf:"bytes,1,opt,name=table_info,json=tableInfo,proto3" json:"table_info,omitempty"`
+	Stats         *TableStats            `protobuf:"bytes,2,opt,name=stats,proto3" json:"stats,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeTableResponse) Reset() {
+	*x = DescribeTableResponse{}
+	mi := &file_olap_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeTableResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeTableResponse) ProtoMessage() {}
+
+func (x *DescribeTableResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeTableResponse.ProtoReflect.Descriptor instead.
+func (*DescribeTableResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DescribeTableResponse) GetTableInfo() *TableInfo {
+	if x != nil {
+		return x.TableInfo
+	}
+	return nil
+}
+
+func (x *DescribeTableResponse) GetStats() *TableStats {
+	if x != nil {
+		return x.Stats
+	}
+	return nil
+}
+
+// 表信息
+type TableInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Config        *TableConfig           `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
+	CreatedAt     string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	LastWrite     string                 `protobuf:"bytes,4,opt,name=last_write,json=lastWrite,proto3" json:"last_write,omitempty"`
+	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"` // active, archived, deleting
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TableInfo) Reset() {
+	*x = TableInfo{}
+	mi := &file_olap_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TableInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TableInfo) ProtoMessage() {}
+
+func (x *TableInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TableInfo.ProtoReflect.Descriptor instead.
+func (*TableInfo) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *TableInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *TableInfo) GetConfig() *TableConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *TableInfo) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *TableInfo) GetLastWrite() string {
+	if x != nil {
+		return x.LastWrite
+	}
+	return ""
+}
+
+func (x *TableInfo) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+// 表配置
+type TableConfig struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	BufferSize           int32                  `protobuf:"varint,1,opt,name=buffer_size,json=bufferSize,proto3" json:"buffer_size,omitempty"`
+	FlushIntervalSeconds int32                  `protobuf:"varint,2,opt,name=flush_interval_seconds,json=flushIntervalSeconds,proto3" json:"flush_interval_seconds,omitempty"`
+	RetentionDays        int32                  `protobuf:"varint,3,opt,name=retention_days,json=retentionDays,proto3" json:"retention_days,omitempty"`
+	BackupEnabled        bool                   `protobuf:"varint,4,opt,name=backup_enabled,json=backupEnabled,proto3" json:"backup_enabled,omitempty"`
+	Properties           map[string]string      `protobuf:"bytes,5,rep,name=properties,proto3" json:"properties,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *TableConfig) Reset() {
+	*x = TableConfig{}
+	mi := &file_olap_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TableConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TableConfig) ProtoMessage() {}
+
+func (x *TableConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TableConfig.ProtoReflect.Descriptor instead.
+func (*TableConfig) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *TableConfig) GetBufferSize() int32 {
+	if x != nil {
+		return x.BufferSize
+	}
+	return 0
+}
+
+func (x *TableConfig) GetFlushIntervalSeconds() int32 {
+	if x != nil {
+		return x.FlushIntervalSeconds
+	}
+	return 0
+}
+
+func (x *TableConfig) GetRetentionDays() int32 {
+	if x != nil {
+		return x.RetentionDays
+	}
+	return 0
+}
+
+func (x *TableConfig) GetBackupEnabled() bool {
+	if x != nil {
+		return x.BackupEnabled
+	}
+	return false
+}
+
+func (x *TableConfig) GetProperties() map[string]string {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
+}
+
+// 表统计
+type TableStats struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RecordCount   int64                  `protobuf:"varint,1,opt,name=record_count,json=recordCount,proto3" json:"record_count,omitempty"`
+	FileCount     int64                  `protobuf:"varint,2,opt,name=file_count,json=fileCount,proto3" json:"file_count,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	OldestRecord  string                 `protobuf:"bytes,4,opt,name=oldest_record,json=oldestRecord,proto3" json:"oldest_record,omitempty"`
+	NewestRecord  string                 `protobuf:"bytes,5,opt,name=newest_record,json=newestRecord,proto3" json:"newest_record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TableStats) Reset() {
+	*x = TableStats{}
+	mi := &file_olap_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TableStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TableStats) ProtoMessage() {}
+
+func (x *TableStats) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TableStats.ProtoReflect.Descriptor instead.
+func (*TableStats) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *TableStats) GetRecordCount() int64 {
+	if x != nil {
+		return x.RecordCount
+	}
+	return 0
+}
+
+func (x *TableStats) GetFileCount() int64 {
+	if x != nil {
+		return x.FileCount
+	}
+	return 0
+}
+
+func (x *TableStats) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *TableStats) GetOldestRecord() string {
+	if x != nil {
+		return x.OldestRecord
+	}
+	return ""
+}
+
+func (x *TableStats) GetNewestRecord() string {
+	if x != nil {
+		return x.NewestRecord
+	}
+	return ""
+}
+
 type TriggerBackupRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -234,7 +901,7 @@ type TriggerBackupRequest struct {
 
 func (x *TriggerBackupRequest) Reset() {
 	*x = TriggerBackupRequest{}
-	mi := &file_olap_proto_msgTypes[4]
+	mi := &file_olap_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -246,7 +913,7 @@ func (x *TriggerBackupRequest) String() string {
 func (*TriggerBackupRequest) ProtoMessage() {}
 
 func (x *TriggerBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[4]
+	mi := &file_olap_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -259,7 +926,7 @@ func (x *TriggerBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerBackupRequest.ProtoReflect.Descriptor instead.
 func (*TriggerBackupRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{4}
+	return file_olap_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *TriggerBackupRequest) GetId() string {
@@ -287,7 +954,7 @@ type TriggerBackupResponse struct {
 
 func (x *TriggerBackupResponse) Reset() {
 	*x = TriggerBackupResponse{}
-	mi := &file_olap_proto_msgTypes[5]
+	mi := &file_olap_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -299,7 +966,7 @@ func (x *TriggerBackupResponse) String() string {
 func (*TriggerBackupResponse) ProtoMessage() {}
 
 func (x *TriggerBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[5]
+	mi := &file_olap_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -312,7 +979,7 @@ func (x *TriggerBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerBackupResponse.ProtoReflect.Descriptor instead.
 func (*TriggerBackupResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{5}
+	return file_olap_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *TriggerBackupResponse) GetSuccess() bool {
@@ -353,7 +1020,7 @@ type RecoverDataRequest struct {
 
 func (x *RecoverDataRequest) Reset() {
 	*x = RecoverDataRequest{}
-	mi := &file_olap_proto_msgTypes[6]
+	mi := &file_olap_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -365,7 +1032,7 @@ func (x *RecoverDataRequest) String() string {
 func (*RecoverDataRequest) ProtoMessage() {}
 
 func (x *RecoverDataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[6]
+	mi := &file_olap_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -378,7 +1045,7 @@ func (x *RecoverDataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecoverDataRequest.ProtoReflect.Descriptor instead.
 func (*RecoverDataRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{6}
+	return file_olap_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RecoverDataRequest) GetRecoveryMode() isRecoverDataRequest_RecoveryMode {
@@ -454,7 +1121,7 @@ type IdRangeFilter struct {
 
 func (x *IdRangeFilter) Reset() {
 	*x = IdRangeFilter{}
-	mi := &file_olap_proto_msgTypes[7]
+	mi := &file_olap_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +1133,7 @@ func (x *IdRangeFilter) String() string {
 func (*IdRangeFilter) ProtoMessage() {}
 
 func (x *IdRangeFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[7]
+	mi := &file_olap_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +1146,7 @@ func (x *IdRangeFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IdRangeFilter.ProtoReflect.Descriptor instead.
 func (*IdRangeFilter) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{7}
+	return file_olap_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *IdRangeFilter) GetIds() []string {
@@ -507,7 +1174,7 @@ type TimeRangeFilter struct {
 
 func (x *TimeRangeFilter) Reset() {
 	*x = TimeRangeFilter{}
-	mi := &file_olap_proto_msgTypes[8]
+	mi := &file_olap_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -519,7 +1186,7 @@ func (x *TimeRangeFilter) String() string {
 func (*TimeRangeFilter) ProtoMessage() {}
 
 func (x *TimeRangeFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[8]
+	mi := &file_olap_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -532,7 +1199,7 @@ func (x *TimeRangeFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimeRangeFilter.ProtoReflect.Descriptor instead.
 func (*TimeRangeFilter) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{8}
+	return file_olap_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TimeRangeFilter) GetStartDate() string {
@@ -568,7 +1235,7 @@ type RecoverDataResponse struct {
 
 func (x *RecoverDataResponse) Reset() {
 	*x = RecoverDataResponse{}
-	mi := &file_olap_proto_msgTypes[9]
+	mi := &file_olap_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -580,7 +1247,7 @@ func (x *RecoverDataResponse) String() string {
 func (*RecoverDataResponse) ProtoMessage() {}
 
 func (x *RecoverDataResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[9]
+	mi := &file_olap_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -593,7 +1260,7 @@ func (x *RecoverDataResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecoverDataResponse.ProtoReflect.Descriptor instead.
 func (*RecoverDataResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{9}
+	return file_olap_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RecoverDataResponse) GetSuccess() bool {
@@ -632,7 +1299,7 @@ type HealthCheckRequest struct {
 
 func (x *HealthCheckRequest) Reset() {
 	*x = HealthCheckRequest{}
-	mi := &file_olap_proto_msgTypes[10]
+	mi := &file_olap_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -644,7 +1311,7 @@ func (x *HealthCheckRequest) String() string {
 func (*HealthCheckRequest) ProtoMessage() {}
 
 func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[10]
+	mi := &file_olap_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -657,7 +1324,7 @@ func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckRequest.ProtoReflect.Descriptor instead.
 func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{10}
+	return file_olap_proto_rawDescGZIP(), []int{21}
 }
 
 type HealthCheckResponse struct {
@@ -672,7 +1339,7 @@ type HealthCheckResponse struct {
 
 func (x *HealthCheckResponse) Reset() {
 	*x = HealthCheckResponse{}
-	mi := &file_olap_proto_msgTypes[11]
+	mi := &file_olap_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -684,7 +1351,7 @@ func (x *HealthCheckResponse) String() string {
 func (*HealthCheckResponse) ProtoMessage() {}
 
 func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[11]
+	mi := &file_olap_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -697,7 +1364,7 @@ func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckResponse.ProtoReflect.Descriptor instead.
 func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{11}
+	return file_olap_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *HealthCheckResponse) GetStatus() string {
@@ -736,7 +1403,7 @@ type GetStatsRequest struct {
 
 func (x *GetStatsRequest) Reset() {
 	*x = GetStatsRequest{}
-	mi := &file_olap_proto_msgTypes[12]
+	mi := &file_olap_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -748,7 +1415,7 @@ func (x *GetStatsRequest) String() string {
 func (*GetStatsRequest) ProtoMessage() {}
 
 func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[12]
+	mi := &file_olap_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -761,7 +1428,7 @@ func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetStatsRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{12}
+	return file_olap_proto_rawDescGZIP(), []int{23}
 }
 
 type GetStatsResponse struct {
@@ -776,7 +1443,7 @@ type GetStatsResponse struct {
 
 func (x *GetStatsResponse) Reset() {
 	*x = GetStatsResponse{}
-	mi := &file_olap_proto_msgTypes[13]
+	mi := &file_olap_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -788,7 +1455,7 @@ func (x *GetStatsResponse) String() string {
 func (*GetStatsResponse) ProtoMessage() {}
 
 func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[13]
+	mi := &file_olap_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -801,7 +1468,7 @@ func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetStatsResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{13}
+	return file_olap_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetStatsResponse) GetTimestamp() string {
@@ -840,7 +1507,7 @@ type GetNodesRequest struct {
 
 func (x *GetNodesRequest) Reset() {
 	*x = GetNodesRequest{}
-	mi := &file_olap_proto_msgTypes[14]
+	mi := &file_olap_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -852,7 +1519,7 @@ func (x *GetNodesRequest) String() string {
 func (*GetNodesRequest) ProtoMessage() {}
 
 func (x *GetNodesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[14]
+	mi := &file_olap_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -865,7 +1532,7 @@ func (x *GetNodesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodesRequest.ProtoReflect.Descriptor instead.
 func (*GetNodesRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{14}
+	return file_olap_proto_rawDescGZIP(), []int{25}
 }
 
 type NodeInfo struct {
@@ -881,7 +1548,7 @@ type NodeInfo struct {
 
 func (x *NodeInfo) Reset() {
 	*x = NodeInfo{}
-	mi := &file_olap_proto_msgTypes[15]
+	mi := &file_olap_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -893,7 +1560,7 @@ func (x *NodeInfo) String() string {
 func (*NodeInfo) ProtoMessage() {}
 
 func (x *NodeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[15]
+	mi := &file_olap_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -906,7 +1573,7 @@ func (x *NodeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeInfo.ProtoReflect.Descriptor instead.
 func (*NodeInfo) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{15}
+	return file_olap_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *NodeInfo) GetId() string {
@@ -954,7 +1621,7 @@ type GetNodesResponse struct {
 
 func (x *GetNodesResponse) Reset() {
 	*x = GetNodesResponse{}
-	mi := &file_olap_proto_msgTypes[16]
+	mi := &file_olap_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -966,7 +1633,7 @@ func (x *GetNodesResponse) String() string {
 func (*GetNodesResponse) ProtoMessage() {}
 
 func (x *GetNodesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[16]
+	mi := &file_olap_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -979,7 +1646,7 @@ func (x *GetNodesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodesResponse.ProtoReflect.Descriptor instead.
 func (*GetNodesResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{16}
+	return file_olap_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetNodesResponse) GetNodes() []*NodeInfo {
@@ -1001,11 +1668,12 @@ var File_olap_proto protoreflect.FileDescriptor
 const file_olap_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"olap.proto\x12\aolap.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8b\x01\n" +
-	"\fWriteRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x128\n" +
-	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x121\n" +
-	"\apayload\x18\x03 \x01(\v2\x17.google.protobuf.StructR\apayload\"C\n" +
+	"olap.proto\x12\aolap.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa1\x01\n" +
+	"\fWriteRequest\x12\x14\n" +
+	"\x05table\x18\x01 \x01(\tR\x05table\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x128\n" +
+	"\ttimestamp\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x121\n" +
+	"\apayload\x18\x04 \x01(\v2\x17.google.protobuf.StructR\apayload\"C\n" +
 	"\rWriteResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\" \n" +
@@ -1013,7 +1681,65 @@ const file_olap_proto_rawDesc = "" +
 	"\x03sql\x18\x01 \x01(\tR\x03sql\"0\n" +
 	"\rQueryResponse\x12\x1f\n" +
 	"\vresult_json\x18\x01 \x01(\tR\n" +
-	"resultJson\"8\n" +
+	"resultJson\"\x85\x01\n" +
+	"\x12CreateTableRequest\x12\x1d\n" +
+	"\n" +
+	"table_name\x18\x01 \x01(\tR\ttableName\x12,\n" +
+	"\x06config\x18\x02 \x01(\v2\x14.olap.v1.TableConfigR\x06config\x12\"\n" +
+	"\rif_not_exists\x18\x03 \x01(\bR\vifNotExists\"I\n" +
+	"\x13CreateTableResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"h\n" +
+	"\x10DropTableRequest\x12\x1d\n" +
+	"\n" +
+	"table_name\x18\x01 \x01(\tR\ttableName\x12\x1b\n" +
+	"\tif_exists\x18\x02 \x01(\bR\bifExists\x12\x18\n" +
+	"\acascade\x18\x03 \x01(\bR\acascade\"l\n" +
+	"\x11DropTableResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12#\n" +
+	"\rfiles_deleted\x18\x03 \x01(\x05R\ffilesDeleted\"-\n" +
+	"\x11ListTablesRequest\x12\x18\n" +
+	"\apattern\x18\x01 \x01(\tR\apattern\"V\n" +
+	"\x12ListTablesResponse\x12*\n" +
+	"\x06tables\x18\x01 \x03(\v2\x12.olap.v1.TableInfoR\x06tables\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\"5\n" +
+	"\x14DescribeTableRequest\x12\x1d\n" +
+	"\n" +
+	"table_name\x18\x01 \x01(\tR\ttableName\"u\n" +
+	"\x15DescribeTableResponse\x121\n" +
+	"\n" +
+	"table_info\x18\x01 \x01(\v2\x12.olap.v1.TableInfoR\ttableInfo\x12)\n" +
+	"\x05stats\x18\x02 \x01(\v2\x13.olap.v1.TableStatsR\x05stats\"\xa3\x01\n" +
+	"\tTableInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
+	"\x06config\x18\x02 \x01(\v2\x14.olap.v1.TableConfigR\x06config\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x03 \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"last_write\x18\x04 \x01(\tR\tlastWrite\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\"\xb7\x02\n" +
+	"\vTableConfig\x12\x1f\n" +
+	"\vbuffer_size\x18\x01 \x01(\x05R\n" +
+	"bufferSize\x124\n" +
+	"\x16flush_interval_seconds\x18\x02 \x01(\x05R\x14flushIntervalSeconds\x12%\n" +
+	"\x0eretention_days\x18\x03 \x01(\x05R\rretentionDays\x12%\n" +
+	"\x0ebackup_enabled\x18\x04 \x01(\bR\rbackupEnabled\x12D\n" +
+	"\n" +
+	"properties\x18\x05 \x03(\v2$.olap.v1.TableConfig.PropertiesEntryR\n" +
+	"properties\x1a=\n" +
+	"\x0fPropertiesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb7\x01\n" +
+	"\n" +
+	"TableStats\x12!\n" +
+	"\frecord_count\x18\x01 \x01(\x03R\vrecordCount\x12\x1d\n" +
+	"\n" +
+	"file_count\x18\x02 \x01(\x03R\tfileCount\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12#\n" +
+	"\roldest_record\x18\x04 \x01(\tR\foldestRecord\x12#\n" +
+	"\rnewest_record\x18\x05 \x01(\tR\fnewestRecord\"8\n" +
 	"\x14TriggerBackupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03day\x18\x02 \x01(\tR\x03day\"s\n" +
@@ -1077,7 +1803,7 @@ const file_olap_proto_rawDesc = "" +
 	"\tlast_seen\x18\x05 \x01(\x03R\blastSeen\"Q\n" +
 	"\x10GetNodesResponse\x12'\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x11.olap.v1.NodeInfoR\x05nodes\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\x05R\x05total2\xe3\x03\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total2\x88\x06\n" +
 	"\vOlapService\x126\n" +
 	"\x05Write\x12\x15.olap.v1.WriteRequest\x1a\x16.olap.v1.WriteResponse\x126\n" +
 	"\x05Query\x12\x15.olap.v1.QueryRequest\x1a\x16.olap.v1.QueryResponse\x12N\n" +
@@ -1085,7 +1811,12 @@ const file_olap_proto_rawDesc = "" +
 	"\vRecoverData\x12\x1b.olap.v1.RecoverDataRequest\x1a\x1c.olap.v1.RecoverDataResponse\x12H\n" +
 	"\vHealthCheck\x12\x1b.olap.v1.HealthCheckRequest\x1a\x1c.olap.v1.HealthCheckResponse\x12?\n" +
 	"\bGetStats\x12\x18.olap.v1.GetStatsRequest\x1a\x19.olap.v1.GetStatsResponse\x12?\n" +
-	"\bGetNodes\x12\x18.olap.v1.GetNodesRequest\x1a\x19.olap.v1.GetNodesResponseB\vZ\t./;olapv1b\x06proto3"
+	"\bGetNodes\x12\x18.olap.v1.GetNodesRequest\x1a\x19.olap.v1.GetNodesResponse\x12H\n" +
+	"\vCreateTable\x12\x1b.olap.v1.CreateTableRequest\x1a\x1c.olap.v1.CreateTableResponse\x12B\n" +
+	"\tDropTable\x12\x19.olap.v1.DropTableRequest\x1a\x1a.olap.v1.DropTableResponse\x12E\n" +
+	"\n" +
+	"ListTables\x12\x1a.olap.v1.ListTablesRequest\x1a\x1b.olap.v1.ListTablesResponse\x12N\n" +
+	"\rDescribeTable\x12\x1d.olap.v1.DescribeTableRequest\x1a\x1e.olap.v1.DescribeTableResponseB\vZ\t./;olapv1b\x06proto3"
 
 var (
 	file_olap_proto_rawDescOnce sync.Once
@@ -1099,61 +1830,87 @@ func file_olap_proto_rawDescGZIP() []byte {
 	return file_olap_proto_rawDescData
 }
 
-var file_olap_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_olap_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_olap_proto_goTypes = []any{
 	(*WriteRequest)(nil),          // 0: olap.v1.WriteRequest
 	(*WriteResponse)(nil),         // 1: olap.v1.WriteResponse
 	(*QueryRequest)(nil),          // 2: olap.v1.QueryRequest
 	(*QueryResponse)(nil),         // 3: olap.v1.QueryResponse
-	(*TriggerBackupRequest)(nil),  // 4: olap.v1.TriggerBackupRequest
-	(*TriggerBackupResponse)(nil), // 5: olap.v1.TriggerBackupResponse
-	(*RecoverDataRequest)(nil),    // 6: olap.v1.RecoverDataRequest
-	(*IdRangeFilter)(nil),         // 7: olap.v1.IdRangeFilter
-	(*TimeRangeFilter)(nil),       // 8: olap.v1.TimeRangeFilter
-	(*RecoverDataResponse)(nil),   // 9: olap.v1.RecoverDataResponse
-	(*HealthCheckRequest)(nil),    // 10: olap.v1.HealthCheckRequest
-	(*HealthCheckResponse)(nil),   // 11: olap.v1.HealthCheckResponse
-	(*GetStatsRequest)(nil),       // 12: olap.v1.GetStatsRequest
-	(*GetStatsResponse)(nil),      // 13: olap.v1.GetStatsResponse
-	(*GetNodesRequest)(nil),       // 14: olap.v1.GetNodesRequest
-	(*NodeInfo)(nil),              // 15: olap.v1.NodeInfo
-	(*GetNodesResponse)(nil),      // 16: olap.v1.GetNodesResponse
-	nil,                           // 17: olap.v1.HealthCheckResponse.DetailsEntry
-	nil,                           // 18: olap.v1.GetStatsResponse.BufferStatsEntry
-	nil,                           // 19: olap.v1.GetStatsResponse.RedisStatsEntry
-	nil,                           // 20: olap.v1.GetStatsResponse.MinioStatsEntry
-	(*timestamppb.Timestamp)(nil), // 21: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 22: google.protobuf.Struct
+	(*CreateTableRequest)(nil),    // 4: olap.v1.CreateTableRequest
+	(*CreateTableResponse)(nil),   // 5: olap.v1.CreateTableResponse
+	(*DropTableRequest)(nil),      // 6: olap.v1.DropTableRequest
+	(*DropTableResponse)(nil),     // 7: olap.v1.DropTableResponse
+	(*ListTablesRequest)(nil),     // 8: olap.v1.ListTablesRequest
+	(*ListTablesResponse)(nil),    // 9: olap.v1.ListTablesResponse
+	(*DescribeTableRequest)(nil),  // 10: olap.v1.DescribeTableRequest
+	(*DescribeTableResponse)(nil), // 11: olap.v1.DescribeTableResponse
+	(*TableInfo)(nil),             // 12: olap.v1.TableInfo
+	(*TableConfig)(nil),           // 13: olap.v1.TableConfig
+	(*TableStats)(nil),            // 14: olap.v1.TableStats
+	(*TriggerBackupRequest)(nil),  // 15: olap.v1.TriggerBackupRequest
+	(*TriggerBackupResponse)(nil), // 16: olap.v1.TriggerBackupResponse
+	(*RecoverDataRequest)(nil),    // 17: olap.v1.RecoverDataRequest
+	(*IdRangeFilter)(nil),         // 18: olap.v1.IdRangeFilter
+	(*TimeRangeFilter)(nil),       // 19: olap.v1.TimeRangeFilter
+	(*RecoverDataResponse)(nil),   // 20: olap.v1.RecoverDataResponse
+	(*HealthCheckRequest)(nil),    // 21: olap.v1.HealthCheckRequest
+	(*HealthCheckResponse)(nil),   // 22: olap.v1.HealthCheckResponse
+	(*GetStatsRequest)(nil),       // 23: olap.v1.GetStatsRequest
+	(*GetStatsResponse)(nil),      // 24: olap.v1.GetStatsResponse
+	(*GetNodesRequest)(nil),       // 25: olap.v1.GetNodesRequest
+	(*NodeInfo)(nil),              // 26: olap.v1.NodeInfo
+	(*GetNodesResponse)(nil),      // 27: olap.v1.GetNodesResponse
+	nil,                           // 28: olap.v1.TableConfig.PropertiesEntry
+	nil,                           // 29: olap.v1.HealthCheckResponse.DetailsEntry
+	nil,                           // 30: olap.v1.GetStatsResponse.BufferStatsEntry
+	nil,                           // 31: olap.v1.GetStatsResponse.RedisStatsEntry
+	nil,                           // 32: olap.v1.GetStatsResponse.MinioStatsEntry
+	(*timestamppb.Timestamp)(nil), // 33: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),       // 34: google.protobuf.Struct
 }
 var file_olap_proto_depIdxs = []int32{
-	21, // 0: olap.v1.WriteRequest.timestamp:type_name -> google.protobuf.Timestamp
-	22, // 1: olap.v1.WriteRequest.payload:type_name -> google.protobuf.Struct
-	7,  // 2: olap.v1.RecoverDataRequest.id_range:type_name -> olap.v1.IdRangeFilter
-	8,  // 3: olap.v1.RecoverDataRequest.time_range:type_name -> olap.v1.TimeRangeFilter
-	17, // 4: olap.v1.HealthCheckResponse.details:type_name -> olap.v1.HealthCheckResponse.DetailsEntry
-	18, // 5: olap.v1.GetStatsResponse.buffer_stats:type_name -> olap.v1.GetStatsResponse.BufferStatsEntry
-	19, // 6: olap.v1.GetStatsResponse.redis_stats:type_name -> olap.v1.GetStatsResponse.RedisStatsEntry
-	20, // 7: olap.v1.GetStatsResponse.minio_stats:type_name -> olap.v1.GetStatsResponse.MinioStatsEntry
-	15, // 8: olap.v1.GetNodesResponse.nodes:type_name -> olap.v1.NodeInfo
-	0,  // 9: olap.v1.OlapService.Write:input_type -> olap.v1.WriteRequest
-	2,  // 10: olap.v1.OlapService.Query:input_type -> olap.v1.QueryRequest
-	4,  // 11: olap.v1.OlapService.TriggerBackup:input_type -> olap.v1.TriggerBackupRequest
-	6,  // 12: olap.v1.OlapService.RecoverData:input_type -> olap.v1.RecoverDataRequest
-	10, // 13: olap.v1.OlapService.HealthCheck:input_type -> olap.v1.HealthCheckRequest
-	12, // 14: olap.v1.OlapService.GetStats:input_type -> olap.v1.GetStatsRequest
-	14, // 15: olap.v1.OlapService.GetNodes:input_type -> olap.v1.GetNodesRequest
-	1,  // 16: olap.v1.OlapService.Write:output_type -> olap.v1.WriteResponse
-	3,  // 17: olap.v1.OlapService.Query:output_type -> olap.v1.QueryResponse
-	5,  // 18: olap.v1.OlapService.TriggerBackup:output_type -> olap.v1.TriggerBackupResponse
-	9,  // 19: olap.v1.OlapService.RecoverData:output_type -> olap.v1.RecoverDataResponse
-	11, // 20: olap.v1.OlapService.HealthCheck:output_type -> olap.v1.HealthCheckResponse
-	13, // 21: olap.v1.OlapService.GetStats:output_type -> olap.v1.GetStatsResponse
-	16, // 22: olap.v1.OlapService.GetNodes:output_type -> olap.v1.GetNodesResponse
-	16, // [16:23] is the sub-list for method output_type
-	9,  // [9:16] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	33, // 0: olap.v1.WriteRequest.timestamp:type_name -> google.protobuf.Timestamp
+	34, // 1: olap.v1.WriteRequest.payload:type_name -> google.protobuf.Struct
+	13, // 2: olap.v1.CreateTableRequest.config:type_name -> olap.v1.TableConfig
+	12, // 3: olap.v1.ListTablesResponse.tables:type_name -> olap.v1.TableInfo
+	12, // 4: olap.v1.DescribeTableResponse.table_info:type_name -> olap.v1.TableInfo
+	14, // 5: olap.v1.DescribeTableResponse.stats:type_name -> olap.v1.TableStats
+	13, // 6: olap.v1.TableInfo.config:type_name -> olap.v1.TableConfig
+	28, // 7: olap.v1.TableConfig.properties:type_name -> olap.v1.TableConfig.PropertiesEntry
+	18, // 8: olap.v1.RecoverDataRequest.id_range:type_name -> olap.v1.IdRangeFilter
+	19, // 9: olap.v1.RecoverDataRequest.time_range:type_name -> olap.v1.TimeRangeFilter
+	29, // 10: olap.v1.HealthCheckResponse.details:type_name -> olap.v1.HealthCheckResponse.DetailsEntry
+	30, // 11: olap.v1.GetStatsResponse.buffer_stats:type_name -> olap.v1.GetStatsResponse.BufferStatsEntry
+	31, // 12: olap.v1.GetStatsResponse.redis_stats:type_name -> olap.v1.GetStatsResponse.RedisStatsEntry
+	32, // 13: olap.v1.GetStatsResponse.minio_stats:type_name -> olap.v1.GetStatsResponse.MinioStatsEntry
+	26, // 14: olap.v1.GetNodesResponse.nodes:type_name -> olap.v1.NodeInfo
+	0,  // 15: olap.v1.OlapService.Write:input_type -> olap.v1.WriteRequest
+	2,  // 16: olap.v1.OlapService.Query:input_type -> olap.v1.QueryRequest
+	15, // 17: olap.v1.OlapService.TriggerBackup:input_type -> olap.v1.TriggerBackupRequest
+	17, // 18: olap.v1.OlapService.RecoverData:input_type -> olap.v1.RecoverDataRequest
+	21, // 19: olap.v1.OlapService.HealthCheck:input_type -> olap.v1.HealthCheckRequest
+	23, // 20: olap.v1.OlapService.GetStats:input_type -> olap.v1.GetStatsRequest
+	25, // 21: olap.v1.OlapService.GetNodes:input_type -> olap.v1.GetNodesRequest
+	4,  // 22: olap.v1.OlapService.CreateTable:input_type -> olap.v1.CreateTableRequest
+	6,  // 23: olap.v1.OlapService.DropTable:input_type -> olap.v1.DropTableRequest
+	8,  // 24: olap.v1.OlapService.ListTables:input_type -> olap.v1.ListTablesRequest
+	10, // 25: olap.v1.OlapService.DescribeTable:input_type -> olap.v1.DescribeTableRequest
+	1,  // 26: olap.v1.OlapService.Write:output_type -> olap.v1.WriteResponse
+	3,  // 27: olap.v1.OlapService.Query:output_type -> olap.v1.QueryResponse
+	16, // 28: olap.v1.OlapService.TriggerBackup:output_type -> olap.v1.TriggerBackupResponse
+	20, // 29: olap.v1.OlapService.RecoverData:output_type -> olap.v1.RecoverDataResponse
+	22, // 30: olap.v1.OlapService.HealthCheck:output_type -> olap.v1.HealthCheckResponse
+	24, // 31: olap.v1.OlapService.GetStats:output_type -> olap.v1.GetStatsResponse
+	27, // 32: olap.v1.OlapService.GetNodes:output_type -> olap.v1.GetNodesResponse
+	5,  // 33: olap.v1.OlapService.CreateTable:output_type -> olap.v1.CreateTableResponse
+	7,  // 34: olap.v1.OlapService.DropTable:output_type -> olap.v1.DropTableResponse
+	9,  // 35: olap.v1.OlapService.ListTables:output_type -> olap.v1.ListTablesResponse
+	11, // 36: olap.v1.OlapService.DescribeTable:output_type -> olap.v1.DescribeTableResponse
+	26, // [26:37] is the sub-list for method output_type
+	15, // [15:26] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_olap_proto_init() }
@@ -1161,7 +1918,7 @@ func file_olap_proto_init() {
 	if File_olap_proto != nil {
 		return
 	}
-	file_olap_proto_msgTypes[6].OneofWrappers = []any{
+	file_olap_proto_msgTypes[17].OneofWrappers = []any{
 		(*RecoverDataRequest_NodeId)(nil),
 		(*RecoverDataRequest_IdRange)(nil),
 		(*RecoverDataRequest_TimeRange)(nil),
@@ -1172,7 +1929,7 @@ func file_olap_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_olap_proto_rawDesc), len(file_olap_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

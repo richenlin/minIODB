@@ -26,7 +26,7 @@ type Server struct {
 	cfg              *config.Config
 	router           *gin.Engine
 	server           *http.Server
-	
+
 	// 安全相关
 	authManager        *security.AuthManager
 	securityMiddleware *security.SecurityMiddleware
@@ -34,6 +34,7 @@ type Server struct {
 
 // WriteRequest REST API写入请求
 type WriteRequest struct {
+	Table     string                 `json:"table,omitempty"` // 表名（新增）
 	ID        string                 `json:"id" binding:"required"`
 	Timestamp time.Time              `json:"timestamp" binding:"required"`
 	Payload   map[string]interface{} `json:"payload" binding:"required"`
@@ -79,10 +80,10 @@ type ErrorResponse struct {
 // RecoverDataRequest 数据恢复请求结构 - 与gRPC API保持一致
 type RecoverDataRequest struct {
 	// 恢复模式：可以按ID范围、时间范围或节点ID恢复
-	NodeID       *string           `json:"node_id,omitempty"`        // 恢复特定节点的所有数据
-	IDRange      *IDRangeFilter    `json:"id_range,omitempty"`       // 恢复特定ID范围的数据
-	TimeRange    *TimeRangeFilter  `json:"time_range,omitempty"`     // 恢复特定时间范围的数据
-	ForceOverwrite bool            `json:"force_overwrite"`          // 是否强制覆盖已存在的数据
+	NodeID         *string          `json:"node_id,omitempty"`    // 恢复特定节点的所有数据
+	IDRange        *IDRangeFilter   `json:"id_range,omitempty"`   // 恢复特定ID范围的数据
+	TimeRange      *TimeRangeFilter `json:"time_range,omitempty"` // 恢复特定时间范围的数据
+	ForceOverwrite bool             `json:"force_overwrite"`      // 是否强制覆盖已存在的数据
 }
 
 // IDRangeFilter ID范围过滤器
@@ -93,9 +94,9 @@ type IDRangeFilter struct {
 
 // TimeRangeFilter 时间范围过滤器
 type TimeRangeFilter struct {
-	StartDate string   `json:"start_date"`         // 开始日期 YYYY-MM-DD
-	EndDate   string   `json:"end_date"`           // 结束日期 YYYY-MM-DD
-	IDs       []string `json:"ids,omitempty"`      // 可选：限制特定ID
+	StartDate string   `json:"start_date"`    // 开始日期 YYYY-MM-DD
+	EndDate   string   `json:"end_date"`      // 结束日期 YYYY-MM-DD
+	IDs       []string `json:"ids,omitempty"` // 可选：限制特定ID
 }
 
 // RecoverDataResponse 数据恢复响应结构 - 与gRPC API保持一致
@@ -108,10 +109,10 @@ type RecoverDataResponse struct {
 
 // StatsResponse 统计信息响应
 type StatsResponse struct {
-	Timestamp   string            `json:"timestamp"`
-	BufferStats map[string]int64  `json:"buffer_stats"`
-	RedisStats  map[string]int64  `json:"redis_stats"`
-	MinioStats  map[string]int64  `json:"minio_stats"`
+	Timestamp   string           `json:"timestamp"`
+	BufferStats map[string]int64 `json:"buffer_stats"`
+	RedisStats  map[string]int64 `json:"redis_stats"`
+	MinioStats  map[string]int64 `json:"minio_stats"`
 }
 
 // HealthResponse 健康检查响应
@@ -137,13 +138,86 @@ type NodesResponse struct {
 	Total int32      `json:"total"`
 }
 
+// 表管理相关结构体定义
+
+// CreateTableRequest 创建表请求
+type CreateTableRequest struct {
+	TableName   string       `json:"table_name" binding:"required"`
+	Config      *TableConfig `json:"config"`
+	IfNotExists bool         `json:"if_not_exists"`
+}
+
+// CreateTableResponse 创建表响应
+type CreateTableResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// TableConfig 表配置
+type TableConfig struct {
+	BufferSize           int32             `json:"buffer_size"`
+	FlushIntervalSeconds int32             `json:"flush_interval_seconds"`
+	RetentionDays        int32             `json:"retention_days"`
+	BackupEnabled        bool              `json:"backup_enabled"`
+	Properties           map[string]string `json:"properties"`
+}
+
+// ListTablesRequest 列出表请求
+type ListTablesRequest struct {
+	Pattern string `json:"pattern,omitempty"`
+}
+
+// ListTablesResponse 列出表响应
+type ListTablesResponse struct {
+	Tables []TableInfo `json:"tables"`
+	Total  int32       `json:"total"`
+}
+
+// TableInfo 表信息
+type TableInfo struct {
+	Name      string       `json:"name"`
+	Config    *TableConfig `json:"config"`
+	CreatedAt string       `json:"created_at"`
+	LastWrite string       `json:"last_write"`
+	Status    string       `json:"status"`
+}
+
+// DescribeTableResponse 描述表响应
+type DescribeTableResponse struct {
+	TableInfo *TableInfo  `json:"table_info"`
+	Stats     *TableStats `json:"stats"`
+}
+
+// TableStats 表统计
+type TableStats struct {
+	RecordCount  int64  `json:"record_count"`
+	FileCount    int64  `json:"file_count"`
+	SizeBytes    int64  `json:"size_bytes"`
+	OldestRecord string `json:"oldest_record"`
+	NewestRecord string `json:"newest_record"`
+}
+
+// DropTableRequest 删除表请求
+type DropTableRequest struct {
+	TableName string `json:"table_name" binding:"required"`
+	IfExists  bool   `json:"if_exists"`
+	Cascade   bool   `json:"cascade"`
+}
+
+// DropTableResponse 删除表响应
+type DropTableResponse struct {
+	Success      bool   `json:"success"`
+	Message      string `json:"message"`
+	FilesDeleted int32  `json:"files_deleted"`
+}
+
 // NewServer 创建新的REST服务器
 func NewServer(olapService *service.OlapService, cfg *config.Config) *Server {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
-	
+
 	// 初始化认证管理器
 	authConfig := &security.AuthConfig{
 		Mode:            cfg.Security.Mode,
@@ -172,9 +246,9 @@ func NewServer(olapService *service.OlapService, cfg *config.Config) *Server {
 
 	server.setupMiddleware()
 	server.setupRoutes()
-	
+
 	log.Printf("REST server initialized with authentication mode: %s", cfg.Security.Mode)
-	
+
 	return server
 }
 
@@ -183,12 +257,12 @@ func (s *Server) setupMiddleware() {
 	// 基础中间件
 	s.router.Use(gin.Logger())
 	s.router.Use(gin.Recovery())
-	
+
 	// 安全中间件
 	s.router.Use(s.securityMiddleware.CORS())
 	s.router.Use(s.securityMiddleware.SecurityHeaders())
 	s.router.Use(s.securityMiddleware.RequestLogger())
-	
+
 	// 可选的限流中间件
 	s.router.Use(s.securityMiddleware.RateLimiter(60)) // 每分钟60个请求
 }
@@ -206,21 +280,27 @@ func (s *Server) setupRoutes() {
 	{
 		// 不需要认证的路由
 		v1.GET("/health", s.healthCheck)
-		
+
 		// 需要认证的路由组
 		authRequired := v1.Group("")
 		authRequired.Use(s.securityMiddleware.AuthRequired())
 		{
 			// 数据写入
 			authRequired.POST("/data", s.writeData)
-			
+
 			// 数据查询
 			authRequired.POST("/query", s.queryData)
-			
+
+			// 表管理
+			authRequired.POST("/tables", s.createTable)
+			authRequired.GET("/tables", s.listTables)
+			authRequired.GET("/tables/:table_name", s.describeTable)
+			authRequired.DELETE("/tables/:table_name", s.dropTable)
+
 			// 备份相关
 			authRequired.POST("/backup/trigger", s.triggerBackup)
 			authRequired.POST("/backup/recover", s.recoverData)
-			
+
 			// 系统信息
 			authRequired.GET("/stats", s.getStats)
 			authRequired.GET("/nodes", s.getNodes)
@@ -284,6 +364,7 @@ func (s *Server) writeData(c *gin.Context) {
 	}
 
 	grpcReq := &olapv1.WriteRequest{
+		Table:     req.Table, // 添加表名支持
 		Id:        req.ID,
 		Timestamp: timestamppb.New(req.Timestamp),
 		Payload:   payloadStruct,
@@ -538,4 +619,225 @@ func (s *Server) Stop(ctx context.Context) error {
 		return s.server.Shutdown(ctx)
 	}
 	return nil
-} 
+}
+
+// 表管理相关处理函数
+
+// createTable 创建表
+func (s *Server) createTable(c *gin.Context) {
+	var req CreateTableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
+		})
+		return
+	}
+
+	// 转换为gRPC请求格式
+	grpcReq := &service.CreateTableRequest{
+		TableName:   req.TableName,
+		IfNotExists: req.IfNotExists,
+	}
+
+	// 转换配置
+	if req.Config != nil {
+		grpcReq.Config = &service.TableConfig{
+			BufferSize:           req.Config.BufferSize,
+			FlushIntervalSeconds: req.Config.FlushIntervalSeconds,
+			RetentionDays:        req.Config.RetentionDays,
+			BackupEnabled:        req.Config.BackupEnabled,
+			Properties:           req.Config.Properties,
+		}
+	}
+
+	// 委托给service层处理
+	grpcResp, err := s.olapService.CreateTable(c.Request.Context(), grpcReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "create_table_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Create table failed: %v", err),
+		})
+		return
+	}
+
+	// 转换为REST响应格式
+	response := CreateTableResponse{
+		Success: grpcResp.Success,
+		Message: grpcResp.Message,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// listTables 列出表
+func (s *Server) listTables(c *gin.Context) {
+	// 获取查询参数
+	pattern := c.Query("pattern")
+
+	// 转换为gRPC请求格式
+	grpcReq := &service.ListTablesRequest{
+		Pattern: pattern,
+	}
+
+	// 委托给service层处理
+	grpcResp, err := s.olapService.ListTables(c.Request.Context(), grpcReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "list_tables_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("List tables failed: %v", err),
+		})
+		return
+	}
+
+	// 转换为REST响应格式
+	var tables []TableInfo
+	for _, table := range grpcResp.Tables {
+		tableInfo := TableInfo{
+			Name:      table.Name,
+			CreatedAt: table.CreatedAt,
+			LastWrite: table.LastWrite,
+			Status:    table.Status,
+		}
+
+		// 转换配置
+		if table.Config != nil {
+			tableInfo.Config = &TableConfig{
+				BufferSize:           table.Config.BufferSize,
+				FlushIntervalSeconds: table.Config.FlushIntervalSeconds,
+				RetentionDays:        table.Config.RetentionDays,
+				BackupEnabled:        table.Config.BackupEnabled,
+				Properties:           table.Config.Properties,
+			}
+		}
+
+		tables = append(tables, tableInfo)
+	}
+
+	response := ListTablesResponse{
+		Tables: tables,
+		Total:  grpcResp.Total,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// describeTable 描述表
+func (s *Server) describeTable(c *gin.Context) {
+	tableName := c.Param("table_name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: "table_name is required",
+		})
+		return
+	}
+
+	// 转换为gRPC请求格式
+	grpcReq := &service.DescribeTableRequest{
+		TableName: tableName,
+	}
+
+	// 委托给service层处理
+	grpcResp, err := s.olapService.DescribeTable(c.Request.Context(), grpcReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "describe_table_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Describe table failed: %v", err),
+		})
+		return
+	}
+
+	// 转换为REST响应格式
+	response := DescribeTableResponse{
+		TableInfo: &TableInfo{
+			Name:      grpcResp.TableInfo.Name,
+			CreatedAt: grpcResp.TableInfo.CreatedAt,
+			LastWrite: grpcResp.TableInfo.LastWrite,
+			Status:    grpcResp.TableInfo.Status,
+		},
+		Stats: &TableStats{
+			RecordCount:  grpcResp.Stats.RecordCount,
+			FileCount:    grpcResp.Stats.FileCount,
+			SizeBytes:    grpcResp.Stats.SizeBytes,
+			OldestRecord: grpcResp.Stats.OldestRecord,
+			NewestRecord: grpcResp.Stats.NewestRecord,
+		},
+	}
+
+	// 转换配置
+	if grpcResp.TableInfo.Config != nil {
+		response.TableInfo.Config = &TableConfig{
+			BufferSize:           grpcResp.TableInfo.Config.BufferSize,
+			FlushIntervalSeconds: grpcResp.TableInfo.Config.FlushIntervalSeconds,
+			RetentionDays:        grpcResp.TableInfo.Config.RetentionDays,
+			BackupEnabled:        grpcResp.TableInfo.Config.BackupEnabled,
+			Properties:           grpcResp.TableInfo.Config.Properties,
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// dropTable 删除表
+func (s *Server) dropTable(c *gin.Context) {
+	tableName := c.Param("table_name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: "table_name is required",
+		})
+		return
+	}
+
+	var req DropTableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// 如果没有请求体，使用默认值
+		req = DropTableRequest{
+			TableName: tableName,
+			IfExists:  false,
+			Cascade:   false,
+		}
+	} else {
+		// 确保路径参数和请求体中的表名一致
+		req.TableName = tableName
+	}
+
+	// 从查询参数获取cascade参数
+	if cascadeParam := c.Query("cascade"); cascadeParam == "true" {
+		req.Cascade = true
+	}
+
+	// 转换为gRPC请求格式
+	grpcReq := &service.DropTableRequest{
+		TableName: req.TableName,
+		IfExists:  req.IfExists,
+		Cascade:   req.Cascade,
+	}
+
+	// 委托给service层处理
+	grpcResp, err := s.olapService.DropTable(c.Request.Context(), grpcReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "drop_table_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Drop table failed: %v", err),
+		})
+		return
+	}
+
+	// 转换为REST响应格式
+	response := DropTableResponse{
+		Success:      grpcResp.Success,
+		Message:      grpcResp.Message,
+		FilesDeleted: grpcResp.FilesDeleted,
+	}
+
+	c.JSON(http.StatusOK, response)
+}

@@ -26,6 +26,10 @@ const (
 	OlapService_HealthCheck_FullMethodName   = "/olap.v1.OlapService/HealthCheck"
 	OlapService_GetStats_FullMethodName      = "/olap.v1.OlapService/GetStats"
 	OlapService_GetNodes_FullMethodName      = "/olap.v1.OlapService/GetNodes"
+	OlapService_CreateTable_FullMethodName   = "/olap.v1.OlapService/CreateTable"
+	OlapService_DropTable_FullMethodName     = "/olap.v1.OlapService/DropTable"
+	OlapService_ListTables_FullMethodName    = "/olap.v1.OlapService/ListTables"
+	OlapService_DescribeTable_FullMethodName = "/olap.v1.OlapService/DescribeTable"
 )
 
 // OlapServiceClient is the client API for OlapService service.
@@ -46,6 +50,11 @@ type OlapServiceClient interface {
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
 	// 获取集群节点信息
 	GetNodes(ctx context.Context, in *GetNodesRequest, opts ...grpc.CallOption) (*GetNodesResponse, error)
+	// 表管理接口
+	CreateTable(ctx context.Context, in *CreateTableRequest, opts ...grpc.CallOption) (*CreateTableResponse, error)
+	DropTable(ctx context.Context, in *DropTableRequest, opts ...grpc.CallOption) (*DropTableResponse, error)
+	ListTables(ctx context.Context, in *ListTablesRequest, opts ...grpc.CallOption) (*ListTablesResponse, error)
+	DescribeTable(ctx context.Context, in *DescribeTableRequest, opts ...grpc.CallOption) (*DescribeTableResponse, error)
 }
 
 type olapServiceClient struct {
@@ -126,6 +135,46 @@ func (c *olapServiceClient) GetNodes(ctx context.Context, in *GetNodesRequest, o
 	return out, nil
 }
 
+func (c *olapServiceClient) CreateTable(ctx context.Context, in *CreateTableRequest, opts ...grpc.CallOption) (*CreateTableResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateTableResponse)
+	err := c.cc.Invoke(ctx, OlapService_CreateTable_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *olapServiceClient) DropTable(ctx context.Context, in *DropTableRequest, opts ...grpc.CallOption) (*DropTableResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DropTableResponse)
+	err := c.cc.Invoke(ctx, OlapService_DropTable_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *olapServiceClient) ListTables(ctx context.Context, in *ListTablesRequest, opts ...grpc.CallOption) (*ListTablesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTablesResponse)
+	err := c.cc.Invoke(ctx, OlapService_ListTables_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *olapServiceClient) DescribeTable(ctx context.Context, in *DescribeTableRequest, opts ...grpc.CallOption) (*DescribeTableResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DescribeTableResponse)
+	err := c.cc.Invoke(ctx, OlapService_DescribeTable_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OlapServiceServer is the server API for OlapService service.
 // All implementations must embed UnimplementedOlapServiceServer
 // for forward compatibility.
@@ -144,6 +193,11 @@ type OlapServiceServer interface {
 	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
 	// 获取集群节点信息
 	GetNodes(context.Context, *GetNodesRequest) (*GetNodesResponse, error)
+	// 表管理接口
+	CreateTable(context.Context, *CreateTableRequest) (*CreateTableResponse, error)
+	DropTable(context.Context, *DropTableRequest) (*DropTableResponse, error)
+	ListTables(context.Context, *ListTablesRequest) (*ListTablesResponse, error)
+	DescribeTable(context.Context, *DescribeTableRequest) (*DescribeTableResponse, error)
 	mustEmbedUnimplementedOlapServiceServer()
 }
 
@@ -174,6 +228,18 @@ func (UnimplementedOlapServiceServer) GetStats(context.Context, *GetStatsRequest
 }
 func (UnimplementedOlapServiceServer) GetNodes(context.Context, *GetNodesRequest) (*GetNodesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetNodes not implemented")
+}
+func (UnimplementedOlapServiceServer) CreateTable(context.Context, *CreateTableRequest) (*CreateTableResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateTable not implemented")
+}
+func (UnimplementedOlapServiceServer) DropTable(context.Context, *DropTableRequest) (*DropTableResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DropTable not implemented")
+}
+func (UnimplementedOlapServiceServer) ListTables(context.Context, *ListTablesRequest) (*ListTablesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListTables not implemented")
+}
+func (UnimplementedOlapServiceServer) DescribeTable(context.Context, *DescribeTableRequest) (*DescribeTableResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DescribeTable not implemented")
 }
 func (UnimplementedOlapServiceServer) mustEmbedUnimplementedOlapServiceServer() {}
 func (UnimplementedOlapServiceServer) testEmbeddedByValue()                     {}
@@ -322,6 +388,78 @@ func _OlapService_GetNodes_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OlapService_CreateTable_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateTableRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).CreateTable(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_CreateTable_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).CreateTable(ctx, req.(*CreateTableRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OlapService_DropTable_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DropTableRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).DropTable(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_DropTable_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).DropTable(ctx, req.(*DropTableRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OlapService_ListTables_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTablesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).ListTables(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_ListTables_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).ListTables(ctx, req.(*ListTablesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OlapService_DescribeTable_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DescribeTableRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).DescribeTable(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_DescribeTable_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).DescribeTable(ctx, req.(*DescribeTableRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OlapService_ServiceDesc is the grpc.ServiceDesc for OlapService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -356,6 +494,22 @@ var OlapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetNodes",
 			Handler:    _OlapService_GetNodes_Handler,
+		},
+		{
+			MethodName: "CreateTable",
+			Handler:    _OlapService_CreateTable_Handler,
+		},
+		{
+			MethodName: "DropTable",
+			Handler:    _OlapService_DropTable_Handler,
+		},
+		{
+			MethodName: "ListTables",
+			Handler:    _OlapService_ListTables_Handler,
+		},
+		{
+			MethodName: "DescribeTable",
+			Handler:    _OlapService_DescribeTable_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
