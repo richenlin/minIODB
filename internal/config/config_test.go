@@ -219,8 +219,15 @@ backup:
 }
 
 func TestLoadConfig_FileNotFound(t *testing.T) {
-	_, err := LoadConfig("nonexistent.yaml")
-	assert.Error(t, err)
+	// LoadConfig 在文件不存在时不会返回错误，而是返回默认配置
+	config, err := LoadConfig("nonexistent.yaml")
+	assert.NoError(t, err)
+	assert.NotNil(t, config)
+
+	// 验证返回的是默认配置
+	assert.Equal(t, ":8080", config.Server.GrpcPort)
+	assert.Equal(t, ":8081", config.Server.RestPort)
+	assert.Equal(t, "localhost:6379", config.Redis.Addr)
 }
 
 func TestLoadConfig_InvalidYAML(t *testing.T) {
