@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	pb "minIODB/api/proto/olap/v1"
 	"minIODB/internal/buffer"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
@@ -24,7 +25,6 @@ import (
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
-	pb "minIODB/api/proto/olap/v1"
 )
 
 func main() {
@@ -72,13 +72,13 @@ func main() {
 
 	// 初始化服务组件
 	sharedBuffer := buffer.NewSharedBuffer(
-		redisClient.GetClient(), 
-		primaryMinio, 
-		backupMinio, 
-		cfg.Backup.MinIO.Bucket, 
+		redisClient.GetClient(),
+		primaryMinio,
+		backupMinio,
+		cfg.Backup.MinIO.Bucket,
 		cfg,
 	)
-	
+
 	ingesterService := ingest.NewIngester(sharedBuffer)
 	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg.MinIO, sharedBuffer)
 	if err != nil {
@@ -102,10 +102,12 @@ func main() {
 	queryCoord := coordinator.NewQueryCoordinator(redisClient.GetClient(), serviceRegistry)
 
 	// 创建gRPC传输层
-	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoordinator, queryCoord, redisClient, primaryMinio, backupMinio)
+	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoordinator,
+		queryCoord, redisClient, primaryMinio, backupMinio)
 
 	// 启动REST服务器
-	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoordinator, queryCoord, redisClient, primaryMinio, backupMinio, bufferManager)
+	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoordinator,
+		queryCoord, redisClient, primaryMinio, backupMinio, bufferManager)
 
 	// 启动缓冲区刷新goroutine
 	go func() {
@@ -154,18 +156,18 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	if err != nil {
 		log.Fatalf("Failed to create OLAP service: %v", err)
 	}
-	
+
 	// 创建gRPC服务
 	grpcService, err := grpcTransport.NewServer(olapService, *cfg)
 	if err != nil {
 		log.Fatalf("Failed to create gRPC service: %v", err)
 	}
-	
+
 	grpcServer := grpc.NewServer()
-	
+
 	// 注册服务
 	pb.RegisterOlapServiceServer(grpcServer, grpcService)
-	
+
 	// 启用反射（用于调试）
 	reflection.Register(grpcServer)
 
@@ -194,7 +196,7 @@ func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 
 	// 创建REST服务器
 	restServer := restTransport.NewServer(olapService, cfg)
-	
+
 	// 设置协调器
 	restServer.SetCoordinators(writeCoord, queryCoord)
 
@@ -211,16 +213,16 @@ func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 
 func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
 	log.Println("Starting backup routine")
-	
+
 	ticker := time.NewTicker(time.Duration(cfg.Backup.Interval) * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		log.Println("Starting backup process")
-		
+
 		// 简化的备份逻辑
 		// TODO: 实现完整的备份逻辑
-		
+
 		log.Println("Backup process completed")
 	}
 }
