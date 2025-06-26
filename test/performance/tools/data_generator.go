@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -17,7 +18,7 @@ import (
 type WriteRequest struct {
 	Table     string                 `json:"table,omitempty"`
 	ID        string                 `json:"id"`
-	Timestamp time.Time              `json:"timestamp"`
+	Timestamp string                 `json:"timestamp"`
 	Payload   map[string]interface{} `json:"payload"`
 }
 
@@ -74,47 +75,43 @@ func main1() {
 				Timeout: 30 * time.Second,
 			}
 
-			for j := 0; j < recordsPerWorker; j++ {
-				recordID := fmt.Sprintf("worker-%d-record-%d", workerID, j)
+			apiEndpoint := apiURL + "/v1/data"
 
-				// 创建测试数据
-				req := WriteRequest{
-					Table:     "performance_test",
-					ID:        recordID,
-					Timestamp: time.Now(),
+			for j := 0; j < recordsPerWorker; j++ {
+				// 生成测试数据
+				testData := WriteRequest{
+					Table:     "test_table",
+					ID:        fmt.Sprintf("record_%d_%d", workerID, j),
+					Timestamp: time.Now().Format(time.RFC3339),
 					Payload: map[string]interface{}{
-						"worker_id":    workerID,
-						"record_index": j,
-						"value":        fmt.Sprintf("test-value-%d-%d", workerID, j),
-						"score":        float64(j * 10),
-						"active":       j%2 == 0,
-						"created_at":   time.Now().Unix(),
+						"worker_id":  workerID,
+						"record_num": j,
+						"value":      rand.Float64() * 100,
+						"status":     "active",
+						"timestamp":  time.Now().Unix(),
+						"metadata": map[string]interface{}{
+							"source": "data_generator",
+							"batch":  j / 100,
+						},
 					},
 				}
 
-				// 发送HTTP请求
-				if err := sendWriteRequest(client, apiURL+"/v1/data", req, jwtToken); err != nil {
-					log.Printf("Worker %d 发送请求失败: %v", workerID, err)
-					mu.Lock()
-					errorCount++
-					mu.Unlock()
-				} else {
-					mu.Lock()
-					successCount++
-					mu.Unlock()
-				}
+				err := sendWriteRequest(client, apiEndpoint, testData, jwtToken)
 
-				// 每100个请求输出一次进度
-				if (j+1)%100 == 0 {
-					log.Printf("Worker %d 已完成 %d 个请求", workerID, j+1)
+				mu.Lock()
+				if err != nil {
+					errorCount++
+					log.Printf("Worker %d 发送请求失败: %v", workerID, err)
+				} else {
+					successCount++
 				}
+				mu.Unlock()
 			}
 
 			log.Printf("Worker %d 完成所有请求", workerID)
 		}(i)
 	}
 
-	// 等待所有worker完成
 	wg.Wait()
 
 	duration := time.Since(startTime)
@@ -122,7 +119,7 @@ func main1() {
 	log.Printf("总耗时: %v", duration)
 	log.Printf("成功请求: %d", successCount)
 	log.Printf("失败请求: %d", errorCount)
-	log.Printf("每秒请求数: %.2f", float64(successCount)/duration.Seconds())
+	log.Printf("每秒请求数: %.2f", float64(totalRecords)/duration.Seconds())
 }
 
 // sendWriteRequest 发送写入请求
