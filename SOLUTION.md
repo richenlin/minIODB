@@ -31,7 +31,6 @@
 |  - Request Parsing & Validation          |
 |  - Query Coordination                    |
 |  - Result Aggregation                    |
-|  - Table Management                      |
 +------------------------------------------+
       ^   |                    ^   |
       |   |                    |   |  (Service Discovery & Query Planning)

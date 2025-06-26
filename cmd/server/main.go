@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -43,6 +44,13 @@ func main() {
 		fmt.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+
+	// 初始化 logger
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("Failed to create logger: %v", err)
+	}
+	defer logger.Sync()
 
 	log.Println("Starting MinIODB server...")
 
@@ -87,7 +95,7 @@ func main() {
 	)
 
 	ingesterService := ingest.NewIngester(sharedBuffer)
-	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg.MinIO, sharedBuffer)
+	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg.MinIO, sharedBuffer, logger)
 	if err != nil {
 		log.Fatalf("Failed to create querier service: %v", err)
 	}
