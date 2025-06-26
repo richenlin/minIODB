@@ -1,17 +1,25 @@
 # 使用官方Go镜像作为构建环境
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24 AS builder
 
 # 设置工作目录
 WORKDIR /app
 
-# 安装必要的系统依赖
-RUN apk add --no-cache \
+# 更新包管理器并安装必要的系统依赖
+RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
     tzdata \
     gcc \
-    musl-dev \
-    sqlite-dev
+    g++ \
+    libc6-dev \
+    pkg-config \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# 设置环境变量
+ENV CGO_ENABLED=1
+ENV GOOS=linux
+ENV GOARCH=amd64
 
 # 复制go.mod和go.sum文件
 COPY go.mod go.sum ./
@@ -23,24 +31,25 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o miniodb cmd/server/main.go
+RUN go build -o miniodb cmd/server/main.go
 
-# 使用Alpine Linux作为运行时镜像
-FROM alpine:latest
+# 使用Ubuntu作为运行时镜像
+FROM ubuntu:22.04
 
 # 安装运行时依赖
-RUN apk --no-cache add \
+RUN apt-get update && apt-get install -y \
     ca-certificates \
     tzdata \
     curl \
-    sqlite
+    && rm -rf /var/lib/apt/lists/*
 
 # 设置时区
 ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 创建非root用户
-RUN addgroup -g 1001 miniodb && \
-    adduser -D -s /bin/sh -u 1001 -G miniodb miniodb
+RUN groupadd -g 1001 miniodb && \
+    useradd -r -u 1001 -g miniodb miniodb
 
 # 设置工作目录
 WORKDIR /app
@@ -52,8 +61,8 @@ RUN mkdir -p /app/logs /app/config /app/certs && \
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/miniodb /app/miniodb
 
-# 复制配置文件
-COPY --chown=miniodb:miniodb config.yaml /app/config/
+# 复制配置文件（如果存在）
+COPY --from=builder --chown=miniodb:miniodb /app/config.yaml /app/config/config.yaml
 
 # 设置权限
 RUN chmod +x /app/miniodb

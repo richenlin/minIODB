@@ -191,6 +191,9 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 	}
 
+	// 使用环境变量覆盖配置
+	config.overrideWithEnv()
+
 	// 验证配置
 	if err := config.validate(); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
@@ -274,6 +277,80 @@ func (c *Config) setDefaults() {
 			Properties:    make(map[string]string),
 		},
 		Tables: make(map[string]TableConfig),
+	}
+}
+
+// overrideWithEnv 使用环境变量覆盖配置
+func (c *Config) overrideWithEnv() {
+	// Redis配置环境变量覆盖
+	if redisHost := os.Getenv("REDIS_HOST"); redisHost != "" {
+		redisPort := os.Getenv("REDIS_PORT")
+		if redisPort == "" {
+			redisPort = "6379"
+		}
+		c.Redis.Addr = redisHost + ":" + redisPort
+	}
+	if redisPassword := os.Getenv("REDIS_PASSWORD"); redisPassword != "" {
+		c.Redis.Password = redisPassword
+	}
+	if redisDB := os.Getenv("REDIS_DB"); redisDB != "" {
+		if db, err := fmt.Sscanf(redisDB, "%d", &c.Redis.DB); err == nil && db == 1 {
+			// DB值已设置
+		}
+	}
+
+	// MinIO配置环境变量覆盖
+	if minioEndpoint := os.Getenv("MINIO_ENDPOINT"); minioEndpoint != "" {
+		c.MinIO.Endpoint = minioEndpoint
+	}
+	if minioAccessKey := os.Getenv("MINIO_ACCESS_KEY"); minioAccessKey != "" {
+		c.MinIO.AccessKeyID = minioAccessKey
+	}
+	if minioSecretKey := os.Getenv("MINIO_SECRET_KEY"); minioSecretKey != "" {
+		c.MinIO.SecretAccessKey = minioSecretKey
+	}
+	if minioBucket := os.Getenv("MINIO_BUCKET"); minioBucket != "" {
+		c.MinIO.Bucket = minioBucket
+	}
+	if minioUseSSL := os.Getenv("MINIO_USE_SSL"); minioUseSSL == "true" {
+		c.MinIO.UseSSL = true
+	}
+
+	// 服务器配置环境变量覆盖
+	if grpcPort := os.Getenv("GRPC_PORT"); grpcPort != "" {
+		if grpcPort[0] != ':' {
+			grpcPort = ":" + grpcPort
+		}
+		c.Server.GrpcPort = grpcPort
+	}
+	if restPort := os.Getenv("REST_PORT"); restPort != "" {
+		if restPort[0] != ':' {
+			restPort = ":" + restPort
+		}
+		c.Server.RestPort = restPort
+	}
+
+	// 备份配置环境变量覆盖
+	if minioBackupEndpoint := os.Getenv("MINIO_BACKUP_ENDPOINT"); minioBackupEndpoint != "" {
+		c.Backup.MinIO.Endpoint = minioBackupEndpoint
+		c.Backup.Enabled = true
+	}
+	if minioBackupAccessKey := os.Getenv("MINIO_BACKUP_ACCESS_KEY"); minioBackupAccessKey != "" {
+		c.Backup.MinIO.AccessKeyID = minioBackupAccessKey
+	}
+	if minioBackupSecretKey := os.Getenv("MINIO_BACKUP_SECRET_KEY"); minioBackupSecretKey != "" {
+		c.Backup.MinIO.SecretAccessKey = minioBackupSecretKey
+	}
+	if minioBackupBucket := os.Getenv("MINIO_BACKUP_BUCKET"); minioBackupBucket != "" {
+		c.Backup.MinIO.Bucket = minioBackupBucket
+	}
+
+	// 认证配置环境变量覆盖
+	if authMode := os.Getenv("AUTH_MODE"); authMode != "" {
+		c.Security.Mode = authMode
+	}
+	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
+		c.Security.JWTSecret = jwtSecret
 	}
 }
 
