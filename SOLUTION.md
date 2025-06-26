@@ -14,26 +14,10 @@
 *   **自动化与自愈**: 通过服务注册与心跳机制，系统能自动感知节点的加入与离开。通过一致性哈希进行数据分片，节点扩展后新数据能自动路由到新节点，实现自动化的水平扩展。
 *   **数据安全与备份**: 系统将每个存储实例视为独立节点。为了防止单点故障，内置了灵活的数据备份机制，支持将数据自动或手动备份到独立的备份存储中，确保数据安全。
 *   **表级数据管理**: 引入表（Table）概念，将数据按业务类型进行逻辑分离，提供表级的管理、配置和权限控制能力，实现更精细化的数据组织和治理。
-  
-## 3. 特性
 
-1.  **MinIO+DuckDB**: 已作为核心组件进行设计。
-2.  **Redis服务发现与索引**: 已在元数据管理层详细说明。
-3.  **轻量化与单节点**: 所有组件均可单机部署，资源占用小。DuckDB的高效查询能力确保单节点也能处理TB级数据（只要内存足够执行计算）。
-4.  **横向扩展与自动分片**: 通过一致性哈希和节点自注册，实现了简单的、对使用者透明的横向扩展能力。
-5.  **ID+时间管理**: 数据在MinIO中的物理路径和在Redis中的索引键都严格遵循此规则。
-6.  **双API接口**: 提供了Restful和gRPC的设计范例。
-7.  **健壮与低资源**: 存算分离架构和心跳机制保证了系统的健壮性；所选组件均为业界公认的轻量高效方案。
-8.  **集成开源组件**: 完全基于成熟的开源项目构建，最小化自研组件，降低了开发和维护成本。
-9.  **数据安全**: 内置可配置的自动和手动备份机制，防止单点故障导致的数据丢失。
-10. **表级数据组织**: 支持按业务类型创建和管理表，每个表拥有独立的存储空间、索引和配置。
-11. **表级权限控制**: 提供表级的读写权限管理，支持细粒度的数据访问控制。
-12. **多表查询支持**: 支持跨表JOIN查询，满足复杂的业务分析需求。
-13. **表级配置管理**: 每个表可以独立配置缓冲区大小、刷新间隔、数据保期限等参数。
+## 3. 架构设计
 
-## 4. 架构设计
-
-### 4.1. 整体架构图
+### 3.1. 整体架构图
 
 ```
 +----------------+      +----------------+
@@ -73,7 +57,7 @@
                        +-------------------------+
 ```
 
-### 4.2. 模块拆解
+### 3.2. 模块拆解
 
 #### a. 数据接入与查询协调层 (Go Service)
 
@@ -145,22 +129,22 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
         - `orders/order-456/2024-01-15/1705123456790.parquet`
         - `logs/app-logs/2024-01-15/1705123456791.parquet`
 
-## 5. 核心流程分析
+## 4. 核心流程分析
 
-### 5.1. 节点注册与发现
+### 41. 节点注册与发现
 1.  一个新的Go服务实例（Worker Node）启动。
 2.  它连接到Redis，并在`nodes:services`哈希表中添加自己的`NodeID`和`IP:Port`，并设置一个TTL（如60秒）。
 3.  该节点启动一个定时任务（如每30秒），重复上一步，以刷新TTL，这作为心跳机制。
 4.  查询协调器需要查找可用节点时，只需从`nodes:services`读取所有成员即可。如果一个节点没有在TTL内续期，它会自动从哈希表中消失。
 
-### 5.2. 表管理流程
+### 4.2. 表管理流程
 1. **创建表**: 客户端发送创建表请求，指定表名和配置参数。
 2. **验证表名**: 系统验证表名的合法性（符合命名规范、不重复等）。
 3. **存储元数据**: 在Redis中存储表的配置信息、创建时间等元数据。
 4. **更新表列表**: 将新表名添加到`tables:list`集合中。
 5. **初始化统计**: 为新表初始化统计信息（记录数、文件数、大小等）。
 
-### 5.3. 表级数据写入与分片
+### 4.3. 表级数据写入与分片
 1.  客户端向任意一个节点的API网关发送写入请求 `(TABLE, ID, Time, DataPayload)`。
 2.  该节点（作为协调器）验证表的存在性和写入权限。
 3.  从Redis获取`cluster:hash_ring`，根据表名和数据中的`ID`计算出应该处理此数据的Worker Node。
@@ -171,7 +155,7 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 8.  上传成功后，Worker Node更新Redis索引：`SADD index:table:{TABLE}:id:{ID}:{YYYY-MM-DD} "TABLE/ID/YYYY-MM-DD/nanotimestamp.parquet"`。
 9.  更新表的统计信息，包括记录数、文件数、最后写入时间等。
 
-### 5.4. 表级数据查询
+### 4.4. 表级数据查询
 1.  客户端向任意一个节点的API网关发送查询请求（例如，SQL: `SELECT * FROM users WHERE id = 'user-123' AND timestamp >= '2024-01-01'`）。
 2.  协调器解析SQL，提取表名（如`users`），验证表的存在性和查询权限。
 3.  根据WHERE条件，生成需要查询的`{TABLE}`、`{ID}`和`{YYYY-MM-DD}`的组合。
@@ -182,7 +166,7 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 8.  Worker Node将部分结果返回给协调器。
 9.  协调器聚合所有结果，并返回给客户端。
 
-### 5.5. 多表查询流程
+### 4.5. 多表查询流程
 1.  客户端发送包含多表JOIN的SQL查询，例如：`SELECT u.name, COUNT(o.id) FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.name`。
 2.  协调器解析SQL，提取所有涉及的表名（`users`, `orders`），验证表的存在性和查询权限。
 3.  为每个表分别获取相关的Parquet文件路径列表。
@@ -191,14 +175,14 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 6.  执行原始的多表JOIN SQL，DuckDB自动处理表间关联。
 7.  返回聚合结果给客户端。
 
-### 5.6. 节点扩容
+### 4.6. 节点扩容
 1.  启动一个新的Worker Node实例。
 2.  它会自动执行[5.1](#51-节点注册与发现)中的注册流程。
 3.  一个独立的控制器或由主节点检测到`nodes:services`发生变化，会重新计算`cluster:hash_ring`并更新到Redis中。
 4.  此后，新的数据写入请求会根据新环的规则，自动开始向新节点分发，实现了自动化的数据分片扩展。
 5.  **注意**: 此方案中，历史数据不会自动迁移，它仍然保留在原来的位置。但由于查询是基于Redis的全局索引，无论文件是哪个节点写入的，都能被正确查询到。这大大简化了扩容逻辑，符合轻量化的设计理念。如果需要历史数据重分布，可以开发一个离线的、低优先级的后台任务来完成。
 
-### 5.7. 数据备份与高可用
+### 4.7. 数据备份与高可用
 为了解决将每个MinIO实例视为独立存储节点而带来的单点故障风险，系统引入了数据备份机制。
 
 #### a. 自动备份
@@ -212,9 +196,9 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 - **功能**: 调用者可以指定`表名`、`ID`和`日期`，手动触发对这部分数据的备份。
 - **逻辑**: 服务端接收到请求后，会扫描主存储节点上对应表的所有Parquet文件，并将它们逐一复制到备份存储节点。此功能可用于数据恢复、迁移或对特定重要数据进行强制备份。
 
-## 6. API 设计 (示例)
+## 5. API 设计 (示例)
 
-### 6.1. Restful API
+### 5.1. Restful API
 
 *   **写入数据**
     *   `POST /v1/data`
@@ -315,7 +299,7 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 *   **删除表**
     *   `DELETE /v1/tables/{table_name}?cascade=true`
 
-### 6.2. gRPC API
+### 5.2. gRPC API
 
 ```protobuf
 syntax = "proto3";
@@ -441,90 +425,4 @@ message TriggerBackupResponse {
   string message = 2;
   int32 files_backed_up = 3;
 }
-```
-
-## 7. 配置示例
-
-### 7.1. 系统配置 (config.yaml)
-
-```yaml
-# MinIO配置
-minio:
-  endpoint: "localhost:9000"
-  access_key: "minioadmin"
-  secret_key: "minioadmin"
-  bucket: "olap-data"
-  ssl: false
-
-# Redis配置
-redis:
-  host: "localhost"
-  port: 6379
-  password: ""
-  db: 0
-
-# DuckDB配置
-duckdb:
-  memory_limit: "2GB"
-  threads: 4
-
-# 表管理配置
-tables:
-  # 默认表配置
-  default_config:
-    buffer_size: 1000
-    flush_interval: 30s
-    retention_days: 365
-    backup_enabled: true
-  
-  # 是否自动创建表
-  auto_create_tables: true
-  # 默认表名（向后兼容）
-  default_table: "default"
-  # 最大表数量限制
-  max_tables: 1000
-  
-  # 表级配置覆盖
-  users:
-    buffer_size: 2000
-    flush_interval: 60s
-    retention_days: 2555  # 7年
-    backup_enabled: true
-    properties:
-      description: "用户数据表"
-      owner: "user-service"
-  
-  orders:
-    buffer_size: 5000
-    flush_interval: 10s
-    retention_days: 2555
-    backup_enabled: true
-    properties:
-      description: "订单数据表"
-      owner: "order-service"
-  
-  logs:
-    buffer_size: 10000
-    flush_interval: 5s
-    retention_days: 30
-    backup_enabled: false
-    properties:
-      description: "应用日志表"
-      owner: "log-service"
-
-# 服务配置
-server:
-  host: "0.0.0.0"
-  grpc_port: 8080
-  http_port: 8081
-  node_id: "node-001"
-  
-# 备份配置
-backup:
-  enabled: true
-  storage:
-    endpoint: "backup-minio:9000"
-    access_key: "backupadmin"
-    secret_key: "backupadmin"
-    bucket: "olap-backup"
 ```
