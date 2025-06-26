@@ -22,23 +22,23 @@ import (
 // OlapService OLAP服务实现
 type OlapService struct {
 	olapv1.UnimplementedOlapServiceServer
-	
-	cfg           *config.Config
-	ingester      *ingest.Ingester
-	querier       *query.Querier
-	redisClient   *redis.Client
-	primaryMinio  storage.Uploader
-	backupMinio   storage.Uploader
-	tableManager  *TableManager
+
+	cfg          *config.Config
+	ingester     *ingest.Ingester
+	querier      *query.Querier
+	redisClient  *redis.Client
+	primaryMinio storage.Uploader
+	backupMinio  storage.Uploader
+	tableManager *TableManager
 }
 
 // NewOlapService 创建OLAP服务实例
-func NewOlapService(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, 
+func NewOlapService(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier,
 	redisClient *redis.Client, primaryMinio, backupMinio storage.Uploader) (*OlapService, error) {
-	
+
 	// 创建表管理器
 	tableManager := NewTableManager(redisClient, primaryMinio, backupMinio, cfg)
-	
+
 	return &OlapService{
 		cfg:          cfg,
 		ingester:     ingester,
@@ -64,15 +64,15 @@ func (s *OlapService) validateWriteRequest(req *olapv1.WriteRequest) error {
 	if req.Payload == nil {
 		return status.Error(codes.InvalidArgument, "payload is required")
 	}
-	
+
 	// 验证ID格式（只允许字母、数字、连字符和下划线）
 	for _, r := range req.Id {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || 
-			 (r >= '0' && r <= '9') || r == '-' || r == '_') {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_') {
 			return status.Error(codes.InvalidArgument, "id contains invalid characters, only alphanumeric, dash and underscore allowed")
 		}
 	}
-	
+
 	return nil
 }
 
@@ -81,14 +81,14 @@ func (s *OlapService) Write(ctx context.Context, req *olapv1.WriteRequest) (*ola
 	// 处理表名：如果未指定则使用默认表
 	// 注意：由于protobuf重新生成问题，暂时使用默认表名
 	tableName := s.cfg.GetDefaultTableName()
-	
+
 	log.Printf("Received write request for table: %s, ID: %s", tableName, req.Id)
 
 	// 验证请求
 	if err := s.validateWriteRequest(req); err != nil {
 		return nil, err
 	}
-	
+
 	// 验证表名
 	if !s.cfg.IsValidTableName(tableName) {
 		return &olapv1.WriteResponse{
@@ -96,7 +96,7 @@ func (s *OlapService) Write(ctx context.Context, req *olapv1.WriteRequest) (*ola
 			Message: fmt.Sprintf("invalid table name: %s", tableName),
 		}, nil
 	}
-	
+
 	// 确保表存在（如果启用自动创建）
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
 		log.Printf("ERROR: failed to ensure table exists: %v", err)
@@ -114,7 +114,7 @@ func (s *OlapService) Write(ctx context.Context, req *olapv1.WriteRequest) (*ola
 		log.Printf("ERROR: failed to ingest data for table %s, ID %s: %v", tableName, req.Id, err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to ingest data: %v", err))
 	}
-	
+
 	// 更新表的最后写入时间
 	if err := s.tableManager.UpdateLastWrite(ctx, tableName); err != nil {
 		log.Printf("WARN: failed to update last write time for table %s: %v", tableName, err)
@@ -127,7 +127,7 @@ func (s *OlapService) Write(ctx context.Context, req *olapv1.WriteRequest) (*ola
 	}, nil
 }
 
-// validateQueryRequest 验证查询请求  
+// validateQueryRequest 验证查询请求
 func (s *OlapService) validateQueryRequest(req *olapv1.QueryRequest) error {
 	if req.Sql == "" {
 		return status.Error(codes.InvalidArgument, "sql is required and cannot be empty")
@@ -135,7 +135,7 @@ func (s *OlapService) validateQueryRequest(req *olapv1.QueryRequest) error {
 	if len(req.Sql) > 10000 {
 		return status.Error(codes.InvalidArgument, "sql query cannot exceed 10000 characters")
 	}
-	
+
 	// 基本的SQL注入防护（简单检查）
 	lowerSQL := strings.ToLower(req.Sql)
 	dangerousKeywords := []string{"drop", "delete", "truncate", "alter", "create", "insert", "update"}
@@ -144,7 +144,7 @@ func (s *OlapService) validateQueryRequest(req *olapv1.QueryRequest) error {
 			return status.Error(codes.InvalidArgument, fmt.Sprintf("sql contains dangerous keyword: %s", keyword))
 		}
 	}
-	
+
 	return nil
 }
 
@@ -156,7 +156,7 @@ func (s *OlapService) Query(ctx context.Context, req *olapv1.QueryRequest) (*ola
 	if err := s.validateQueryRequest(req); err != nil {
 		return nil, err
 	}
-	
+
 	// 处理向后兼容：将旧的"table"关键字替换为默认表名
 	sql := req.Sql
 	if strings.Contains(strings.ToLower(sql), "from table") {
@@ -182,7 +182,7 @@ func (s *OlapService) Query(ctx context.Context, req *olapv1.QueryRequest) (*ola
 // CreateTable 创建表
 func (s *OlapService) CreateTable(ctx context.Context, req *CreateTableRequest) (*CreateTableResponse, error) {
 	log.Printf("Received create table request: %s", req.TableName)
-	
+
 	// 验证表名
 	if req.TableName == "" {
 		return &CreateTableResponse{
@@ -190,7 +190,7 @@ func (s *OlapService) CreateTable(ctx context.Context, req *CreateTableRequest) 
 			Message: "table name is required",
 		}, nil
 	}
-	
+
 	// 转换配置
 	var tableConfig *config.TableConfig
 	if req.Config != nil {
@@ -202,7 +202,7 @@ func (s *OlapService) CreateTable(ctx context.Context, req *CreateTableRequest) 
 			Properties:    req.Config.Properties,
 		}
 	}
-	
+
 	// 创建表
 	if err := s.tableManager.CreateTable(ctx, req.TableName, tableConfig, req.IfNotExists); err != nil {
 		log.Printf("ERROR: failed to create table %s: %v", req.TableName, err)
@@ -211,7 +211,7 @@ func (s *OlapService) CreateTable(ctx context.Context, req *CreateTableRequest) 
 			Message: fmt.Sprintf("failed to create table: %v", err),
 		}, nil
 	}
-	
+
 	return &CreateTableResponse{
 		Success: true,
 		Message: fmt.Sprintf("Table %s created successfully", req.TableName),
@@ -221,7 +221,7 @@ func (s *OlapService) CreateTable(ctx context.Context, req *CreateTableRequest) 
 // DropTable 删除表
 func (s *OlapService) DropTable(ctx context.Context, req *DropTableRequest) (*DropTableResponse, error) {
 	log.Printf("Received drop table request: %s (cascade: %v)", req.TableName, req.Cascade)
-	
+
 	// 验证表名
 	if req.TableName == "" {
 		return &DropTableResponse{
@@ -229,7 +229,7 @@ func (s *OlapService) DropTable(ctx context.Context, req *DropTableRequest) (*Dr
 			Message: "table name is required",
 		}, nil
 	}
-	
+
 	// 删除表
 	filesDeleted, err := s.tableManager.DropTable(ctx, req.TableName, req.IfExists, req.Cascade)
 	if err != nil {
@@ -239,7 +239,7 @@ func (s *OlapService) DropTable(ctx context.Context, req *DropTableRequest) (*Dr
 			Message: fmt.Sprintf("failed to drop table: %v", err),
 		}, nil
 	}
-	
+
 	return &DropTableResponse{
 		Success:      true,
 		Message:      fmt.Sprintf("Table %s dropped successfully", req.TableName),
@@ -250,14 +250,14 @@ func (s *OlapService) DropTable(ctx context.Context, req *DropTableRequest) (*Dr
 // ListTables 列出表
 func (s *OlapService) ListTables(ctx context.Context, req *ListTablesRequest) (*ListTablesResponse, error) {
 	log.Printf("Received list tables request (pattern: %s)", req.Pattern)
-	
+
 	// 列出表
 	tables, err := s.tableManager.ListTables(ctx, req.Pattern)
 	if err != nil {
 		log.Printf("ERROR: failed to list tables: %v", err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list tables: %v", err))
 	}
-	
+
 	// 转换为protobuf格式
 	var tableInfos []*TableInfo
 	for _, table := range tables {
@@ -267,21 +267,21 @@ func (s *OlapService) ListTables(ctx context.Context, req *ListTablesRequest) (*
 			LastWrite: table.LastWrite,
 			Status:    table.Status,
 		}
-		
+
 		// 转换配置
 		if table.Config != nil {
 			tableInfo.Config = &TableConfig{
-				BufferSize:            int32(table.Config.BufferSize),
-				FlushIntervalSeconds:  int32(table.Config.FlushInterval / time.Second),
-				RetentionDays:         int32(table.Config.RetentionDays),
-				BackupEnabled:         table.Config.BackupEnabled,
-				Properties:            table.Config.Properties,
+				BufferSize:           int32(table.Config.BufferSize),
+				FlushIntervalSeconds: int32(table.Config.FlushInterval / time.Second),
+				RetentionDays:        int32(table.Config.RetentionDays),
+				BackupEnabled:        table.Config.BackupEnabled,
+				Properties:           table.Config.Properties,
 			}
 		}
-		
+
 		tableInfos = append(tableInfos, tableInfo)
 	}
-	
+
 	return &ListTablesResponse{
 		Tables: tableInfos,
 		Total:  int32(len(tableInfos)),
@@ -291,19 +291,19 @@ func (s *OlapService) ListTables(ctx context.Context, req *ListTablesRequest) (*
 // DescribeTable 描述表
 func (s *OlapService) DescribeTable(ctx context.Context, req *DescribeTableRequest) (*DescribeTableResponse, error) {
 	log.Printf("Received describe table request: %s", req.TableName)
-	
+
 	// 验证表名
 	if req.TableName == "" {
 		return nil, status.Error(codes.InvalidArgument, "table name is required")
 	}
-	
+
 	// 获取表信息和统计
 	tableInfo, tableStats, err := s.tableManager.DescribeTable(ctx, req.TableName)
 	if err != nil {
 		log.Printf("ERROR: failed to describe table %s: %v", req.TableName, err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to describe table: %v", err))
 	}
-	
+
 	// 转换为protobuf格式
 	response := &DescribeTableResponse{
 		TableInfo: &TableInfo{
@@ -320,18 +320,18 @@ func (s *OlapService) DescribeTable(ctx context.Context, req *DescribeTableReque
 			NewestRecord: tableStats.NewestRecord,
 		},
 	}
-	
+
 	// 转换配置
 	if tableInfo.Config != nil {
 		response.TableInfo.Config = &TableConfig{
-			BufferSize:            int32(tableInfo.Config.BufferSize),
-							FlushIntervalSeconds:  int32(tableInfo.Config.FlushInterval / time.Second),
-			RetentionDays:         int32(tableInfo.Config.RetentionDays),
-			BackupEnabled:         tableInfo.Config.BackupEnabled,
-			Properties:            tableInfo.Config.Properties,
+			BufferSize:           int32(tableInfo.Config.BufferSize),
+			FlushIntervalSeconds: int32(tableInfo.Config.FlushInterval / time.Second),
+			RetentionDays:        int32(tableInfo.Config.RetentionDays),
+			BackupEnabled:        tableInfo.Config.BackupEnabled,
+			Properties:           tableInfo.Config.Properties,
 		}
 	}
-	
+
 	return response, nil
 }
 
@@ -386,11 +386,11 @@ type TableInfo struct {
 }
 
 type TableConfig struct {
-	BufferSize            int32             `json:"buffer_size"`
-	FlushIntervalSeconds  int32             `json:"flush_interval_seconds"`
-	RetentionDays         int32             `json:"retention_days"`
-	BackupEnabled         bool              `json:"backup_enabled"`
-	Properties            map[string]string `json:"properties"`
+	BufferSize           int32             `json:"buffer_size"`
+	FlushIntervalSeconds int32             `json:"flush_interval_seconds"`
+	RetentionDays        int32             `json:"retention_days"`
+	BackupEnabled        bool              `json:"backup_enabled"`
+	Properties           map[string]string `json:"properties"`
 }
 
 type TableStats struct {
@@ -401,78 +401,146 @@ type TableStats struct {
 	NewestRecord string `json:"newest_record"`
 }
 
-// TriggerBackup 触发备份
+// TriggerBackup 手动触发备份
 func (s *OlapService) TriggerBackup(ctx context.Context, req *olapv1.TriggerBackupRequest) (*olapv1.TriggerBackupResponse, error) {
-	log.Printf("Received backup trigger request for ID: %s, day: %s", req.Id, req.Day)
-
-	// 验证请求
-	if req.Id == "" {
-		return nil, status.Error(codes.InvalidArgument, "id is required")
-	}
-	if req.Day == "" {
-		return nil, status.Error(codes.InvalidArgument, "day is required")
-	}
-	
-	// 验证日期格式
-	if _, err := time.Parse("2006-01-02", req.Day); err != nil {
-		return nil, status.Error(codes.InvalidArgument, "day must be in YYYY-MM-DD format")
-	}
+	log.Printf("Received backup trigger request for ID: %s, Day: %s", req.Id, req.Day)
 
 	if s.backupMinio == nil {
-		return nil, status.Error(codes.FailedPrecondition, "backup storage not configured")
-	}
-
-	// TODO: 需要更新为支持表级备份
-	// 获取需要备份的文件列表（暂时保持旧格式，后续更新）
-	redisKey := fmt.Sprintf("index:id:%s:%s", req.Id, req.Day)
-	files, err := s.redisClient.SMembers(ctx, redisKey).Result()
-	if err != nil {
-		log.Printf("ERROR: failed to get files from Redis for key %s: %v", redisKey, err)
-		return nil, status.Error(codes.Internal, "failed to retrieve file list for backup")
-	}
-
-	if len(files) == 0 {
 		return &olapv1.TriggerBackupResponse{
-			Success:       true,
-			Message:       fmt.Sprintf("No files found for ID: %s, day: %s", req.Id, req.Day),
-			FilesBackedUp: 0,
+			Success: false,
+			Message: "Backup storage is not configured",
 		}, nil
 	}
 
-	// 执行备份
-	backedUpCount := int32(0)
-	for _, file := range files {
-		if err := s.backupFile(ctx, file); err != nil {
-			log.Printf("ERROR: failed to backup file %s: %v", file, err)
-			continue
+	var filesBackedUp int32
+
+	// 获取默认表名
+	defaultTable := s.cfg.GetDefaultTableName()
+
+	if req.Id != "" && req.Day != "" {
+		// 备份特定ID和日期的数据
+		redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", defaultTable, req.Id, req.Day)
+		objectNames, err := s.redisClient.SMembers(ctx, redisKey).Result()
+		if err != nil {
+			log.Printf("ERROR: failed to get objects from Redis for key %s: %v", redisKey, err)
+			return &olapv1.TriggerBackupResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to get file list: %v", err),
+			}, nil
 		}
-		backedUpCount++
+
+		for _, objectName := range objectNames {
+			if err := s.backupFile(ctx, objectName); err != nil {
+				log.Printf("ERROR: failed to backup file %s: %v", objectName, err)
+			} else {
+				filesBackedUp++
+			}
+		}
+	} else if req.Id != "" {
+		// 备份特定ID的所有数据
+		pattern := fmt.Sprintf("index:table:%s:id:%s:*", defaultTable, req.Id)
+		keys, err := s.redisClient.Keys(ctx, pattern).Result()
+		if err != nil {
+			log.Printf("ERROR: failed to get keys from Redis for pattern %s: %v", pattern, err)
+			return &olapv1.TriggerBackupResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to get key list: %v", err),
+			}, nil
+		}
+
+		for _, key := range keys {
+			objectNames, err := s.redisClient.SMembers(ctx, key).Result()
+			if err != nil {
+				log.Printf("ERROR: failed to get objects from Redis for key %s: %v", key, err)
+				continue
+			}
+
+			for _, objectName := range objectNames {
+				if err := s.backupFile(ctx, objectName); err != nil {
+					log.Printf("ERROR: failed to backup file %s: %v", objectName, err)
+				} else {
+					filesBackedUp++
+				}
+			}
+		}
+	} else if req.Day != "" {
+		// 备份特定日期的所有数据
+		pattern := fmt.Sprintf("index:table:%s:id:*:%s", defaultTable, req.Day)
+		keys, err := s.redisClient.Keys(ctx, pattern).Result()
+		if err != nil {
+			log.Printf("ERROR: failed to get keys from Redis for pattern %s: %v", pattern, err)
+			return &olapv1.TriggerBackupResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to get key list: %v", err),
+			}, nil
+		}
+
+		for _, key := range keys {
+			objectNames, err := s.redisClient.SMembers(ctx, key).Result()
+			if err != nil {
+				log.Printf("ERROR: failed to get objects from Redis for key %s: %v", key, err)
+				continue
+			}
+
+			for _, objectName := range objectNames {
+				if err := s.backupFile(ctx, objectName); err != nil {
+					log.Printf("ERROR: failed to backup file %s: %v", objectName, err)
+				} else {
+					filesBackedUp++
+				}
+			}
+		}
+	} else {
+		// 备份所有数据
+		pattern := fmt.Sprintf("index:table:%s:id:*", defaultTable)
+		keys, err := s.redisClient.Keys(ctx, pattern).Result()
+		if err != nil {
+			log.Printf("ERROR: failed to get keys from Redis for pattern %s: %v", pattern, err)
+			return &olapv1.TriggerBackupResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to get key list: %v", err),
+			}, nil
+		}
+
+		for _, key := range keys {
+			objectNames, err := s.redisClient.SMembers(ctx, key).Result()
+			if err != nil {
+				log.Printf("ERROR: failed to get objects from Redis for key %s: %v", key, err)
+				continue
+			}
+
+			for _, objectName := range objectNames {
+				if err := s.backupFile(ctx, objectName); err != nil {
+					log.Printf("ERROR: failed to backup file %s: %v", objectName, err)
+				} else {
+					filesBackedUp++
+				}
+			}
+		}
 	}
 
-	log.Printf("Successfully backed up %d/%d files for ID: %s, day: %s", backedUpCount, len(files), req.Id, req.Day)
-	
 	return &olapv1.TriggerBackupResponse{
 		Success:       true,
-		Message:       fmt.Sprintf("Successfully backed up %d files for ID: %s, day: %s", backedUpCount, req.Id, req.Day),
-		FilesBackedUp: backedUpCount,
+		Message:       fmt.Sprintf("Successfully backed up %d files", filesBackedUp),
+		FilesBackedUp: filesBackedUp,
 	}, nil
 }
 
 // backupFile 备份单个文件
 func (s *OlapService) backupFile(ctx context.Context, objectName string) error {
 	const mainBucket = "olap-data"
-	
+
 	// 检查备份存储中是否已存在该文件
 	exists, err := s.backupMinio.ObjectExists(ctx, s.cfg.Backup.MinIO.Bucket, objectName)
 	if err != nil {
 		return fmt.Errorf("failed to check if backup file exists: %w", err)
 	}
-	
+
 	if exists {
 		log.Printf("File %s already exists in backup storage, skipping", objectName)
 		return nil
 	}
-	
+
 	// 从主存储复制到备份存储
 	_, err = s.backupMinio.CopyObject(ctx,
 		// 目标
@@ -489,200 +557,203 @@ func (s *OlapService) backupFile(ctx context.Context, objectName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to copy file to backup storage: %w", err)
 	}
-	
+
 	log.Printf("Successfully backed up file: %s", objectName)
 	return nil
 }
 
-// RecoverData 恢复数据
+// RecoverData 从备份恢复数据
 func (s *OlapService) RecoverData(ctx context.Context, req *olapv1.RecoverDataRequest) (*olapv1.RecoverDataResponse, error) {
-	log.Printf("Received data recovery request")
+	log.Printf("Received recover data request")
 
 	if s.backupMinio == nil {
-		return nil, status.Error(codes.FailedPrecondition, "backup storage not configured")
+		return &olapv1.RecoverDataResponse{
+			Success: false,
+			Message: "Backup storage is not configured",
+		}, nil
 	}
 
+	var filesRecovered int32
 	var recoveredKeys []string
-	var recoveredCount int32
+
+	// 获取默认表名
+	defaultTable := s.cfg.GetDefaultTableName()
 
 	switch req.RecoveryMode.(type) {
-	case *olapv1.RecoverDataRequest_IdRange:
-		idRange := req.GetIdRange()
-		for _, id := range idRange.Ids {
-			keys, err := s.recoverDataForID(ctx, id, req.ForceOverwrite)
+	case *olapv1.RecoverDataRequest_NodeId:
+		// 恢复特定节点的数据
+		nodeId := req.GetNodeId()
+		log.Printf("Recovering data for node: %s", nodeId)
+
+		// 查找节点相关的备份数据
+		pattern := fmt.Sprintf("backup:node:%s:*", nodeId)
+		keys, err := s.redisClient.Keys(ctx, pattern).Result()
+		if err != nil {
+			return &olapv1.RecoverDataResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to get backup keys for node %s: %v", nodeId, err),
+			}, nil
+		}
+
+		for _, backupKey := range keys {
+			objectNames, err := s.redisClient.SMembers(ctx, backupKey).Result()
 			if err != nil {
-				log.Printf("ERROR: failed to recover data for ID %s: %v", id, err)
+				log.Printf("ERROR: failed to get backup objects from Redis for key %s: %v", backupKey, err)
 				continue
 			}
-			recoveredKeys = append(recoveredKeys, keys...)
-			recoveredCount += int32(len(keys))
+
+			for _, objectName := range objectNames {
+				if err := s.recoverFile(ctx, objectName); err != nil {
+					log.Printf("ERROR: failed to recover file %s: %v", objectName, err)
+				} else {
+					filesRecovered++
+					recoveredKeys = append(recoveredKeys, objectName)
+				}
+			}
 		}
-		
-	case *olapv1.RecoverDataRequest_TimeRange:
-		timeRange := req.GetTimeRange()
-		
-		// 验证时间范围
-		startDate, err := time.Parse("2006-01-02", timeRange.StartDate)
-		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, "invalid start_date format, must be YYYY-MM-DD")
-		}
-		endDate, err := time.Parse("2006-01-02", timeRange.EndDate)  
-		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, "invalid end_date format, must be YYYY-MM-DD")
-		}
-		if startDate.After(endDate) {
-			return nil, status.Error(codes.InvalidArgument, "start_date cannot be after end_date")
-		}
-		
-		if len(timeRange.Ids) > 0 {
-			// 恢复指定ID的时间范围数据
-			for _, id := range timeRange.Ids {
-				keys, err := s.recoverDataForTimeRange(ctx, id, timeRange.StartDate, timeRange.EndDate, req.ForceOverwrite)
+
+	case *olapv1.RecoverDataRequest_IdRange:
+		// 恢复特定ID范围的数据
+		idRange := req.GetIdRange()
+		log.Printf("Recovering data for ID range: %+v", idRange)
+
+		if len(idRange.Ids) > 0 {
+			// 恢复指定ID列表的数据
+			for _, id := range idRange.Ids {
+				pattern := fmt.Sprintf("backup:table:%s:id:%s:*", defaultTable, id)
+				keys, err := s.redisClient.Keys(ctx, pattern).Result()
 				if err != nil {
-					log.Printf("ERROR: failed to recover time range data for ID %s: %v", id, err)
+					log.Printf("ERROR: failed to get backup keys for ID %s: %v", id, err)
 					continue
 				}
-				recoveredKeys = append(recoveredKeys, keys...)
-				recoveredCount += int32(len(keys))
-			}
-		} else {
-			// 恢复所有ID的时间范围数据
-			keys, err := s.recoverDataForTimeRangeAllIDs(ctx, timeRange.StartDate, timeRange.EndDate, req.ForceOverwrite)
-			if err != nil {
-				log.Printf("ERROR: failed to recover time range data for all IDs: %v", err)
-			} else {
-				recoveredKeys = append(recoveredKeys, keys...)
-				recoveredCount += int32(len(keys))
+
+				for _, backupKey := range keys {
+					objectNames, err := s.redisClient.SMembers(ctx, backupKey).Result()
+					if err != nil {
+						log.Printf("ERROR: failed to get backup objects from Redis for key %s: %v", backupKey, err)
+						continue
+					}
+
+					for _, objectName := range objectNames {
+						if err := s.recoverFile(ctx, objectName); err != nil {
+							log.Printf("ERROR: failed to recover file %s: %v", objectName, err)
+						} else {
+							filesRecovered++
+							recoveredKeys = append(recoveredKeys, objectName)
+							// 更新主索引
+							parts := strings.Split(backupKey, ":")
+							if len(parts) >= 6 {
+								day := parts[5]
+								redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", defaultTable, id, day)
+								s.redisClient.SAdd(ctx, redisKey, objectName)
+							}
+						}
+					}
+				}
 			}
 		}
-		
+
+	case *olapv1.RecoverDataRequest_TimeRange:
+		// 恢复特定时间范围的数据
+		timeRange := req.GetTimeRange()
+		log.Printf("Recovering data for time range: %+v", timeRange)
+
+		if len(timeRange.Ids) > 0 {
+			// 恢复指定ID和时间范围的数据
+			for _, id := range timeRange.Ids {
+				pattern := fmt.Sprintf("backup:table:%s:id:%s:*", defaultTable, id)
+				keys, err := s.redisClient.Keys(ctx, pattern).Result()
+				if err != nil {
+					log.Printf("ERROR: failed to get backup keys for ID %s: %v", id, err)
+					continue
+				}
+
+				for _, backupKey := range keys {
+					// 检查日期是否在时间范围内
+					parts := strings.Split(backupKey, ":")
+					if len(parts) >= 6 {
+						day := parts[5]
+						if day >= timeRange.StartDate && day <= timeRange.EndDate {
+							objectNames, err := s.redisClient.SMembers(ctx, backupKey).Result()
+							if err != nil {
+								log.Printf("ERROR: failed to get backup objects from Redis for key %s: %v", backupKey, err)
+								continue
+							}
+
+							for _, objectName := range objectNames {
+								if err := s.recoverFile(ctx, objectName); err != nil {
+									log.Printf("ERROR: failed to recover file %s: %v", objectName, err)
+								} else {
+									filesRecovered++
+									recoveredKeys = append(recoveredKeys, objectName)
+									// 更新主索引
+									redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", defaultTable, id, day)
+									s.redisClient.SAdd(ctx, redisKey, objectName)
+								}
+							}
+						}
+					}
+				}
+			}
+		} else {
+			// 恢复所有ID在指定时间范围内的数据
+			pattern := fmt.Sprintf("backup:table:%s:id:*", defaultTable)
+			keys, err := s.redisClient.Keys(ctx, pattern).Result()
+			if err != nil {
+				return &olapv1.RecoverDataResponse{
+					Success: false,
+					Message: fmt.Sprintf("Failed to get backup keys: %v", err),
+				}, nil
+			}
+
+			for _, backupKey := range keys {
+				// 检查日期是否在时间范围内
+				parts := strings.Split(backupKey, ":")
+				if len(parts) >= 6 {
+					day := parts[5]
+					if day >= timeRange.StartDate && day <= timeRange.EndDate {
+						objectNames, err := s.redisClient.SMembers(ctx, backupKey).Result()
+						if err != nil {
+							log.Printf("ERROR: failed to get backup objects from Redis for key %s: %v", backupKey, err)
+							continue
+						}
+
+						id := parts[4]
+						for _, objectName := range objectNames {
+							if err := s.recoverFile(ctx, objectName); err != nil {
+								log.Printf("ERROR: failed to recover file %s: %v", objectName, err)
+							} else {
+								filesRecovered++
+								recoveredKeys = append(recoveredKeys, objectName)
+								// 更新主索引
+								redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", defaultTable, id, day)
+								s.redisClient.SAdd(ctx, redisKey, objectName)
+							}
+						}
+					}
+				}
+			}
+		}
+
 	default:
-		return nil, status.Error(codes.InvalidArgument, "recovery_mode is required")
+		return &olapv1.RecoverDataResponse{
+			Success: false,
+			Message: "Recovery mode is required",
+		}, nil
 	}
 
-	log.Printf("Data recovery completed, recovered %d files", recoveredCount)
-	
 	return &olapv1.RecoverDataResponse{
-		Success:       true,
-		Message:       fmt.Sprintf("Successfully recovered %d files", recoveredCount),
-		FilesRecovered: recoveredCount,
-		RecoveredKeys: recoveredKeys,
+		Success:        true,
+		Message:        fmt.Sprintf("Successfully recovered %d files", filesRecovered),
+		FilesRecovered: filesRecovered,
+		RecoveredKeys:  recoveredKeys,
 	}, nil
 }
 
-// recoverDataForID 恢复指定ID的所有数据
-func (s *OlapService) recoverDataForID(ctx context.Context, id string, forceOverwrite bool) ([]string, error) {
-	// 从备份存储中查找该ID的所有文件
-	pattern := fmt.Sprintf("%s/", id)
-	
-	// 使用ListObjects查找匹配的文件
-	objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.MinIO.Bucket, minio.ListObjectsOptions{
-		Prefix: pattern,
-	})
-	
-	var recoveredKeys []string 
-	for object := range objects {
-		if object.Err != nil {
-			log.Printf("ERROR: failed to list object: %v", object.Err)
-			continue
-		}
-		
-		if err := s.recoverSingleFile(ctx, object.Key, forceOverwrite); err != nil {
-			log.Printf("ERROR: failed to recover file %s: %v", object.Key, err)
-			continue
-		}
-		
-		recoveredKeys = append(recoveredKeys, object.Key)
-	}
-	
-	return recoveredKeys, nil
-}
-
-// recoverDataForTimeRange 恢复指定ID和时间范围的数据
-func (s *OlapService) recoverDataForTimeRange(ctx context.Context, id, startDate, endDate string, forceOverwrite bool) ([]string, error) {
-	var recoveredKeys []string
-	
-	// 解析时间范围
-	start, _ := time.Parse("2006-01-02", startDate)
-	end, _ := time.Parse("2006-01-02", endDate)
-	
-	// 遍历每一天
-	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
-		dayStr := d.Format("2006-01-02")
-		pattern := fmt.Sprintf("%s/%s/", id, dayStr)
-		
-		objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.MinIO.Bucket, minio.ListObjectsOptions{
-			Prefix: pattern,
-		})
-		
-		for object := range objects {
-			if object.Err != nil {
-				continue
-			}
-			
-			if err := s.recoverSingleFile(ctx, object.Key, forceOverwrite); err != nil {
-				continue
-			}
-			
-			recoveredKeys = append(recoveredKeys, object.Key)
-		}
-	}
-	
-	return recoveredKeys, nil
-}
-
-// recoverDataForTimeRangeAllIDs 恢复时间范围内所有ID的数据
-func (s *OlapService) recoverDataForTimeRangeAllIDs(ctx context.Context, startDate, endDate string, forceOverwrite bool) ([]string, error) {
-	var recoveredKeys []string
-	
-	// 列出备份存储中的所有对象并按时间过滤
-	objects := s.backupMinio.ListObjects(ctx, s.cfg.Backup.MinIO.Bucket, minio.ListObjectsOptions{})
-	
-	for object := range objects {
-		if object.Err != nil {
-			continue
-		}
-		
-		// 检查对象路径是否符合时间范围
-		if s.isObjectInTimeRange(object.Key, startDate, endDate) {
-			if err := s.recoverSingleFile(ctx, object.Key, forceOverwrite); err != nil {
-				continue  
-			}
-			recoveredKeys = append(recoveredKeys, object.Key)
-		}
-	}
-	
-	return recoveredKeys, nil
-}
-
-// isObjectInTimeRange 检查对象是否在指定时间范围内
-func (s *OlapService) isObjectInTimeRange(objectKey, startDate, endDate string) bool {
-	// 对象路径格式：ID/YYYY-MM-DD/timestamp.parquet
-	parts := strings.Split(objectKey, "/")
-	if len(parts) < 2 {
-		return false
-	}
-	
-	objectDate := parts[1]
-	return objectDate >= startDate && objectDate <= endDate
-}
-
-// recoverSingleFile 恢复单个文件
-func (s *OlapService) recoverSingleFile(ctx context.Context, objectName string, forceOverwrite bool) error {
+// recoverFile 恢复单个文件
+func (s *OlapService) recoverFile(ctx context.Context, objectName string) error {
 	const mainBucket = "olap-data"
-	
-	// 检查主存储中是否已存在该文件
-	if !forceOverwrite {
-		exists, err := s.primaryMinio.ObjectExists(ctx, mainBucket, objectName)
-		if err != nil {
-			return fmt.Errorf("failed to check if file exists in main storage: %w", err)
-		}
-		if exists {
-			log.Printf("File %s already exists in main storage, skipping (use force_overwrite=true to overwrite)", objectName)
-			return nil
-		}
-	}
-	
+
 	// 从备份存储复制到主存储
 	_, err := s.primaryMinio.CopyObject(ctx,
 		// 目标
@@ -696,22 +767,12 @@ func (s *OlapService) recoverSingleFile(ctx context.Context, objectName string, 
 			Object: objectName,
 		},
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to copy file from backup to main storage: %w", err)
 	}
-	
-	// 更新Redis索引
-	parts := strings.Split(objectName, "/")
-	if len(parts) >= 2 {
-		id := parts[0]
-		day := parts[1]
-		redisKey := fmt.Sprintf("index:id:%s:%s", id, day)
-		if _, err := s.redisClient.SAdd(ctx, redisKey, objectName).Result(); err != nil {
-			log.Printf("WARNING: failed to update Redis index for recovered file %s: %v", objectName, err)
-		}
-	}
-	
+
+	log.Printf("Successfully recovered file: %s", objectName)
 	return nil
 }
 
@@ -725,21 +786,21 @@ func (s *OlapService) GetStats(ctx context.Context, req *olapv1.GetStatsRequest)
 		RedisStats:  make(map[string]int64),
 		MinioStats:  make(map[string]int64),
 	}
-	
+
 	// 获取Redis统计信息
 	info := s.redisClient.Info(ctx)
 	if info.Err() == nil {
 		// 这里可以解析Redis INFO命令的结果
 		response.RedisStats["connected"] = 1
 	}
-	
+
 	// 基础统计信息
 	response.BufferStats["service_status"] = 1
 	response.MinioStats["primary_connected"] = 1
 	if s.backupMinio != nil {
 		response.MinioStats["backup_connected"] = 1
 	}
-	
+
 	return response, nil
 }
 
@@ -758,13 +819,13 @@ func (s *OlapService) HealthCheck(ctx context.Context, req *olapv1.HealthCheckRe
 			},
 		}, nil
 	}
-	
+
 	return &olapv1.HealthCheckResponse{
 		Status:    "healthy",
 		Timestamp: fmt.Sprintf("%d", time.Now().Unix()),
 		Version:   "1.0.0",
 		Details: map[string]string{
-			"redis":        "healthy",
+			"redis":         "healthy",
 			"primary_minio": "healthy",
 			"backup_minio":  fmt.Sprintf("enabled: %t", s.backupMinio != nil),
 		},
@@ -783,15 +844,15 @@ func (s *OlapService) GetNodes(ctx context.Context, req *olapv1.GetNodesRequest)
 
 	var nodeInfos []*olapv1.NodeInfo
 	for nodeID, nodeData := range nodes {
-		// 检查节点健康状态  
+		// 检查节点健康状态
 		healthKey := fmt.Sprintf("nodes:health:%s", nodeID)
 		_, err := s.redisClient.Get(ctx, healthKey).Result()
-		
+
 		status := "unhealthy"
 		if err == nil {
 			status = "healthy"
 		}
-		
+
 		nodeInfos = append(nodeInfos, &olapv1.NodeInfo{
 			Id:       nodeID,
 			Status:   status,
@@ -814,4 +875,4 @@ func (s *OlapService) Close() error {
 		s.querier.Close()
 	}
 	return nil
-} 
+}

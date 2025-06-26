@@ -9,6 +9,7 @@ import (
 
 	olapv1 "minIODB/api/proto/olap/v1"
 	"minIODB/internal/config"
+	"minIODB/internal/coordinator"
 	"minIODB/internal/metrics"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
@@ -19,9 +20,11 @@ import (
 // Server is the implementation of the OlapServiceServer
 type Server struct {
 	olapv1.UnimplementedOlapServiceServer
-	olapService     *service.OlapService
-	cfg             config.Config
-	
+	olapService      *service.OlapService
+	writeCoordinator *coordinator.WriteCoordinator
+	queryCoordinator *coordinator.QueryCoordinator
+	cfg              config.Config
+
 	// 认证相关
 	authManager     *security.AuthManager
 	grpcInterceptor *security.GRPCInterceptor
@@ -70,6 +73,12 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 	return server, nil
 }
 
+// SetCoordinators 设置协调器
+func (s *Server) SetCoordinators(writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator) {
+	s.writeCoordinator = writeCoord
+	s.queryCoordinator = queryCoord
+}
+
 // Start 启动gRPC服务器
 func (s *Server) Start(port string) error {
 	lis, err := net.Listen("tcp", port)
@@ -100,7 +109,7 @@ func (s *Server) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.W
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
-	
+
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
@@ -110,7 +119,29 @@ func (s *Server) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.W
 		log.Printf("Received Write request for ID: %s", req.Id)
 	}
 
-	// 委托给service层处理
+	// 使用写入协调器进行分布式路由
+	if s.writeCoordinator != nil {
+		targetNode, err := s.writeCoordinator.RouteWrite(req)
+		if err != nil {
+			return &olapv1.WriteResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to route write: %v", err),
+			}, nil
+		}
+
+		// 如果路由到本地节点，则直接处理
+		if targetNode == "local" {
+			return s.olapService.Write(ctx, req)
+		}
+
+		// 如果路由到远程节点，返回成功（实际写入已在 RouteWrite 中完成）
+		return &olapv1.WriteResponse{
+			Success: true,
+			Message: fmt.Sprintf("Write routed to node: %s", targetNode),
+		}, nil
+	}
+
+	// 如果没有协调器，回退到本地处理
 	return s.olapService.Write(ctx, req)
 }
 
@@ -121,7 +152,7 @@ func (s *Server) Query(ctx context.Context, req *olapv1.QueryRequest) (*olapv1.Q
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
-	
+
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
@@ -131,7 +162,21 @@ func (s *Server) Query(ctx context.Context, req *olapv1.QueryRequest) (*olapv1.Q
 		log.Printf("Received Query request with SQL: %s", req.Sql)
 	}
 
-	// 委托给service层处理
+	// 使用查询协调器进行分布式查询
+	if s.queryCoordinator != nil {
+		result, err := s.queryCoordinator.ExecuteDistributedQuery(req.Sql)
+		if err != nil {
+			return &olapv1.QueryResponse{
+				ResultJson: fmt.Sprintf(`{"error": "Distributed query failed: %v"}`, err),
+			}, nil
+		}
+
+		return &olapv1.QueryResponse{
+			ResultJson: result,
+		}, nil
+	}
+
+	// 如果没有协调器，回退到本地处理
 	return s.olapService.Query(ctx, req)
 }
 
@@ -142,7 +187,7 @@ func (s *Server) TriggerBackup(ctx context.Context, req *olapv1.TriggerBackupReq
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
-	
+
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
@@ -163,7 +208,7 @@ func (s *Server) RecoverData(ctx context.Context, req *olapv1.RecoverDataRequest
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
-	
+
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
@@ -184,7 +229,7 @@ func (s *Server) HealthCheck(ctx context.Context, req *olapv1.HealthCheckRequest
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
-	
+
 	// 委托给service层处理
 	return s.olapService.HealthCheck(ctx, req)
 }
@@ -196,7 +241,7 @@ func (s *Server) GetStats(ctx context.Context, req *olapv1.GetStatsRequest) (*ol
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
-	
+
 	// 委托给service层处理
 	return s.olapService.GetStats(ctx, req)
 }
@@ -208,7 +253,7 @@ func (s *Server) GetNodes(ctx context.Context, req *olapv1.GetNodesRequest) (*ol
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
-	
+
 	// 委托给service层处理
 	return s.olapService.GetNodes(ctx, req)
 }

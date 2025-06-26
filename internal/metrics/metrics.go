@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -150,7 +151,51 @@ var (
 		},
 		[]string{"node_id"},
 	)
+
+	// 系统资源指标
+	memoryUsage = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "olap_memory_usage_bytes",
+			Help: "Current memory usage in bytes",
+		},
+	)
+
+	cpuUsage = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "olap_cpu_usage_percent",
+			Help: "Current CPU usage percentage",
+		},
+	)
+
+	diskUsage = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "olap_disk_usage_bytes",
+			Help: "Current disk usage in bytes",
+		},
+		[]string{"path"},
+	)
+
+	goroutineCount = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "olap_goroutines_count",
+			Help: "Current number of goroutines",
+		},
+	)
+
+	// Panic recovery metrics
+	panicRecovered = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "panic_recovered_total",
+			Help: "Total number of panics recovered",
+		},
+		[]string{"component"},
+	)
 )
+
+func init() {
+	// Register panic recovery metrics
+	prometheus.MustRegister(panicRecovered)
+}
 
 // HTTPMetrics HTTP请求指标记录器
 type HTTPMetrics struct {
@@ -289,7 +334,83 @@ func UpdateNodeHealthStatus(nodeID string, healthy bool) {
 	nodeHealthStatus.WithLabelValues(nodeID).Set(status)
 }
 
+// UpdateMemoryUsage 更新内存使用指标
+func UpdateMemoryUsage(usage float64) {
+	memoryUsage.Set(usage)
+}
+
+// UpdateCPUUsage 更新CPU使用指标
+func UpdateCPUUsage(usage float64) {
+	cpuUsage.Set(usage)
+}
+
+// UpdateDiskUsage 更新磁盘使用指标
+func UpdateDiskUsage(path string, usage float64) {
+	diskUsage.WithLabelValues(path).Set(usage)
+}
+
+// UpdateGoroutineCount 更新goroutine数量指标
+func UpdateGoroutineCount(count float64) {
+	goroutineCount.Set(count)
+}
+
 // Handler 返回Prometheus指标处理器
 func Handler() http.Handler {
 	return promhttp.Handler()
-} 
+}
+
+// SystemMonitor 系统监控器
+type SystemMonitor struct {
+	stopCh chan struct{}
+}
+
+// NewSystemMonitor 创建系统监控器
+func NewSystemMonitor() *SystemMonitor {
+	return &SystemMonitor{
+		stopCh: make(chan struct{}),
+	}
+}
+
+// Start 启动系统监控
+func (sm *SystemMonitor) Start() {
+	go sm.collectSystemMetrics()
+}
+
+// Stop 停止系统监控
+func (sm *SystemMonitor) Stop() {
+	close(sm.stopCh)
+}
+
+// collectSystemMetrics 收集系统指标
+func (sm *SystemMonitor) collectSystemMetrics() {
+	ticker := time.NewTicker(10 * time.Second) // 每10秒收集一次
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-sm.stopCh:
+			return
+		case <-ticker.C:
+			sm.updateMetrics()
+		}
+	}
+}
+
+// updateMetrics 更新系统指标
+func (sm *SystemMonitor) updateMetrics() {
+	// 更新内存使用情况
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	UpdateMemoryUsage(float64(memStats.Alloc))
+
+	// 更新goroutine数量
+	UpdateGoroutineCount(float64(runtime.NumGoroutine()))
+
+	// 注意：CPU和磁盘使用情况需要更复杂的实现
+	// 这里只是示例，实际生产环境可能需要使用第三方库
+}
+
+// IncPanicRecovered 增加 panic 恢复计数
+func IncPanicRecovered(component string) {
+	panicRecovered.WithLabelValues(component).Inc()
+}

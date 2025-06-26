@@ -3,6 +3,7 @@ package errors
 import (
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // ErrorCode 错误码类型
@@ -20,11 +21,11 @@ const (
 	ErrCodeTooManyRequests  ErrorCode = "TOO_MANY_REQUESTS"
 
 	// 数据相关错误码
-	ErrCodeDataNotFound     ErrorCode = "DATA_NOT_FOUND"
-	ErrCodeDataInvalid      ErrorCode = "DATA_INVALID"
-	ErrCodeDataTooLarge     ErrorCode = "DATA_TOO_LARGE"
-	ErrCodeDataCorrupted    ErrorCode = "DATA_CORRUPTED"
-	ErrCodeDataExists       ErrorCode = "DATA_EXISTS"
+	ErrCodeDataNotFound  ErrorCode = "DATA_NOT_FOUND"
+	ErrCodeDataInvalid   ErrorCode = "DATA_INVALID"
+	ErrCodeDataTooLarge  ErrorCode = "DATA_TOO_LARGE"
+	ErrCodeDataCorrupted ErrorCode = "DATA_CORRUPTED"
+	ErrCodeDataExists    ErrorCode = "DATA_EXISTS"
 
 	// 查询相关错误码
 	ErrCodeQueryInvalid     ErrorCode = "QUERY_INVALID"
@@ -57,6 +58,30 @@ const (
 	ErrCodeAuthExpired     ErrorCode = "AUTH_EXPIRED"
 	ErrCodeAuthMissing     ErrorCode = "AUTH_MISSING"
 	ErrCodeAuthInsufficent ErrorCode = "AUTH_INSUFFICIENT"
+)
+
+// ErrorType 错误类型
+type ErrorType string
+
+const (
+	// 系统错误类型
+	ErrTypeSystem     ErrorType = "system"
+	ErrTypeNetwork    ErrorType = "network"
+	ErrTypeStorage    ErrorType = "storage"
+	ErrTypeValidation ErrorType = "validation"
+	ErrTypeBusiness   ErrorType = "business"
+	ErrTypeTimeout    ErrorType = "timeout"
+	ErrTypeResource   ErrorType = "resource"
+)
+
+// ErrorSeverity 错误严重程度
+type ErrorSeverity string
+
+const (
+	SeverityLow      ErrorSeverity = "low"
+	SeverityMedium   ErrorSeverity = "medium"
+	SeverityHigh     ErrorSeverity = "high"
+	SeverityCritical ErrorSeverity = "critical"
 )
 
 // AppError 应用错误结构
@@ -201,4 +226,159 @@ var (
 
 	ErrServiceUnavailable = New(ErrCodeServiceUnavailable, "Service unavailable")
 	ErrServiceTimeout     = New(ErrCodeServiceTimeout, "Service timeout")
-) 
+)
+
+// OlapError 自定义错误结构
+type OlapError struct {
+	Type      ErrorType     `json:"type"`
+	Severity  ErrorSeverity `json:"severity"`
+	Code      string        `json:"code"`
+	Message   string        `json:"message"`
+	Details   string        `json:"details,omitempty"`
+	Timestamp time.Time     `json:"timestamp"`
+	Component string        `json:"component"`
+	Operation string        `json:"operation"`
+	Retryable bool          `json:"retryable"`
+	Cause     error         `json:"-"`
+}
+
+// Error 实现 error 接口
+func (e *OlapError) Error() string {
+	return fmt.Sprintf("[%s][%s] %s: %s", e.Type, e.Severity, e.Code, e.Message)
+}
+
+// Unwrap 支持错误包装
+func (e *OlapError) Unwrap() error {
+	return e.Cause
+}
+
+// IsRetryable 检查错误是否可重试
+func (e *OlapError) IsRetryable() bool {
+	return e.Retryable
+}
+
+// NewOlapError 创建新的 OLAP 错误
+func NewOlapError(errType ErrorType, severity ErrorSeverity, code, message, component, operation string) *OlapError {
+	return &OlapError{
+		Type:      errType,
+		Severity:  severity,
+		Code:      code,
+		Message:   message,
+		Timestamp: time.Now(),
+		Component: component,
+		Operation: operation,
+		Retryable: false,
+	}
+}
+
+// WithCause 添加根本原因
+func (e *OlapError) WithCause(cause error) *OlapError {
+	e.Cause = cause
+	return e
+}
+
+// WithDetails 添加详细信息
+func (e *OlapError) WithDetails(details string) *OlapError {
+	e.Details = details
+	return e
+}
+
+// WithRetryable 设置是否可重试
+func (e *OlapError) WithRetryable(retryable bool) *OlapError {
+	e.Retryable = retryable
+	return e
+}
+
+// 预定义的错误构造函数
+
+// NewSystemError 创建系统错误
+func NewSystemError(code, message, component, operation string) *OlapError {
+	return NewOlapError(ErrTypeSystem, SeverityHigh, code, message, component, operation)
+}
+
+// NewNetworkError 创建网络错误
+func NewNetworkError(code, message, component, operation string) *OlapError {
+	return NewOlapError(ErrTypeNetwork, SeverityMedium, code, message, component, operation).WithRetryable(true)
+}
+
+// NewStorageError 创建存储错误
+func NewStorageError(code, message, component, operation string) *OlapError {
+	return NewOlapError(ErrTypeStorage, SeverityHigh, code, message, component, operation)
+}
+
+// NewValidationError 创建验证错误
+func NewValidationError(code, message, component, operation string) *OlapError {
+	return NewOlapError(ErrTypeValidation, SeverityLow, code, message, component, operation)
+}
+
+// NewTimeoutError 创建超时错误
+func NewTimeoutError(code, message, component, operation string) *OlapError {
+	return NewOlapError(ErrTypeTimeout, SeverityMedium, code, message, component, operation).WithRetryable(true)
+}
+
+// NewResourceError 创建资源错误
+func NewResourceError(code, message, component, operation string) *OlapError {
+	return NewOlapError(ErrTypeResource, SeverityCritical, code, message, component, operation)
+}
+
+// ErrorHandler 错误处理器
+type ErrorHandler struct {
+	component string
+}
+
+// NewErrorHandler 创建错误处理器
+func NewErrorHandler(component string) *ErrorHandler {
+	return &ErrorHandler{
+		component: component,
+	}
+}
+
+// Handle 处理错误
+func (h *ErrorHandler) Handle(err error, operation string) *OlapError {
+	if err == nil {
+		return nil
+	}
+
+	// 如果已经是 OlapError，直接返回
+	if olapErr, ok := err.(*OlapError); ok {
+		return olapErr
+	}
+
+	// 根据错误类型创建相应的 OlapError
+	return h.classifyError(err, operation)
+}
+
+// classifyError 分类错误
+func (h *ErrorHandler) classifyError(err error, operation string) *OlapError {
+	errMsg := err.Error()
+
+	// 简单的错误分类逻辑
+	switch {
+	case containsAny(errMsg, []string{"timeout", "deadline", "context deadline exceeded"}):
+		return NewTimeoutError("TIMEOUT", errMsg, h.component, operation).WithCause(err)
+	case containsAny(errMsg, []string{"connection", "network", "dial", "EOF"}):
+		return NewNetworkError("NETWORK", errMsg, h.component, operation).WithCause(err)
+	case containsAny(errMsg, []string{"storage", "minio", "redis", "database"}):
+		return NewStorageError("STORAGE", errMsg, h.component, operation).WithCause(err)
+	case containsAny(errMsg, []string{"validation", "invalid", "required", "format"}):
+		return NewValidationError("VALIDATION", errMsg, h.component, operation).WithCause(err)
+	case containsAny(errMsg, []string{"memory", "resource", "limit", "quota"}):
+		return NewResourceError("RESOURCE", errMsg, h.component, operation).WithCause(err)
+	default:
+		return NewSystemError("SYSTEM", errMsg, h.component, operation).WithCause(err)
+	}
+}
+
+// containsAny 检查字符串是否包含任意一个子字符串
+func containsAny(s string, substrings []string) bool {
+	for _, substr := range substrings {
+		if len(s) >= len(substr) {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

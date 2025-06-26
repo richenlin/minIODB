@@ -370,7 +370,50 @@ func (s *Server) writeData(c *gin.Context) {
 		Payload:   payloadStruct,
 	}
 
-	// 委托给service层处理
+	// 使用写入协调器进行分布式路由
+	if s.writeCoordinator != nil {
+		targetNode, err := s.writeCoordinator.RouteWrite(grpcReq)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error:   "write_error",
+				Code:    http.StatusInternalServerError,
+				Message: fmt.Sprintf("Failed to route write: %v", err),
+			})
+			return
+		}
+
+		// 如果路由到本地节点，则直接处理
+		if targetNode == "local" {
+			grpcResp, err := s.olapService.Write(c.Request.Context(), grpcReq)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, ErrorResponse{
+					Error:   "write_error",
+					Code:    http.StatusInternalServerError,
+					Message: fmt.Sprintf("Write operation failed: %v", err),
+				})
+				return
+			}
+
+			response := WriteResponse{
+				Success: grpcResp.Success,
+				Message: grpcResp.Message,
+				NodeID:  s.cfg.Server.NodeID,
+			}
+			c.JSON(http.StatusOK, response)
+			return
+		}
+
+		// 如果路由到远程节点，返回成功
+		response := WriteResponse{
+			Success: true,
+			Message: fmt.Sprintf("Write routed to node: %s", targetNode),
+			NodeID:  s.cfg.Server.NodeID,
+		}
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	// 如果没有协调器，回退到本地处理
 	grpcResp, err := s.olapService.Write(c.Request.Context(), grpcReq)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
@@ -405,13 +448,31 @@ func (s *Server) queryData(c *gin.Context) {
 		return
 	}
 
-	// 转换为gRPC请求格式
-	grpcReq := &olapv1.QueryRequest{
-		Sql: req.SQL,
+	// 使用查询协调器进行分布式查询
+	if s.queryCoordinator != nil {
+		result, err := s.queryCoordinator.ExecuteDistributedQuery(req.SQL)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error:   "query_error",
+				Code:    http.StatusInternalServerError,
+				Message: fmt.Sprintf("Distributed query execution failed: %v", err),
+			})
+			return
+		}
+
+		// 转换为REST响应格式
+		response := QueryResponse{
+			ResultJSON: result,
+		}
+
+		c.JSON(http.StatusOK, response)
+		return
 	}
 
-	// 委托给service层处理
-	grpcResp, err := s.olapService.Query(c.Request.Context(), grpcReq)
+	// 如果没有协调器，回退到本地处理
+	grpcResp, err := s.olapService.Query(c.Request.Context(), &olapv1.QueryRequest{
+		Sql: req.SQL,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Error:   "query_error",

@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"minIODB/internal/config"
 	"minIODB/internal/metrics"
 	"minIODB/internal/pool"
 
@@ -21,15 +23,15 @@ import (
 
 // ConcurrentBufferConfig 并发缓冲区配置
 type ConcurrentBufferConfig struct {
-	BufferSize       int           `yaml:"buffer_size"`        // 缓冲区大小
-	FlushInterval    time.Duration `yaml:"flush_interval"`     // 刷新间隔
-	WorkerPoolSize   int           `yaml:"worker_pool_size"`   // 工作池大小
-	TaskQueueSize    int           `yaml:"task_queue_size"`    // 任务队列大小
-	BatchFlushSize   int           `yaml:"batch_flush_size"`   // 批量刷新大小
-	EnableBatching   bool          `yaml:"enable_batching"`    // 启用批量处理
-	FlushTimeout     time.Duration `yaml:"flush_timeout"`      // 刷新超时
-	MaxRetries       int           `yaml:"max_retries"`        // 最大重试次数
-	RetryDelay       time.Duration `yaml:"retry_delay"`        // 重试延迟
+	BufferSize     int           `yaml:"buffer_size"`      // 缓冲区大小
+	FlushInterval  time.Duration `yaml:"flush_interval"`   // 刷新间隔
+	WorkerPoolSize int           `yaml:"worker_pool_size"` // 工作池大小
+	TaskQueueSize  int           `yaml:"task_queue_size"`  // 任务队列大小
+	BatchFlushSize int           `yaml:"batch_flush_size"` // 批量刷新大小
+	EnableBatching bool          `yaml:"enable_batching"`  // 启用批量处理
+	FlushTimeout   time.Duration `yaml:"flush_timeout"`    // 刷新超时
+	MaxRetries     int           `yaml:"max_retries"`      // 最大重试次数
+	RetryDelay     time.Duration `yaml:"retry_delay"`      // 重试延迟
 }
 
 // DefaultConcurrentBufferConfig 返回默认配置
@@ -51,17 +53,18 @@ func DefaultConcurrentBufferConfig() *ConcurrentBufferConfig {
 type FlushTask struct {
 	BufferKey string
 	Rows      []DataRow
-	Priority  int       // 任务优先级，数字越小优先级越高
+	Priority  int // 任务优先级，数字越小优先级越高
 	CreatedAt time.Time
 	Retries   int
 }
 
 // ConcurrentBuffer 支持并发刷新的缓冲区
 type ConcurrentBuffer struct {
-	config      *ConcurrentBufferConfig
-	poolManager *pool.PoolManager
+	config       *ConcurrentBufferConfig
+	appConfig    *config.Config
+	poolManager  *pool.PoolManager
 	backupBucket string
-	nodeID      string
+	nodeID       string
 
 	// 缓冲区数据
 	buffer map[string][]DataRow
@@ -80,17 +83,17 @@ type ConcurrentBuffer struct {
 
 // ConcurrentBufferStats 并发缓冲区统计信息
 type ConcurrentBufferStats struct {
-	TotalTasks       int64 `json:"total_tasks"`
-	CompletedTasks   int64 `json:"completed_tasks"`
-	FailedTasks      int64 `json:"failed_tasks"`
-	QueuedTasks      int64 `json:"queued_tasks"`
-	ActiveWorkers    int64 `json:"active_workers"`
-	AvgFlushTime     int64 `json:"avg_flush_time_ms"`
-	TotalFlushTime   int64 `json:"total_flush_time_ms"`
-	LastFlushTime    int64 `json:"last_flush_time"`
-	BufferSize       int64 `json:"buffer_size"`
-	PendingWrites    int64 `json:"pending_writes"`
-	mutex            sync.RWMutex
+	TotalTasks     int64 `json:"total_tasks"`
+	CompletedTasks int64 `json:"completed_tasks"`
+	FailedTasks    int64 `json:"failed_tasks"`
+	QueuedTasks    int64 `json:"queued_tasks"`
+	ActiveWorkers  int64 `json:"active_workers"`
+	AvgFlushTime   int64 `json:"avg_flush_time_ms"`
+	TotalFlushTime int64 `json:"total_flush_time_ms"`
+	LastFlushTime  int64 `json:"last_flush_time"`
+	BufferSize     int64 `json:"buffer_size"`
+	PendingWrites  int64 `json:"pending_writes"`
+	mutex          sync.RWMutex
 }
 
 // Worker 工作线程
@@ -102,13 +105,14 @@ type Worker struct {
 }
 
 // NewConcurrentBuffer 创建新的并发缓冲区
-func NewConcurrentBuffer(poolManager *pool.PoolManager, backupBucket, nodeID string, config *ConcurrentBufferConfig) *ConcurrentBuffer {
+func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config, backupBucket, nodeID string, config *ConcurrentBufferConfig) *ConcurrentBuffer {
 	if config == nil {
 		config = DefaultConcurrentBufferConfig()
 	}
 
 	cb := &ConcurrentBuffer{
 		config:       config,
+		appConfig:    appConfig,
 		poolManager:  poolManager,
 		backupBucket: backupBucket,
 		nodeID:       nodeID,
@@ -125,9 +129,9 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, backupBucket, nodeID str
 	// 启动定期刷新
 	go cb.periodicFlush()
 
-	log.Printf("Concurrent buffer initialized with %d workers, queue size %d", 
+	log.Printf("Concurrent buffer initialized with %d workers, queue size %d",
 		config.WorkerPoolSize, config.TaskQueueSize)
-	
+
 	return cb
 }
 
@@ -148,7 +152,7 @@ func (cb *ConcurrentBuffer) startWorkers() {
 // Worker.run 工作线程主循环
 func (w *Worker) run() {
 	defer w.buffer.workerWg.Done()
-	
+
 	for {
 		select {
 		case task := <-w.buffer.taskQueue:
@@ -170,12 +174,12 @@ func (w *Worker) run() {
 // Worker.processTask 处理刷新任务
 func (w *Worker) processTask(task *FlushTask) {
 	startTime := time.Now()
-	
+
 	// 更新统计信息
 	w.buffer.updateStats(func(stats *ConcurrentBufferStats) {
 		atomic.AddInt64(&stats.ActiveWorkers, 1)
 	})
-	
+
 	defer func() {
 		duration := time.Since(startTime)
 		w.buffer.updateStats(func(stats *ConcurrentBufferStats) {
@@ -183,7 +187,7 @@ func (w *Worker) processTask(task *FlushTask) {
 			atomic.AddInt64(&stats.TotalFlushTime, duration.Milliseconds())
 			atomic.AddInt64(&stats.CompletedTasks, 1)
 			stats.LastFlushTime = time.Now().Unix()
-			
+
 			// 更新平均刷新时间
 			totalTasks := atomic.LoadInt64(&stats.CompletedTasks)
 			if totalTasks > 0 {
@@ -196,12 +200,12 @@ func (w *Worker) processTask(task *FlushTask) {
 	err := w.flushData(task.BufferKey, task.Rows)
 	if err != nil {
 		log.Printf("Worker %d: flush task failed for key %s: %v", w.id, task.BufferKey, err)
-		
+
 		// 重试逻辑
 		if task.Retries < w.buffer.config.MaxRetries {
 			task.Retries++
 			task.Priority++ // 降低优先级
-			
+
 			// 延迟重试
 			go func() {
 				time.Sleep(w.buffer.config.RetryDelay * time.Duration(task.Retries))
@@ -231,7 +235,7 @@ func (w *Worker) flushData(bufferKey string, rows []DataRow) error {
 
 	// 创建临时文件
 	localFilePath := filepath.Join(tempDir, fmt.Sprintf("%s-%d-%d.parquet", bufferKey, w.id, time.Now().UnixNano()))
-	
+
 	// 确保目录存在
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
@@ -267,7 +271,7 @@ func (w *Worker) writeParquetFile(filePath string, rows []DataRow) error {
 			return fmt.Errorf("failed to write row: %w", err)
 		}
 	}
-	
+
 	return pw.WriteStop()
 }
 
@@ -285,13 +289,13 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	}
 
 	minioMetrics := metrics.NewMinIOMetrics("upload_primary")
-	
+
 	err := minioPool.ExecuteWithRetry(ctx, func() error {
 		client := minioPool.GetClient()
 		_, err := client.FPutObject(ctx, minioBucket, objectName, localFilePath, minio.PutObjectOptions{})
 		return err
 	})
-	
+
 	if err != nil {
 		minioMetrics.Finish("error")
 		return fmt.Errorf("failed to upload to primary MinIO: %w", err)
@@ -301,13 +305,13 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	// 上传到备份存储（如果配置了）
 	if backupPool := w.buffer.poolManager.GetBackupMinIOPool(); backupPool != nil && w.buffer.backupBucket != "" {
 		backupMetrics := metrics.NewMinIOMetrics("upload_backup")
-		
+
 		err := backupPool.ExecuteWithRetry(ctx, func() error {
 			client := backupPool.GetClient()
 			_, err := client.FPutObject(ctx, w.buffer.backupBucket, objectName, localFilePath, minio.PutObjectOptions{})
 			return err
 		})
-		
+
 		if err != nil {
 			log.Printf("WARN: failed to upload to backup storage: %v", err)
 			backupMetrics.Finish("error")
@@ -328,8 +332,25 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 	}
 
 	client := redisPool.GetClient()
-	redisKey := fmt.Sprintf("index:id:%s", bufferKey)
-	
+
+	// 从bufferKey解析ID和日期 (格式: ID/YYYY-MM-DD)
+	parts := strings.Split(bufferKey, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid buffer key format: %s", bufferKey)
+	}
+
+	id := parts[0]
+	day := parts[1]
+
+	// 获取默认表名
+	tableName := "default_table"
+	if w.buffer.appConfig != nil {
+		tableName = w.buffer.appConfig.GetDefaultTableName()
+	}
+
+	// 使用表级索引格式
+	redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", tableName, id, day)
+
 	if _, err := client.SAdd(ctx, redisKey, objectName).Result(); err != nil {
 		return fmt.Errorf("failed to update redis index: %w", err)
 	}
@@ -355,7 +376,7 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 	bufferKey := fmt.Sprintf("%s/%s", row.ID, dayStr)
 
 	cb.buffer[bufferKey] = append(cb.buffer[bufferKey], row)
-	
+
 	// 更新统计信息
 	cb.updateStats(func(stats *ConcurrentBufferStats) {
 		atomic.StoreInt64(&stats.BufferSize, int64(len(cb.buffer)))
@@ -403,7 +424,7 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 			atomic.AddInt64(&stats.TotalTasks, 1)
 			atomic.AddInt64(&stats.QueuedTasks, 1)
 		})
-		
+
 		// 记录缓冲区刷新指标
 		if force {
 			metrics.RecordBufferFlush("triggered_by_time")
@@ -466,12 +487,12 @@ func (cb *ConcurrentBuffer) batchFlush(keys []string) {
 		if end > len(keys) {
 			end = len(keys)
 		}
-		
+
 		batch := keys[i:end]
 		for _, key := range batch {
 			cb.triggerFlush(key, true)
 		}
-		
+
 		// 批次间的小延迟，避免突发负载
 		if i+cb.config.BatchFlushSize < len(keys) {
 			time.Sleep(10 * time.Millisecond)
@@ -483,7 +504,7 @@ func (cb *ConcurrentBuffer) batchFlush(keys []string) {
 func (cb *ConcurrentBuffer) Get(key string) []DataRow {
 	cb.mutex.RLock()
 	defer cb.mutex.RUnlock()
-	
+
 	rows := make([]DataRow, len(cb.buffer[key]))
 	copy(rows, cb.buffer[key])
 	return rows
@@ -493,7 +514,7 @@ func (cb *ConcurrentBuffer) Get(key string) []DataRow {
 func (cb *ConcurrentBuffer) GetAllKeys() []string {
 	cb.mutex.RLock()
 	defer cb.mutex.RUnlock()
-	
+
 	keys := make([]string, 0, len(cb.buffer))
 	for key := range cb.buffer {
 		keys = append(keys, key)
@@ -515,11 +536,11 @@ func (cb *ConcurrentBuffer) PendingWrites() int {
 func (cb *ConcurrentBuffer) GetStats() *ConcurrentBufferStats {
 	cb.stats.mutex.RLock()
 	defer cb.stats.mutex.RUnlock()
-	
+
 	// 实时更新队列长度
 	queuedTasks := int64(len(cb.taskQueue))
 	atomic.StoreInt64(&cb.stats.QueuedTasks, queuedTasks)
-	
+
 	return &ConcurrentBufferStats{
 		TotalTasks:     atomic.LoadInt64(&cb.stats.TotalTasks),
 		CompletedTasks: atomic.LoadInt64(&cb.stats.CompletedTasks),
@@ -545,24 +566,24 @@ func (cb *ConcurrentBuffer) updateStats(updater func(*ConcurrentBufferStats)) {
 func (cb *ConcurrentBuffer) Stop() {
 	cb.shutdownOnce.Do(func() {
 		log.Println("Stopping concurrent buffer...")
-		
+
 		// 刷新所有剩余数据
 		cb.flushAllBuffers()
-		
+
 		// 关闭shutdown channel
 		close(cb.shutdown)
-		
+
 		// 停止所有worker
 		for _, worker := range cb.workers {
 			close(worker.stopChan)
 		}
-		
+
 		// 等待所有worker完成
 		cb.workerWg.Wait()
-		
+
 		// 关闭任务队列
 		close(cb.taskQueue)
-		
+
 		log.Println("Concurrent buffer stopped successfully")
 	})
 }
@@ -574,4 +595,4 @@ func (cb *ConcurrentBuffer) WriteTempParquetFile(filePath string, rows []DataRow
 		return cb.workers[0].writeParquetFile(filePath, rows)
 	}
 	return fmt.Errorf("no workers available")
-} 
+}

@@ -20,11 +20,14 @@ import (
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
 	"minIODB/internal/ingest"
+	"minIODB/internal/metrics"
 	"minIODB/internal/query"
 	"minIODB/internal/service"
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
+
+	"minIODB/internal/recovery"
 )
 
 func main() {
@@ -46,6 +49,10 @@ func main() {
 	// 创建上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// 创建恢复处理器
+	recoveryHandler := recovery.NewRecoveryHandler("main", log.New(os.Stdout, "[RECOVERY] ", log.LstdFlags))
+	defer recoveryHandler.Recover()
 
 	// 初始化存储层
 	redisClient, err := storage.NewRedisClient(cfg.Redis)
@@ -109,6 +116,34 @@ func main() {
 	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoordinator,
 		queryCoord, redisClient, primaryMinio, backupMinio, bufferManager)
 
+	// 启动指标服务器
+	var metricsServer *http.Server
+	var systemMonitor *metrics.SystemMonitor
+	if cfg.Metrics.Enabled {
+		metricsServer = startMetricsServer(cfg)
+		systemMonitor = metrics.NewSystemMonitor()
+		systemMonitor.Start()
+	}
+
+	// 创建健康检查器
+	healthChecker := recovery.NewHealthChecker(30*time.Second, 5*time.Second, log.New(os.Stdout, "[HEALTH] ", log.LstdFlags))
+
+	// 添加健康检查
+	healthChecker.AddCheck(recovery.NewDatabaseHealthCheck("redis", func() error {
+		// Redis 健康检查
+		return nil // 这里应该实际检查 Redis 连接
+	}))
+
+	healthChecker.AddCheck(recovery.NewDatabaseHealthCheck("minio", func() error {
+		// MinIO 健康检查
+		return nil // 这里应该实际检查 MinIO 连接
+	}))
+
+	// 启动健康检查器
+	recoveryHandler.SafeGoWithContext(ctx, func(ctx context.Context) {
+		healthChecker.Start(ctx)
+	})
+
 	// 启动缓冲区刷新goroutine
 	go func() {
 		ticker := time.NewTicker(cfg.Buffer.FlushInterval)
@@ -145,7 +180,7 @@ func main() {
 	log.Println("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcServer, restServer)
+	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor)
 
 	log.Println("MinIODB server stopped")
 }
@@ -162,6 +197,9 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	if err != nil {
 		log.Fatalf("Failed to create gRPC service: %v", err)
 	}
+
+	// 设置协调器
+	grpcService.SetCoordinators(writeCoord, queryCoord)
 
 	grpcServer := grpc.NewServer()
 
@@ -227,7 +265,7 @@ func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.C
 	}
 }
 
-func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer *grpc.Server, restServer *restTransport.Server) {
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer *grpc.Server, restServer *restTransport.Server, metricsServer *http.Server, systemMonitor *metrics.SystemMonitor) {
 	// 创建信号通道
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -265,5 +303,40 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer 
 		log.Println("REST server stopped")
 	}
 
+	// 停止指标服务器
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Failed to stop metrics server: %v", err)
+		} else {
+			log.Println("Metrics server stopped")
+		}
+	}
+
+	// 停止系统监控器
+	if systemMonitor != nil {
+		systemMonitor.Stop()
+		log.Println("System monitor stopped")
+	}
+
 	log.Println("All servers stopped gracefully")
+}
+
+// startMetricsServer 启动指标服务器
+func startMetricsServer(cfg *config.Config) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%s", cfg.Metrics.Port),
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("Metrics server starting on port %s", cfg.Metrics.Port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Failed to start metrics server: %v", err)
+		}
+	}()
+
+	return server
 }
