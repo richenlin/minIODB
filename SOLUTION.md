@@ -31,7 +31,7 @@
 |  - Request Parsing & Validation          |
 |  - Query Coordination                    |
 |  - Result Aggregation                    |
-|  - Metadata Manager (NEW)                |
+|  - Metadata Manager                      |
 |    ├─ Version Management                 |
 |    ├─ Backup/Recovery Control            |
 |    └─ Distributed Lock Management        |
@@ -40,7 +40,7 @@
       |   |                    |   |  (Service Discovery & Query Planning)
       |   v                    |   v
 +------------------------------------------+
-|        Connection Pool Manager (NEW)     |
+|        Connection Pool Manager           |
 |                                          |
 |  Redis Pool      |    MinIO Pool         |
 |  ├─ Standalone   |    ├─ Primary Pool    |
@@ -80,7 +80,7 @@
 
 这是系统的入口。它可以是集群中的任何一个节点。
 *   **API接口**: 提供Restful和gRPC两种标准接口，接收数据写入和查询请求。
-*   **元数据管理器 (Metadata Manager)** (NEW):
+*   **元数据管理器 (Metadata Manager)**:
     1.  **版本管理系统**: 维护系统元数据的语义化版本，支持版本比较和冲突检测。
     2.  **备份控制器**: 协调元数据的自动和手动备份操作。
     3.  **恢复管理器**: 处理元数据恢复请求，支持完整恢复和增量恢复。
@@ -102,7 +102,7 @@
     2.  根据表名和数据中的`ID`，使用**一致性哈希算法**（存储在Redis中）来决定这条数据应该由哪个Worker节点处理。
     3.  将数据请求转发给目标Worker节点。
 
-#### b. 连接池管理层 (Connection Pool Manager) (NEW)
+#### b. 连接池管理层 (Connection Pool Manager)
 
 统一管理系统中所有的数据库连接，提供高效、可靠的连接服务。
 *   **Redis连接池管理器**:
@@ -127,7 +127,7 @@
 
 这是系统的工作负载核心，可以水平扩展。
 *   **服务注册与心跳**: 启动时，向Redis注册自己的地址和端口。并定时发送心跳，更新其在Redis中的TTL（存活时间），表明自己处于健康状态。
-*   **连接池客户端** (NEW): 通过连接池管理器获取到Redis和MinIO的连接，而不是直接连接。
+*   **连接池客户端**: 通过连接池管理器获取到Redis和MinIO的连接，而不是直接连接。
 *   **表级数据缓冲与写入**:
     1.  接收来自协调器的数据写入请求，按表名进行分离处理。
     2.  数据不会立即写入MinIO，而是在内存中按表进行缓冲和聚合（例如使用Go Channel和Ticker）。
@@ -158,12 +158,12 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
     *   **Key**: `table:{TABLE}:stats` - 表统计信息 (HASH)
     *   **Key**: `table:{TABLE}:created_at` - 表创建时间 (STRING)
     *   **Key**: `table:{TABLE}:last_write` - 最后写入时间 (STRING)
-*   **元数据版本管理** (NEW):
+*   **元数据版本管理**:
     *   **Key**: `metadata:version` - 当前元数据版本号 (STRING)
     *   **Key**: `metadata:version:history` - 版本变更历史 (LIST)
     *   **Key**: `metadata:backup:list` - 备份文件列表 (ZSET，按时间排序)
     *   **Key**: `metadata:lock:{operation}` - 分布式锁 (STRING with TTL)
-*   **连接池状态** (NEW):
+*   **连接池状态**:
     *   **Key**: `pool:redis:status` - Redis连接池状态 (HASH)
     *   **Key**: `pool:minio:status` - MinIO连接池状态 (HASH)
     *   **Key**: `pool:health:last_check` - 最后健康检查时间 (STRING)
@@ -176,7 +176,7 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 
 *   **角色**: 最终的数据湖（Data Lake），提供可靠、高可用的S3兼容对象存储。
 *   **数据格式**: **Apache Parquet**。这是一个列式存储格式，压缩率高，非常适合OLAP场景。DuckDB对其有原生的高性能支持。
-*   **存储架构** (NEW):
+*   **存储架构**:
     *   **主存储集群**: 处理主要的读写请求，提供高性能访问。
     *   **备份存储集群**: 用于数据备份和灾难恢复，可以是地理位置分离的存储。
 *   **数据组织**:
@@ -185,7 +185,7 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
         - `users/user-123/2024-01-15/1705123456789.parquet`
         - `orders/order-456/2024-01-15/1705123456790.parquet`
         - `logs/app-logs/2024-01-15/1705123456791.parquet`
-*   **备份数据组织** (NEW):
+*   **备份数据组织**:
     *   **元数据备份**: `metadata/backups/YYYY-MM-DD/backup_timestamp.json`
     *   **数据备份**: 与主存储相同的路径结构，但存储在备份bucket中
 
