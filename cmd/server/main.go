@@ -63,6 +63,15 @@ func main() {
 	defer recoveryHandler.Recover()
 
 	// 初始化存储层
+	storageInstance, err := storage.NewStorage(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create storage instance: %v", err)
+	}
+	defer storageInstance.Close()
+
+	// 获取连接池管理器
+	poolManager := storageInstance.GetPoolManager()
+
 	redisClient, err := storage.NewRedisClient(cfg.Redis)
 	if err != nil {
 		log.Fatalf("Failed to create Redis client: %v", err)
@@ -82,20 +91,17 @@ func main() {
 		}
 	}
 
-	// 初始化缓冲区
-	bufferManager := buffer.NewManager(cfg.Buffer.BufferSize)
-
-	// 初始化服务组件
-	sharedBuffer := buffer.NewSharedBuffer(
-		redisClient.GetClient(),
-		primaryMinio,
-		backupMinio,
-		cfg.Backup.MinIO.Bucket,
+	// 初始化并发缓冲区
+	concurrentBuffer := buffer.NewConcurrentBuffer(
+		poolManager,
 		cfg,
+		cfg.Backup.MinIO.Bucket,
+		cfg.Server.NodeID,
+		nil, // 使用默认配置
 	)
 
-	ingesterService := ingest.NewIngester(sharedBuffer)
-	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg, sharedBuffer, logger)
+	ingesterService := ingest.NewIngester(concurrentBuffer)
+	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg, concurrentBuffer, logger)
 	if err != nil {
 		log.Fatalf("Failed to create querier service: %v", err)
 	}
@@ -122,7 +128,7 @@ func main() {
 
 	// 启动REST服务器
 	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoord,
-		queryCoord, redisClient, primaryMinio, backupMinio, bufferManager)
+		queryCoord, redisClient, primaryMinio, backupMinio)
 
 	// 启动指标服务器
 	var metricsServer *http.Server
@@ -151,34 +157,6 @@ func main() {
 	recoveryHandler.SafeGoWithContext(ctx, func(ctx context.Context) {
 		healthChecker.Start(ctx)
 	})
-
-	// 启动缓冲区刷新goroutine
-	go func() {
-		ticker := time.NewTicker(cfg.Buffer.FlushInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := bufferManager.Flush(func(data []buffer.DataPoint) error {
-					// 批量写入数据
-					for _, point := range data {
-						dataRow := buffer.DataRow{
-							ID:        point.ID,
-							Timestamp: point.Timestamp.UnixNano(),
-							Payload:   string(point.Data),
-						}
-						sharedBuffer.Add(dataRow)
-					}
-					return nil
-				}); err != nil {
-					log.Printf("Failed to flush buffer: %v", err)
-				}
-			}
-		}
-	}()
 
 	// 启动备份goroutine
 	if cfg.Backup.Enabled && backupMinio != nil {
@@ -233,7 +211,7 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	return grpcServer
 }
 
-func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader, bufferManager *buffer.Manager) *restTransport.Server {
+func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader) *restTransport.Server {
 	// 创建统一的service层
 	olapService, err := service.NewOlapService(cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
 	if err != nil {

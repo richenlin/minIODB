@@ -11,11 +11,11 @@ import (
 
 // Ingester handles converting gRPC requests and adding them to the shared buffer.
 type Ingester struct {
-	buffer *buffer.SharedBuffer
+	buffer *buffer.ConcurrentBuffer
 }
 
 // NewIngester creates a new Ingester.
-func NewIngester(buf *buffer.SharedBuffer) *Ingester {
+func NewIngester(buf *buffer.ConcurrentBuffer) *Ingester {
 	return &Ingester{
 		buffer: buf,
 	}

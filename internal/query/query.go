@@ -25,7 +25,7 @@ type Querier struct {
 	redisClient    *redis.Client
 	minioClient    storage.Uploader
 	db             *sql.DB
-	buffer         *buffer.SharedBuffer
+	buffer         *buffer.ConcurrentBuffer
 	tableExtractor *SimpleTableExtractor
 	logger         *zap.Logger
 	tempDir        string
@@ -34,7 +34,7 @@ type Querier struct {
 
 // NewQuerier 创建简化的查询处理器
 func NewQuerier(redisClient *redis.Client, minioClient storage.Uploader,
-	cfg *config.Config, buf *buffer.SharedBuffer, logger *zap.Logger) (*Querier, error) {
+	cfg *config.Config, buf *buffer.ConcurrentBuffer, logger *zap.Logger) (*Querier, error) {
 
 	// 初始化DuckDB
 	db, err := sql.Open("duckdb", ":memory:")
