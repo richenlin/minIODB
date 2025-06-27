@@ -115,10 +115,17 @@ type MetadataBackupConfig struct {
 
 // SecurityConfig 安全配置
 type SecurityConfig struct {
-	Mode        string   `yaml:"mode"`
-	JWTSecret   string   `yaml:"jwt_secret"`
-	EnableTLS   bool     `yaml:"enable_tls"`
-	ValidTokens []string `yaml:"valid_tokens"`
+	Mode        string          `yaml:"mode"`
+	JWTSecret   string          `yaml:"jwt_secret"`
+	EnableTLS   bool            `yaml:"enable_tls"`
+	ValidTokens []string        `yaml:"valid_tokens"`
+	RateLimit   RateLimitConfig `yaml:"rate_limit"`
+}
+
+// RateLimitConfig 速率限制配置
+type RateLimitConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	RequestsPerMinute int  `yaml:"requests_per_minute"`
 }
 
 // MetricsConfig 指标配置
@@ -267,6 +274,10 @@ func (c *Config) setDefaults() {
 		Mode:      "disabled",
 		JWTSecret: "",
 		EnableTLS: false,
+		RateLimit: RateLimitConfig{
+			Enabled:           true,
+			RequestsPerMinute: 60, // 默认每分钟60个请求
+		},
 	}
 
 	// 指标默认配置

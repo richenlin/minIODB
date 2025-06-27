@@ -349,7 +349,9 @@ func (s *Server) setupMiddleware() {
 	s.router.Use(s.securityMiddleware.RequestLogger())
 
 	// 可选的限流中间件
-	s.router.Use(s.securityMiddleware.RateLimiter(60)) // 每分钟60个请求
+	if s.cfg.Security.RateLimit.Enabled {
+		s.router.Use(s.securityMiddleware.RateLimiter(s.cfg.Security.RateLimit.RequestsPerMinute))
+	}
 }
 
 // SetCoordinators 设置协调器

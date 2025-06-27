@@ -113,6 +113,9 @@ security:
   valid_tokens: []
   cert_file: "certs/server.crt"  # 证书文件路径
   key_file: "certs/server.key"   # 私钥文件路径
+  rate_limit:
+    enabled: true
+    requests_per_minute: 1000    # 每分钟请求数限制，适合性能测试
 
 # 新增认证配置
 auth:
