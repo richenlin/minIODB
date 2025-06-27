@@ -9,7 +9,7 @@ redis:
   addr: "localhost:6379"      # 单机模式地址
   password: ""                # 密码
   db: 0                       # 数据库编号（集群模式不支持）
-  bucket: "olap-data"         # 存储桶名称
+  bucket: "miniodb-data"      # 存储桶名称 - 修改为与docker-compose.yml一致
   
   # 哨兵模式配置（当mode为sentinel时使用）
   # master_name: "mymaster"                    # 主节点名称
@@ -53,7 +53,7 @@ minio:
   access_key_id: "minioadmin"
   secret_access_key: "minioadmin"
   use_ssl: false
-  bucket: "olap-data"
+  bucket: "miniodb-data"      # 修改为与docker-compose.yml一致
 
 backup:
   enabled: false
@@ -63,14 +63,14 @@ backup:
     access_key_id: "minioadmin"
     secret_access_key: "minioadmin"
     use_ssl: false
-    bucket: "backup-data"
+    bucket: "miniodb-backup"  # 修改为与docker-compose.yml一致
   
   # 元数据备份配置
   metadata:
     enabled: true                # 启用元数据备份
     interval: 30m               # 备份间隔（30分钟）
     retention_days: 7           # 保留天数
-    bucket: "olap-metadata"     # 元数据存储桶
+    bucket: "miniodb-metadata"  # 元数据存储桶 - 修改为更一致的命名
 
 buffer:
   # 基础配置
@@ -151,7 +151,7 @@ pool:
     addr: "localhost:6379"      # 单机模式地址
     password: ""                # 密码
     db: 0                       # 数据库编号
-    bucket: "olap-data"         # 存储桶名称
+    bucket: "miniodb-data"      # 存储桶名称 - 修改为与docker-compose.yml一致
     
     # 哨兵模式配置（当mode为sentinel时使用）
     # master_name: "mymaster"

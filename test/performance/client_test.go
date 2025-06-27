@@ -228,8 +228,8 @@ func waitForServiceClient(maxWait time.Duration) error {
 func insertTestData(tableName string, recordCount int) error {
 	records := generateTestRecords(recordCount)
 
-	// 批量插入
-	batchSize := 1000
+	// 批量插入 - 减少批量大小以避免速率限制
+	batchSize := 100 // 从1000减少到100
 	for i := 0; i < len(records); i += batchSize {
 		end := i + batchSize
 		if end > len(records) {
@@ -240,6 +240,9 @@ func insertTestData(tableName string, recordCount int) error {
 		if err := insertBatchReal(batch); err != nil {
 			return fmt.Errorf("failed to insert batch %d-%d: %v", i, end, err)
 		}
+
+		// 批次间添加延迟以避免速率限制
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	return nil
