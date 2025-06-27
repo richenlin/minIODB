@@ -26,14 +26,29 @@
         |                      |
         v                      v
 +------------------------------------------+
-|          API Gateway / Query Node (Go)   |  <-- (任意一个节点都可以扮演此角色)
+|     API Gateway / Query Node (Go)       |  <-- (任意一个节点都可以扮演此角色)
 |                                          |
 |  - Request Parsing & Validation          |
 |  - Query Coordination                    |
 |  - Result Aggregation                    |
+|  - Metadata Manager (NEW)                |
+|    ├─ Version Management                 |
+|    ├─ Backup/Recovery Control            |
+|    └─ Distributed Lock Management        |
 +------------------------------------------+
       ^   |                    ^   |
       |   |                    |   |  (Service Discovery & Query Planning)
+      |   v                    |   v
++------------------------------------------+
+|        Connection Pool Manager (NEW)     |
+|                                          |
+|  Redis Pool      |    MinIO Pool         |
+|  ├─ Standalone   |    ├─ Primary Pool    |
+|  ├─ Sentinel     |    ├─ Backup Pool     |
+|  ├─ Cluster      |    ├─ Health Check    |
+|  └─ Health Check |    └─ Auto Failover   |
++------------------------------------------+
+      ^   |                    ^   |
       |   v                    |   v
 +----------------+      +---------------------------------+
 | Redis          |      | Worker Nodes (Go Service)       |
@@ -42,17 +57,20 @@
 | - Data Index   |----->| - DuckDB Instance (embedded)    |
 | - Hash Ring    |      | - Data Ingestion & Buffering    |
 | - Table Meta   |      | - Parquet File Generation       |
-+----------------+      | - Read/Write to MinIO           |
-                        | - Table-level Processing        |
+| - Metadata Ver |      | - Read/Write to MinIO           |
+| - Backup Index |      | - Table-level Processing        |
++----------------+      | - Connection Pool Client        |
                         +---------------------------------+
                                  ^         |
-                                 |         | (S3 API)
+                                 |         | (S3 API via Pool)
                                  v         v
                        +-------------------------+
                        |   MinIO Cluster         |
                        | (Distributed Object     |
                        |      Storage)           |
-                       | TABLE/ID/YYYY-MM-DD/    |
+                       | ├─ Primary Storage      |
+                       | ├─ Backup Storage       |
+                       | └─ TABLE/ID/YYYY-MM-DD/ |
                        +-------------------------+
 ```
 
@@ -62,6 +80,12 @@
 
 这是系统的入口。它可以是集群中的任何一个节点。
 *   **API接口**: 提供Restful和gRPC两种标准接口，接收数据写入和查询请求。
+*   **元数据管理器 (Metadata Manager)** (NEW):
+    1.  **版本管理系统**: 维护系统元数据的语义化版本，支持版本比较和冲突检测。
+    2.  **备份控制器**: 协调元数据的自动和手动备份操作。
+    3.  **恢复管理器**: 处理元数据恢复请求，支持完整恢复和增量恢复。
+    4.  **分布式锁管理**: 使用Redis分布式锁防止多节点并发操作冲突。
+    5.  **一致性检查**: 定期验证多节点间元数据的一致性。
 *   **表管理器 (Table Manager)**:
     1.  负责表的创建、删除、配置管理等操作。
     2.  维护表的元数据信息，包括配置、统计信息、权限等。
@@ -78,24 +102,46 @@
     2.  根据表名和数据中的`ID`，使用**一致性哈希算法**（存储在Redis中）来决定这条数据应该由哪个Worker节点处理。
     3.  将数据请求转发给目标Worker节点。
 
-#### b. Worker节点 (Go Service with Embedded DuckDB)
+#### b. 连接池管理层 (Connection Pool Manager) (NEW)
+
+统一管理系统中所有的数据库连接，提供高效、可靠的连接服务。
+*   **Redis连接池管理器**:
+    1.  **多模式支持**: 根据配置自动适配单机、哨兵、集群三种Redis部署模式。
+    2.  **连接池优化**: 实现连接复用、预热、超时管理等优化策略。
+    3.  **健康检查**: 定期检查Redis连接的健康状态，及时发现故障节点。
+    4.  **故障切换**: 在哨兵和集群模式下支持自动主从切换和分片切换。
+    5.  **性能监控**: 收集连接池使用情况、响应时间等性能指标。
+*   **MinIO连接池管理器**:
+    1.  **双池架构**: 维护主MinIO池和备份MinIO池，支持读写分离。
+    2.  **自动故障切换**: 主池故障时自动切换到备份池，保证服务连续性。
+    3.  **负载均衡**: 在多个MinIO实例间智能分配请求负载。
+    4.  **连接优化**: 优化S3连接参数，提升上传下载性能。
+    5.  **健康监控**: 持续监控MinIO服务状态和存储容量。
+*   **统一管理接口**:
+    1.  **配置管理**: 统一管理所有连接池的配置参数。
+    2.  **状态监控**: 提供连接池状态查询和监控接口。
+    3.  **动态调整**: 支持运行时动态调整连接池参数。
+    4.  **故障告警**: 连接故障时及时发送告警通知。
+
+#### c. Worker节点 (Go Service with Embedded DuckDB)
 
 这是系统的工作负载核心，可以水平扩展。
 *   **服务注册与心跳**: 启动时，向Redis注册自己的地址和端口。并定时发送心跳，更新其在Redis中的TTL（存活时间），表明自己处于健康状态。
+*   **连接池客户端** (NEW): 通过连接池管理器获取到Redis和MinIO的连接，而不是直接连接。
 *   **表级数据缓冲与写入**:
     1.  接收来自协调器的数据写入请求，按表名进行分离处理。
     2.  数据不会立即写入MinIO，而是在内存中按表进行缓冲和聚合（例如使用Go Channel和Ticker）。
     3.  每个表可以配置独立的缓冲区大小和刷新间隔。
     4.  当某个表的数据达到配置的阈值（如大小或时间间隔），将该表缓冲的数据批量转换为**Apache Parquet**格式。
-    5.  生成一个唯一的文件名（如 `TABLE/ID/YYYY-MM-DD/timestamp_nanoseconds.parquet`），并将其上传到MinIO。
+    5.  生成一个唯一的文件名（如 `TABLE/ID/YYYY-MM-DD/timestamp_nanoseconds.parquet`），并通过连接池将其上传到MinIO。
     6.  上传成功后，在Redis的`表级数据索引`中添加一条记录，例如：`SADD index:table:{TABLE}:id:{ID}:{YYYY-MM-DD} file_path_in_minio`。
 *   **查询执行**:
     1.  接收协调器下发的子查询任务（包含一组MinIO上的Parquet文件路径和表信息）。
     2.  调用内嵌的DuckDB Go客户端，支持多表查询。
-    3.  执行SQL查询，DuckDB会直接通过S3协议从MinIO读取这些Parquet文件进行分析。
+    3.  执行SQL查询，DuckDB会通过连接池从MinIO读取这些Parquet文件进行分析。
     4.  将查询结果返回给协调器。
 
-#### c. 元数据管理层 (Redis)
+#### d. 元数据管理层 (Redis)
 
 Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 *   **服务注册与发现**:
@@ -112,21 +158,36 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
     *   **Key**: `table:{TABLE}:stats` - 表统计信息 (HASH)
     *   **Key**: `table:{TABLE}:created_at` - 表创建时间 (STRING)
     *   **Key**: `table:{TABLE}:last_write` - 最后写入时间 (STRING)
+*   **元数据版本管理** (NEW):
+    *   **Key**: `metadata:version` - 当前元数据版本号 (STRING)
+    *   **Key**: `metadata:version:history` - 版本变更历史 (LIST)
+    *   **Key**: `metadata:backup:list` - 备份文件列表 (ZSET，按时间排序)
+    *   **Key**: `metadata:lock:{operation}` - 分布式锁 (STRING with TTL)
+*   **连接池状态** (NEW):
+    *   **Key**: `pool:redis:status` - Redis连接池状态 (HASH)
+    *   **Key**: `pool:minio:status` - MinIO连接池状态 (HASH)
+    *   **Key**: `pool:health:last_check` - 最后健康检查时间 (STRING)
 *   **一致性哈希环**:
     *   **Key**: `cluster:hash_ring`
     *   **Type**: `Sorted Set` or `String`
     *   **Usage**: 存储一致性哈希环的信息，用于写入时的分片路由。当节点增加或减少时，只需更新此数据结构。
 
-#### d. 分布式存储层 (MinIO)
+#### e. 分布式存储层 (MinIO)
 
 *   **角色**: 最终的数据湖（Data Lake），提供可靠、高可用的S3兼容对象存储。
 *   **数据格式**: **Apache Parquet**。这是一个列式存储格式，压缩率高，非常适合OLAP场景。DuckDB对其有原生的高性能支持。
+*   **存储架构** (NEW):
+    *   **主存储集群**: 处理主要的读写请求，提供高性能访问。
+    *   **备份存储集群**: 用于数据备份和灾难恢复，可以是地理位置分离的存储。
 *   **数据组织**:
-    *   **Bucket**: 可以按业务或租户划分，例如 `olap-data`。
+    *   **Bucket**: 可以按业务或租户划分，例如 `olap-data`、`olap-backup`。
     *   **Object Key (路径)**: 严格按照 `TABLE/ID/YYYY-MM-DD/` 的格式组织。例如：
         - `users/user-123/2024-01-15/1705123456789.parquet`
         - `orders/order-456/2024-01-15/1705123456790.parquet`
         - `logs/app-logs/2024-01-15/1705123456791.parquet`
+*   **备份数据组织** (NEW):
+    *   **元数据备份**: `metadata/backups/YYYY-MM-DD/backup_timestamp.json`
+    *   **数据备份**: 与主存储相同的路径结构，但存储在备份bucket中
 
 ## 4. 核心流程分析
 
@@ -195,9 +256,160 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 - **功能**: 调用者可以指定`表名`、`ID`和`日期`，手动触发对这部分数据的备份。
 - **逻辑**: 服务端接收到请求后，会扫描主存储节点上对应表的所有Parquet文件，并将它们逐一复制到备份存储节点。此功能可用于数据恢复、迁移或对特定重要数据进行强制备份。
 
+### 4.8. 连接池管理流程
+
+#### a. 连接池初始化流程
+1. **系统启动阶段**:
+   - 读取连接池配置（Redis模式、MinIO集群信息等）
+   - 创建连接池管理器实例
+   - 根据配置初始化Redis连接池（单机/哨兵/集群）
+   - 初始化MinIO连接池（主池/备份池）
+
+2. **连接池预热**:
+   - 创建初始连接数量的连接到连接池
+   - 验证所有初始连接的有效性
+   - 记录连接池初始化状态和性能基准
+
+3. **健康检查机制启动**:
+   - 启动定时健康检查任务（默认每30秒）
+   - 检查Redis连接的响应时间和可用性
+   - 检查MinIO连接的存储状态和访问权限
+   - 将健康检查结果更新到Redis元数据中
+
+#### b. 连接获取与释放流程
+1. **连接请求处理**:
+   - Worker节点请求Redis/MinIO连接
+   - 连接池管理器检查连接池状态
+   - 如果有可用连接，直接返回；否则创建新连接
+   - 记录连接使用统计信息
+
+2. **连接健康验证**:
+   - 返回连接前验证连接有效性
+   - 对于无效连接，自动创建新连接替代
+   - 更新连接池健康状态指标
+
+3. **连接回收管理**:
+   - 监控连接使用时长，超时自动回收
+   - 定期清理长时间未使用的连接
+   - 维护连接池大小在配置范围内
+
+#### c. 故障检测与切换流程
+1. **Redis故障处理**:
+   - 检测到Redis主节点故障时，触发故障切换
+   - 在哨兵模式下，自动发现新的主节点
+   - 在集群模式下，重新路由到健康的分片节点
+   - 更新连接池配置和路由表
+
+2. **MinIO故障处理**:
+   - 检测到主MinIO池故障时，自动切换到备份池
+   - 通知所有Worker节点更新MinIO连接配置
+   - 启动主池恢复检测，恢复后自动切回
+   - 记录故障切换日志和性能影响
+
+3. **连接池扩缩容**:
+   - 根据负载情况动态调整连接池大小
+   - 高负载时自动增加连接数
+   - 低负载时回收多余连接，节省资源
+   - 保证连接池大小在最小值和最大值之间
+
+### 4.9. 元数据备份恢复流程
+
+#### a. 版本管理流程
+1. **系统启动版本检查**:
+   - 节点启动时从Redis读取当前元数据版本
+   - 比较本地缓存版本与Redis版本
+   - 如果版本不一致，触发同步流程
+   - 记录版本检查结果和同步状态
+
+2. **版本冲突检测**:
+   - 多个节点同时修改元数据时，检测版本冲突
+   - 使用分布式锁防止并发修改
+   - 冲突发生时，采用"最后写入获胜"或"合并策略"
+   - 记录冲突解决过程和结果
+
+3. **版本更新同步**:
+   - 元数据修改时，先获取分布式锁
+   - 更新元数据版本号（采用语义化版本控制）
+   - 将版本变更记录到历史日志
+   - 通知其他节点进行版本同步
+
+#### b. 自动备份流程
+1. **定时备份触发**:
+   - 根据配置的备份间隔（如每小时、每天）触发备份
+   - 检查是否有其他节点正在执行备份（分布式锁）
+   - 获取备份锁后，开始备份流程
+
+2. **元数据收集**:
+   - 从Redis收集所有表元数据、索引信息
+   - 收集服务注册信息、配置信息
+   - 收集连接池状态和性能统计
+   - 生成完整的元数据快照
+
+3. **备份文件生成**:
+   - 将元数据快照序列化为JSON格式
+   - 添加备份时间戳和版本信息
+   - 计算备份文件的校验和
+   - 上传备份文件到MinIO备份存储
+
+4. **备份索引更新**:
+   - 将新备份信息添加到备份文件列表
+   - 清理过期的备份文件（根据保留策略）
+   - 更新备份统计信息
+   - 释放分布式锁
+
+#### c. 恢复流程
+1. **恢复请求处理**:
+   - 验证恢复请求的权限和参数
+   - 获取恢复操作的分布式锁
+   - 检查指定的备份文件是否存在和有效
+
+2. **备份文件验证**:
+   - 下载指定的备份文件
+   - 验证文件完整性（校验和）
+   - 解析备份文件内容
+   - 检查备份版本与当前系统的兼容性
+
+3. **数据恢复执行**:
+   - 根据恢复模式（完整/增量/选择性）执行恢复
+   - 备份当前元数据（如果配置了备份选项）
+   - 清理或合并现有元数据
+   - 导入备份的元数据到Redis
+
+4. **一致性检查**:
+   - 验证恢复后的数据完整性
+   - 检查表索引和文件路径的一致性
+   - 验证服务注册信息的有效性
+   - 更新元数据版本号
+
+5. **恢复后处理**:
+   - 通知所有节点重新加载元数据
+   - 触发连接池重新初始化
+   - 记录恢复操作日志
+   - 释放分布式锁
+
+#### d. 高可用保障流程
+1. **多节点协调**:
+   - 使用Redis分布式锁确保同一时间只有一个节点执行备份/恢复
+   - 节点间通过Redis发布/订阅机制同步状态
+   - 主节点故障时，自动选举新的主节点执行管理任务
+
+2. **故障检测与自动恢复**:
+   - 定期检查元数据一致性
+   - 检测到数据不一致时，自动触发修复流程
+   - 节点重新加入集群时，自动同步最新元数据
+   - 网络分区恢复后，执行数据一致性检查和修复
+
+3. **数据校验与修复**:
+   - 定期执行元数据完整性检查
+   - 检查Redis中的索引与MinIO实际文件的一致性
+   - 发现不一致时，自动修复或生成告警
+   - 维护详细的校验和修复日志
+
 ## 5. API 设计 (示例)
 
-### 5.1. Restful API
+### 5.1. RESTful API
+
+#### 5.1.1. 数据操作
 
 *   **写入数据**
     *   `POST /v1/data`
@@ -233,6 +445,8 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
         }
         ```
 
+#### 5.1.2. 表管理
+
 *   **创建表**
     *   `POST /v1/tables`
     *   **Body**:
@@ -249,7 +463,7 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
         ```
 
 *   **列出表**
-    *   `GET /v1/tables`
+    *   `GET /v1/tables?pattern=user*&page=1&limit=20`
     *   **Response**:
         ```json
         {
@@ -264,7 +478,9 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
               "size_bytes": 1024000
             }
           ],
-          "total": 1
+          "total": 1,
+          "page": 1,
+          "limit": 20
         }
         ```
 
@@ -298,6 +514,17 @@ Redis是整个分布式系统的大脑，存储了所有状态和索引信息。
 *   **删除表**
     *   `DELETE /v1/tables/{table_name}?cascade=true`
 
+*   **手动备份**
+    *   `POST /v1/backup/trigger`
+    *   **Body**:
+        ```json
+        {
+          "table": "users",
+          "id": "user-123",
+          "day": "2024-01-15"
+        }
+        ```
+
 ### 5.2. gRPC API
 
 ```protobuf
@@ -327,6 +554,7 @@ service OlapService {
   rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
 }
 
+// 基础数据操作消息
 message WriteRequest {
   string table = 1;                    // 表名
   string id = 2;                       // 记录ID
@@ -373,11 +601,15 @@ message DropTableResponse {
 
 message ListTablesRequest {
   string pattern = 1;  // 表名模式匹配
+  int32 page = 2;
+  int32 limit = 3;
 }
 
 message ListTablesResponse {
   repeated TableInfo tables = 1;
   int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
 }
 
 message DescribeTableRequest {
@@ -413,6 +645,7 @@ message TableStats {
   string newest_record = 5;
 }
 
+// 备份和运维消息
 message TriggerBackupRequest {
   string table = 1;  // 表名
   string id = 2;     // 可选，特定ID
@@ -423,5 +656,62 @@ message TriggerBackupResponse {
   bool success = 1;
   string message = 2;
   int32 files_backed_up = 3;
+}
+
+message RecoverDataRequest {
+  string table = 1;
+  string backup_source = 2;  // 备份存储位置
+  string target_date = 3;    // 恢复到指定日期
+}
+
+message RecoverDataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 files_recovered = 3;
+}
+
+message HealthCheckRequest {
+  repeated string components = 1;  // redis, minio, nodes
+}
+
+message HealthCheckResponse {
+  string overall_status = 1;  // healthy, degraded, unhealthy
+  map<string, ComponentHealth> component_status = 2;
+}
+
+message ComponentHealth {
+  string status = 1;
+  string message = 2;
+  double response_time_ms = 3;
+}
+
+message GetStatsRequest {
+  string duration = 1;  // 1h, 24h, 7d
+}
+
+message GetStatsResponse {
+  int64 total_queries = 1;
+  int64 total_writes = 2;
+  double avg_query_time_ms = 3;
+  int64 total_data_size_bytes = 4;
+  int32 active_tables = 5;
+}
+
+message GetNodesRequest {
+  bool include_inactive = 1;
+}
+
+message GetNodesResponse {
+  repeated NodeInfo nodes = 1;
+  int32 total_nodes = 2;
+  int32 healthy_nodes = 3;
+}
+
+message NodeInfo {
+  string node_id = 1;
+  string address = 2;
+  string status = 3;  // healthy, unhealthy, unknown
+  string last_heartbeat = 4;
+  int32 active_queries = 5;
 }
 ```

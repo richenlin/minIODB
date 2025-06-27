@@ -26,6 +26,21 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 - **水平扩展** - 支持动态节点加入和数据重分布
 - **表级分离** - 支持多表数据逻辑隔离和独立管理
 
+### 🔗 连接池特性
+- **统一连接池管理** - 统一管理Redis和MinIO连接池，提供高效的资源管理
+- **多模式支持** - Redis支持单机、哨兵、集群模式，MinIO支持主备双池
+- **智能健康检查** - 实时监控连接池状态，自动故障检测和切换
+- **性能优化** - 连接复用、超时管理、负载均衡等优化策略
+- **监控指标** - 详细的连接池统计信息和性能监控
+
+### 🛡️ 元数据备份恢复
+- **版本管理系统** - 语义化版本控制，支持版本比较和冲突检测
+- **分布式锁机制** - 防止多节点并发冲突，确保数据一致性
+- **自动同步策略** - 启动时同步、增量同步、冲突解决
+- **多种备份模式** - 自动定时备份、手动触发备份、备份验证
+- **灾难恢复能力** - 完整的恢复流程，支持多种恢复模式
+- **高可用保障** - 多节点协调、故障检测、自动恢复
+
 ### 💾 存储特性
 - **列式存储** - 使用Apache Parquet格式，压缩率高
 - **多级缓存** - 内存缓冲区 + 磁盘存储的多级架构
@@ -40,6 +55,7 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 - **标准SQL** - 支持标准SQL查询语法
 - **流式处理** - 支持大数据量的流式读写
 - **表管理API** - 完整的表创建、删除、列表和描述接口
+- **元数据管理API** - 完整的备份、恢复、状态查询接口
 
 ### 🛡️ 安全特性
 - **JWT认证** - 支持JWT令牌认证
@@ -47,10 +63,12 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 - **API密钥** - 支持API密钥认证
 
 ### 📊 运维特性
-- **健康检查** - 内置健康检查接口
-- **指标监控** - 集成Prometheus指标
-- **日志管理** - 结构化日志输出
-- **性能统计** - 详细的性能指标统计
+- **健康检查** - 内置健康检查接口，支持组件级状态监控
+- **指标监控** - 集成Prometheus指标，包含连接池和备份恢复指标
+- **日志管理** - 结构化日志输出，支持不同级别的日志记录
+- **性能统计** - 详细的性能指标统计，包含连接池性能数据
+- **故障恢复** - 自动故障检测和恢复机制
+- **熔断器模式** - 防止级联故障的熔断器实现
 
 ## 🚀 快速开始
 
@@ -203,45 +221,99 @@ curl -X POST http://localhost:8081/v1/tables \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "table_name": "orders",
+    "table_name": "products",
     "config": {
       "buffer_size": 2000,
-      "flush_interval_seconds": 15,
-      "retention_days": 2555,
-      "backup_enabled": true,
-      "properties": {
-        "description": "订单数据表",
-        "owner": "order-service"
-      }
-    },
-    "if_not_exists": true
+      "flush_interval_seconds": 60,
+      "retention_days": 730,
+      "backup_enabled": true
+    }
   }'
 ```
 
 ##### 列出表
 ```bash
-curl -X GET http://localhost:8081/v1/tables \
-  -H "Authorization: Bearer YOUR_TOKEN"
-
-# 使用模式匹配
-curl -X GET "http://localhost:8081/v1/tables?pattern=user*" \
+curl http://localhost:8081/v1/tables \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-##### 表详情
+##### 描述表
 ```bash
-curl -X GET http://localhost:8081/v1/tables/users \
+curl http://localhost:8081/v1/tables/users \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
 ##### 删除表
 ```bash
-curl -X DELETE http://localhost:8081/v1/tables/old_table \
+curl -X DELETE http://localhost:8081/v1/tables/users?cascade=true \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+#### 元数据备份恢复API（新增）
+
+##### 触发元数据备份
+```bash
+curl -X POST http://localhost:8081/v1/metadata/backup \
+  -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "cascade": true,
-    "if_exists": true
+    "backup_type": "full",
+    "description": "Manual backup before system upgrade"
   }'
+```
+
+##### 列出元数据备份
+```bash
+curl http://localhost:8081/v1/metadata/backups \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+##### 恢复元数据
+```bash
+curl -X POST http://localhost:8081/v1/metadata/recover \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "backup_file": "backup_20240115_103000.json",
+    "mode": "complete",
+    "force_overwrite": false,
+    "backup_current": true
+  }'
+```
+
+##### 获取元数据状态
+```bash
+curl http://localhost:8081/v1/metadata/status \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+##### 验证元数据备份
+```bash
+curl -X POST http://localhost:8081/v1/metadata/validate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "backup_file": "backup_20240115_103000.json"
+  }'
+```
+
+#### 系统监控API
+
+##### 健康检查
+```bash
+curl http://localhost:8081/v1/health
+```
+
+##### 连接池状态（新增）
+```bash
+curl http://localhost:8081/v1/pool/status \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+##### 系统统计信息
+```bash
+curl http://localhost:8081/v1/stats \
+  -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
 ### gRPC API
