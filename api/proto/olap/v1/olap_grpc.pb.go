@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v3.21.12
-// source: olap.proto
+// source: api/proto/olap/v1/olap.proto
 
 package olapv1
 
@@ -705,5 +705,5 @@ var OlapService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "olap.proto",
+	Metadata: "api/proto/olap/v1/olap.proto",
 }

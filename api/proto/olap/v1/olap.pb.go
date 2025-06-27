@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.6
 // 	protoc        v3.21.12
-// source: olap.proto
+// source: api/proto/olap/v1/olap.proto
 
 package olapv1
 
@@ -35,7 +35,7 @@ type WriteRequest struct {
 
 func (x *WriteRequest) Reset() {
 	*x = WriteRequest{}
-	mi := &file_olap_proto_msgTypes[0]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -47,7 +47,7 @@ func (x *WriteRequest) String() string {
 func (*WriteRequest) ProtoMessage() {}
 
 func (x *WriteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[0]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -60,7 +60,7 @@ func (x *WriteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteRequest.ProtoReflect.Descriptor instead.
 func (*WriteRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{0}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *WriteRequest) GetTable() string {
@@ -101,7 +101,7 @@ type WriteResponse struct {
 
 func (x *WriteResponse) Reset() {
 	*x = WriteResponse{}
-	mi := &file_olap_proto_msgTypes[1]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -113,7 +113,7 @@ func (x *WriteResponse) String() string {
 func (*WriteResponse) ProtoMessage() {}
 
 func (x *WriteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[1]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -126,7 +126,7 @@ func (x *WriteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteResponse.ProtoReflect.Descriptor instead.
 func (*WriteResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{1}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *WriteResponse) GetSuccess() bool {
@@ -152,7 +152,7 @@ type QueryRequest struct {
 
 func (x *QueryRequest) Reset() {
 	*x = QueryRequest{}
-	mi := &file_olap_proto_msgTypes[2]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -164,7 +164,7 @@ func (x *QueryRequest) String() string {
 func (*QueryRequest) ProtoMessage() {}
 
 func (x *QueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[2]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -177,7 +177,7 @@ func (x *QueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryRequest.ProtoReflect.Descriptor instead.
 func (*QueryRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{2}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *QueryRequest) GetSql() string {
@@ -197,7 +197,7 @@ type QueryResponse struct {
 
 func (x *QueryResponse) Reset() {
 	*x = QueryResponse{}
-	mi := &file_olap_proto_msgTypes[3]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -209,7 +209,7 @@ func (x *QueryResponse) String() string {
 func (*QueryResponse) ProtoMessage() {}
 
 func (x *QueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[3]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -222,7 +222,7 @@ func (x *QueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryResponse.ProtoReflect.Descriptor instead.
 func (*QueryResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{3}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *QueryResponse) GetResultJson() string {
@@ -244,7 +244,7 @@ type CreateTableRequest struct {
 
 func (x *CreateTableRequest) Reset() {
 	*x = CreateTableRequest{}
-	mi := &file_olap_proto_msgTypes[4]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -256,7 +256,7 @@ func (x *CreateTableRequest) String() string {
 func (*CreateTableRequest) ProtoMessage() {}
 
 func (x *CreateTableRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[4]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -269,7 +269,7 @@ func (x *CreateTableRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTableRequest.ProtoReflect.Descriptor instead.
 func (*CreateTableRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{4}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CreateTableRequest) GetTableName() string {
@@ -303,7 +303,7 @@ type CreateTableResponse struct {
 
 func (x *CreateTableResponse) Reset() {
 	*x = CreateTableResponse{}
-	mi := &file_olap_proto_msgTypes[5]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -315,7 +315,7 @@ func (x *CreateTableResponse) String() string {
 func (*CreateTableResponse) ProtoMessage() {}
 
 func (x *CreateTableResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[5]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -328,7 +328,7 @@ func (x *CreateTableResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTableResponse.ProtoReflect.Descriptor instead.
 func (*CreateTableResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{5}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CreateTableResponse) GetSuccess() bool {
@@ -357,7 +357,7 @@ type DropTableRequest struct {
 
 func (x *DropTableRequest) Reset() {
 	*x = DropTableRequest{}
-	mi := &file_olap_proto_msgTypes[6]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -369,7 +369,7 @@ func (x *DropTableRequest) String() string {
 func (*DropTableRequest) ProtoMessage() {}
 
 func (x *DropTableRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[6]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -382,7 +382,7 @@ func (x *DropTableRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropTableRequest.ProtoReflect.Descriptor instead.
 func (*DropTableRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{6}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DropTableRequest) GetTableName() string {
@@ -417,7 +417,7 @@ type DropTableResponse struct {
 
 func (x *DropTableResponse) Reset() {
 	*x = DropTableResponse{}
-	mi := &file_olap_proto_msgTypes[7]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -429,7 +429,7 @@ func (x *DropTableResponse) String() string {
 func (*DropTableResponse) ProtoMessage() {}
 
 func (x *DropTableResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[7]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -442,7 +442,7 @@ func (x *DropTableResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropTableResponse.ProtoReflect.Descriptor instead.
 func (*DropTableResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{7}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DropTableResponse) GetSuccess() bool {
@@ -476,7 +476,7 @@ type ListTablesRequest struct {
 
 func (x *ListTablesRequest) Reset() {
 	*x = ListTablesRequest{}
-	mi := &file_olap_proto_msgTypes[8]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -488,7 +488,7 @@ func (x *ListTablesRequest) String() string {
 func (*ListTablesRequest) ProtoMessage() {}
 
 func (x *ListTablesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[8]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -501,7 +501,7 @@ func (x *ListTablesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTablesRequest.ProtoReflect.Descriptor instead.
 func (*ListTablesRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{8}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListTablesRequest) GetPattern() string {
@@ -521,7 +521,7 @@ type ListTablesResponse struct {
 
 func (x *ListTablesResponse) Reset() {
 	*x = ListTablesResponse{}
-	mi := &file_olap_proto_msgTypes[9]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -533,7 +533,7 @@ func (x *ListTablesResponse) String() string {
 func (*ListTablesResponse) ProtoMessage() {}
 
 func (x *ListTablesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[9]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -546,7 +546,7 @@ func (x *ListTablesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTablesResponse.ProtoReflect.Descriptor instead.
 func (*ListTablesResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{9}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListTablesResponse) GetTables() []*TableInfo {
@@ -573,7 +573,7 @@ type DescribeTableRequest struct {
 
 func (x *DescribeTableRequest) Reset() {
 	*x = DescribeTableRequest{}
-	mi := &file_olap_proto_msgTypes[10]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -585,7 +585,7 @@ func (x *DescribeTableRequest) String() string {
 func (*DescribeTableRequest) ProtoMessage() {}
 
 func (x *DescribeTableRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[10]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -598,7 +598,7 @@ func (x *DescribeTableRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeTableRequest.ProtoReflect.Descriptor instead.
 func (*DescribeTableRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{10}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DescribeTableRequest) GetTableName() string {
@@ -618,7 +618,7 @@ type DescribeTableResponse struct {
 
 func (x *DescribeTableResponse) Reset() {
 	*x = DescribeTableResponse{}
-	mi := &file_olap_proto_msgTypes[11]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -630,7 +630,7 @@ func (x *DescribeTableResponse) String() string {
 func (*DescribeTableResponse) ProtoMessage() {}
 
 func (x *DescribeTableResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[11]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -643,7 +643,7 @@ func (x *DescribeTableResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeTableResponse.ProtoReflect.Descriptor instead.
 func (*DescribeTableResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{11}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DescribeTableResponse) GetTableInfo() *TableInfo {
@@ -674,7 +674,7 @@ type TableInfo struct {
 
 func (x *TableInfo) Reset() {
 	*x = TableInfo{}
-	mi := &file_olap_proto_msgTypes[12]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -686,7 +686,7 @@ func (x *TableInfo) String() string {
 func (*TableInfo) ProtoMessage() {}
 
 func (x *TableInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[12]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -699,7 +699,7 @@ func (x *TableInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TableInfo.ProtoReflect.Descriptor instead.
 func (*TableInfo) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{12}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TableInfo) GetName() string {
@@ -751,7 +751,7 @@ type TableConfig struct {
 
 func (x *TableConfig) Reset() {
 	*x = TableConfig{}
-	mi := &file_olap_proto_msgTypes[13]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -763,7 +763,7 @@ func (x *TableConfig) String() string {
 func (*TableConfig) ProtoMessage() {}
 
 func (x *TableConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[13]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -776,7 +776,7 @@ func (x *TableConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TableConfig.ProtoReflect.Descriptor instead.
 func (*TableConfig) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{13}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TableConfig) GetBufferSize() int32 {
@@ -828,7 +828,7 @@ type TableStats struct {
 
 func (x *TableStats) Reset() {
 	*x = TableStats{}
-	mi := &file_olap_proto_msgTypes[14]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -840,7 +840,7 @@ func (x *TableStats) String() string {
 func (*TableStats) ProtoMessage() {}
 
 func (x *TableStats) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[14]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -853,7 +853,7 @@ func (x *TableStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TableStats.ProtoReflect.Descriptor instead.
 func (*TableStats) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{14}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TableStats) GetRecordCount() int64 {
@@ -901,7 +901,7 @@ type TriggerBackupRequest struct {
 
 func (x *TriggerBackupRequest) Reset() {
 	*x = TriggerBackupRequest{}
-	mi := &file_olap_proto_msgTypes[15]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -913,7 +913,7 @@ func (x *TriggerBackupRequest) String() string {
 func (*TriggerBackupRequest) ProtoMessage() {}
 
 func (x *TriggerBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[15]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -926,7 +926,7 @@ func (x *TriggerBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerBackupRequest.ProtoReflect.Descriptor instead.
 func (*TriggerBackupRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{15}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *TriggerBackupRequest) GetId() string {
@@ -954,7 +954,7 @@ type TriggerBackupResponse struct {
 
 func (x *TriggerBackupResponse) Reset() {
 	*x = TriggerBackupResponse{}
-	mi := &file_olap_proto_msgTypes[16]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -966,7 +966,7 @@ func (x *TriggerBackupResponse) String() string {
 func (*TriggerBackupResponse) ProtoMessage() {}
 
 func (x *TriggerBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[16]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -979,7 +979,7 @@ func (x *TriggerBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerBackupResponse.ProtoReflect.Descriptor instead.
 func (*TriggerBackupResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{16}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *TriggerBackupResponse) GetSuccess() bool {
@@ -1020,7 +1020,7 @@ type RecoverDataRequest struct {
 
 func (x *RecoverDataRequest) Reset() {
 	*x = RecoverDataRequest{}
-	mi := &file_olap_proto_msgTypes[17]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1032,7 +1032,7 @@ func (x *RecoverDataRequest) String() string {
 func (*RecoverDataRequest) ProtoMessage() {}
 
 func (x *RecoverDataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[17]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1045,7 +1045,7 @@ func (x *RecoverDataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecoverDataRequest.ProtoReflect.Descriptor instead.
 func (*RecoverDataRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{17}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RecoverDataRequest) GetRecoveryMode() isRecoverDataRequest_RecoveryMode {
@@ -1121,7 +1121,7 @@ type IdRangeFilter struct {
 
 func (x *IdRangeFilter) Reset() {
 	*x = IdRangeFilter{}
-	mi := &file_olap_proto_msgTypes[18]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1133,7 +1133,7 @@ func (x *IdRangeFilter) String() string {
 func (*IdRangeFilter) ProtoMessage() {}
 
 func (x *IdRangeFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[18]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1146,7 +1146,7 @@ func (x *IdRangeFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IdRangeFilter.ProtoReflect.Descriptor instead.
 func (*IdRangeFilter) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{18}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *IdRangeFilter) GetIds() []string {
@@ -1174,7 +1174,7 @@ type TimeRangeFilter struct {
 
 func (x *TimeRangeFilter) Reset() {
 	*x = TimeRangeFilter{}
-	mi := &file_olap_proto_msgTypes[19]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1186,7 +1186,7 @@ func (x *TimeRangeFilter) String() string {
 func (*TimeRangeFilter) ProtoMessage() {}
 
 func (x *TimeRangeFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[19]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1199,7 +1199,7 @@ func (x *TimeRangeFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimeRangeFilter.ProtoReflect.Descriptor instead.
 func (*TimeRangeFilter) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{19}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TimeRangeFilter) GetStartDate() string {
@@ -1235,7 +1235,7 @@ type RecoverDataResponse struct {
 
 func (x *RecoverDataResponse) Reset() {
 	*x = RecoverDataResponse{}
-	mi := &file_olap_proto_msgTypes[20]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1247,7 +1247,7 @@ func (x *RecoverDataResponse) String() string {
 func (*RecoverDataResponse) ProtoMessage() {}
 
 func (x *RecoverDataResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[20]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1260,7 +1260,7 @@ func (x *RecoverDataResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecoverDataResponse.ProtoReflect.Descriptor instead.
 func (*RecoverDataResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{20}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RecoverDataResponse) GetSuccess() bool {
@@ -1299,7 +1299,7 @@ type HealthCheckRequest struct {
 
 func (x *HealthCheckRequest) Reset() {
 	*x = HealthCheckRequest{}
-	mi := &file_olap_proto_msgTypes[21]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1311,7 +1311,7 @@ func (x *HealthCheckRequest) String() string {
 func (*HealthCheckRequest) ProtoMessage() {}
 
 func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[21]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1324,7 +1324,7 @@ func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckRequest.ProtoReflect.Descriptor instead.
 func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{21}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{21}
 }
 
 type HealthCheckResponse struct {
@@ -1339,7 +1339,7 @@ type HealthCheckResponse struct {
 
 func (x *HealthCheckResponse) Reset() {
 	*x = HealthCheckResponse{}
-	mi := &file_olap_proto_msgTypes[22]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1351,7 +1351,7 @@ func (x *HealthCheckResponse) String() string {
 func (*HealthCheckResponse) ProtoMessage() {}
 
 func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[22]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1364,7 +1364,7 @@ func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckResponse.ProtoReflect.Descriptor instead.
 func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{22}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *HealthCheckResponse) GetStatus() string {
@@ -1403,7 +1403,7 @@ type GetStatsRequest struct {
 
 func (x *GetStatsRequest) Reset() {
 	*x = GetStatsRequest{}
-	mi := &file_olap_proto_msgTypes[23]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1415,7 +1415,7 @@ func (x *GetStatsRequest) String() string {
 func (*GetStatsRequest) ProtoMessage() {}
 
 func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[23]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1428,7 +1428,7 @@ func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetStatsRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{23}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{23}
 }
 
 type GetStatsResponse struct {
@@ -1443,7 +1443,7 @@ type GetStatsResponse struct {
 
 func (x *GetStatsResponse) Reset() {
 	*x = GetStatsResponse{}
-	mi := &file_olap_proto_msgTypes[24]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1455,7 +1455,7 @@ func (x *GetStatsResponse) String() string {
 func (*GetStatsResponse) ProtoMessage() {}
 
 func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[24]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1468,7 +1468,7 @@ func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetStatsResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{24}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetStatsResponse) GetTimestamp() string {
@@ -1507,7 +1507,7 @@ type GetNodesRequest struct {
 
 func (x *GetNodesRequest) Reset() {
 	*x = GetNodesRequest{}
-	mi := &file_olap_proto_msgTypes[25]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1519,7 +1519,7 @@ func (x *GetNodesRequest) String() string {
 func (*GetNodesRequest) ProtoMessage() {}
 
 func (x *GetNodesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[25]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1532,7 +1532,7 @@ func (x *GetNodesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodesRequest.ProtoReflect.Descriptor instead.
 func (*GetNodesRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{25}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{25}
 }
 
 type NodeInfo struct {
@@ -1548,7 +1548,7 @@ type NodeInfo struct {
 
 func (x *NodeInfo) Reset() {
 	*x = NodeInfo{}
-	mi := &file_olap_proto_msgTypes[26]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1560,7 +1560,7 @@ func (x *NodeInfo) String() string {
 func (*NodeInfo) ProtoMessage() {}
 
 func (x *NodeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[26]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1573,7 +1573,7 @@ func (x *NodeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeInfo.ProtoReflect.Descriptor instead.
 func (*NodeInfo) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{26}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *NodeInfo) GetId() string {
@@ -1621,7 +1621,7 @@ type GetNodesResponse struct {
 
 func (x *GetNodesResponse) Reset() {
 	*x = GetNodesResponse{}
-	mi := &file_olap_proto_msgTypes[27]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1633,7 +1633,7 @@ func (x *GetNodesResponse) String() string {
 func (*GetNodesResponse) ProtoMessage() {}
 
 func (x *GetNodesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[27]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1646,7 +1646,7 @@ func (x *GetNodesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodesResponse.ProtoReflect.Descriptor instead.
 func (*GetNodesResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{27}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetNodesResponse) GetNodes() []*NodeInfo {
@@ -1673,7 +1673,7 @@ type TriggerMetadataBackupRequest struct {
 
 func (x *TriggerMetadataBackupRequest) Reset() {
 	*x = TriggerMetadataBackupRequest{}
-	mi := &file_olap_proto_msgTypes[28]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1685,7 +1685,7 @@ func (x *TriggerMetadataBackupRequest) String() string {
 func (*TriggerMetadataBackupRequest) ProtoMessage() {}
 
 func (x *TriggerMetadataBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[28]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1698,7 +1698,7 @@ func (x *TriggerMetadataBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerMetadataBackupRequest.ProtoReflect.Descriptor instead.
 func (*TriggerMetadataBackupRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{28}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *TriggerMetadataBackupRequest) GetForce() bool {
@@ -1719,7 +1719,7 @@ type TriggerMetadataBackupResponse struct {
 
 func (x *TriggerMetadataBackupResponse) Reset() {
 	*x = TriggerMetadataBackupResponse{}
-	mi := &file_olap_proto_msgTypes[29]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1731,7 +1731,7 @@ func (x *TriggerMetadataBackupResponse) String() string {
 func (*TriggerMetadataBackupResponse) ProtoMessage() {}
 
 func (x *TriggerMetadataBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[29]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1744,7 +1744,7 @@ func (x *TriggerMetadataBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerMetadataBackupResponse.ProtoReflect.Descriptor instead.
 func (*TriggerMetadataBackupResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{29}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *TriggerMetadataBackupResponse) GetSuccess() bool {
@@ -1778,7 +1778,7 @@ type ListMetadataBackupsRequest struct {
 
 func (x *ListMetadataBackupsRequest) Reset() {
 	*x = ListMetadataBackupsRequest{}
-	mi := &file_olap_proto_msgTypes[30]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1790,7 +1790,7 @@ func (x *ListMetadataBackupsRequest) String() string {
 func (*ListMetadataBackupsRequest) ProtoMessage() {}
 
 func (x *ListMetadataBackupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[30]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1803,7 +1803,7 @@ func (x *ListMetadataBackupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMetadataBackupsRequest.ProtoReflect.Descriptor instead.
 func (*ListMetadataBackupsRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{30}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListMetadataBackupsRequest) GetDays() int32 {
@@ -1823,7 +1823,7 @@ type ListMetadataBackupsResponse struct {
 
 func (x *ListMetadataBackupsResponse) Reset() {
 	*x = ListMetadataBackupsResponse{}
-	mi := &file_olap_proto_msgTypes[31]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1835,7 +1835,7 @@ func (x *ListMetadataBackupsResponse) String() string {
 func (*ListMetadataBackupsResponse) ProtoMessage() {}
 
 func (x *ListMetadataBackupsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[31]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1848,7 +1848,7 @@ func (x *ListMetadataBackupsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMetadataBackupsResponse.ProtoReflect.Descriptor instead.
 func (*ListMetadataBackupsResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{31}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListMetadataBackupsResponse) GetBackups() []*MetadataBackupInfo {
@@ -1878,7 +1878,7 @@ type MetadataBackupInfo struct {
 
 func (x *MetadataBackupInfo) Reset() {
 	*x = MetadataBackupInfo{}
-	mi := &file_olap_proto_msgTypes[32]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1890,7 +1890,7 @@ func (x *MetadataBackupInfo) String() string {
 func (*MetadataBackupInfo) ProtoMessage() {}
 
 func (x *MetadataBackupInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[32]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1903,7 +1903,7 @@ func (x *MetadataBackupInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataBackupInfo.ProtoReflect.Descriptor instead.
 func (*MetadataBackupInfo) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{32}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *MetadataBackupInfo) GetId() string {
@@ -1954,7 +1954,7 @@ type RecoverMetadataRequest struct {
 
 func (x *RecoverMetadataRequest) Reset() {
 	*x = RecoverMetadataRequest{}
-	mi := &file_olap_proto_msgTypes[33]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1966,7 +1966,7 @@ func (x *RecoverMetadataRequest) String() string {
 func (*RecoverMetadataRequest) ProtoMessage() {}
 
 func (x *RecoverMetadataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[33]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1979,7 +1979,7 @@ func (x *RecoverMetadataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecoverMetadataRequest.ProtoReflect.Descriptor instead.
 func (*RecoverMetadataRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{33}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *RecoverMetadataRequest) GetBackupFile() string {
@@ -2023,7 +2023,7 @@ type RecoverMetadataResponse struct {
 
 func (x *RecoverMetadataResponse) Reset() {
 	*x = RecoverMetadataResponse{}
-	mi := &file_olap_proto_msgTypes[34]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2035,7 +2035,7 @@ func (x *RecoverMetadataResponse) String() string {
 func (*RecoverMetadataResponse) ProtoMessage() {}
 
 func (x *RecoverMetadataResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[34]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2048,7 +2048,7 @@ func (x *RecoverMetadataResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecoverMetadataResponse.ProtoReflect.Descriptor instead.
 func (*RecoverMetadataResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{34}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *RecoverMetadataResponse) GetSuccess() bool {
@@ -2095,7 +2095,7 @@ type GetMetadataStatusRequest struct {
 
 func (x *GetMetadataStatusRequest) Reset() {
 	*x = GetMetadataStatusRequest{}
-	mi := &file_olap_proto_msgTypes[35]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2107,7 +2107,7 @@ func (x *GetMetadataStatusRequest) String() string {
 func (*GetMetadataStatusRequest) ProtoMessage() {}
 
 func (x *GetMetadataStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[35]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2120,7 +2120,7 @@ func (x *GetMetadataStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMetadataStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetMetadataStatusRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{35}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{35}
 }
 
 type MetadataStatusResponse struct {
@@ -2136,7 +2136,7 @@ type MetadataStatusResponse struct {
 
 func (x *MetadataStatusResponse) Reset() {
 	*x = MetadataStatusResponse{}
-	mi := &file_olap_proto_msgTypes[36]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2148,7 +2148,7 @@ func (x *MetadataStatusResponse) String() string {
 func (*MetadataStatusResponse) ProtoMessage() {}
 
 func (x *MetadataStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[36]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2161,7 +2161,7 @@ func (x *MetadataStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataStatusResponse.ProtoReflect.Descriptor instead.
 func (*MetadataStatusResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{36}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *MetadataStatusResponse) GetStatus() string {
@@ -2209,7 +2209,7 @@ type ValidateMetadataBackupRequest struct {
 
 func (x *ValidateMetadataBackupRequest) Reset() {
 	*x = ValidateMetadataBackupRequest{}
-	mi := &file_olap_proto_msgTypes[37]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2221,7 +2221,7 @@ func (x *ValidateMetadataBackupRequest) String() string {
 func (*ValidateMetadataBackupRequest) ProtoMessage() {}
 
 func (x *ValidateMetadataBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[37]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2234,7 +2234,7 @@ func (x *ValidateMetadataBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateMetadataBackupRequest.ProtoReflect.Descriptor instead.
 func (*ValidateMetadataBackupRequest) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{37}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ValidateMetadataBackupRequest) GetBackupFile() string {
@@ -2255,7 +2255,7 @@ type ValidateMetadataBackupResponse struct {
 
 func (x *ValidateMetadataBackupResponse) Reset() {
 	*x = ValidateMetadataBackupResponse{}
-	mi := &file_olap_proto_msgTypes[38]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2267,7 +2267,7 @@ func (x *ValidateMetadataBackupResponse) String() string {
 func (*ValidateMetadataBackupResponse) ProtoMessage() {}
 
 func (x *ValidateMetadataBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_olap_proto_msgTypes[38]
+	mi := &file_api_proto_olap_v1_olap_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2280,7 +2280,7 @@ func (x *ValidateMetadataBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateMetadataBackupResponse.ProtoReflect.Descriptor instead.
 func (*ValidateMetadataBackupResponse) Descriptor() ([]byte, []int) {
-	return file_olap_proto_rawDescGZIP(), []int{38}
+	return file_api_proto_olap_v1_olap_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ValidateMetadataBackupResponse) GetValid() bool {
@@ -2304,12 +2304,11 @@ func (x *ValidateMetadataBackupResponse) GetErrors() []string {
 	return nil
 }
 
-var File_olap_proto protoreflect.FileDescriptor
+var File_api_proto_olap_v1_olap_proto protoreflect.FileDescriptor
 
-const file_olap_proto_rawDesc = "" +
+const file_api_proto_olap_v1_olap_proto_rawDesc = "" +
 	"\n" +
-	"\n" +
-	"olap.proto\x12\aolap.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa1\x01\n" +
+	"\x1capi/proto/olap/v1/olap.proto\x12\aolap.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa1\x01\n" +
 	"\fWriteRequest\x12\x14\n" +
 	"\x05table\x18\x01 \x01(\tR\x05table\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x128\n" +
@@ -2514,19 +2513,19 @@ const file_olap_proto_rawDesc = "" +
 	"\x16ValidateMetadataBackup\x12&.olap.v1.ValidateMetadataBackupRequest\x1a'.olap.v1.ValidateMetadataBackupResponseB\vZ\t./;olapv1b\x06proto3"
 
 var (
-	file_olap_proto_rawDescOnce sync.Once
-	file_olap_proto_rawDescData []byte
+	file_api_proto_olap_v1_olap_proto_rawDescOnce sync.Once
+	file_api_proto_olap_v1_olap_proto_rawDescData []byte
 )
 
-func file_olap_proto_rawDescGZIP() []byte {
-	file_olap_proto_rawDescOnce.Do(func() {
-		file_olap_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_olap_proto_rawDesc), len(file_olap_proto_rawDesc)))
+func file_api_proto_olap_v1_olap_proto_rawDescGZIP() []byte {
+	file_api_proto_olap_v1_olap_proto_rawDescOnce.Do(func() {
+		file_api_proto_olap_v1_olap_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_api_proto_olap_v1_olap_proto_rawDesc), len(file_api_proto_olap_v1_olap_proto_rawDesc)))
 	})
-	return file_olap_proto_rawDescData
+	return file_api_proto_olap_v1_olap_proto_rawDescData
 }
 
-var file_olap_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
-var file_olap_proto_goTypes = []any{
+var file_api_proto_olap_v1_olap_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_api_proto_olap_v1_olap_proto_goTypes = []any{
 	(*WriteRequest)(nil),                   // 0: olap.v1.WriteRequest
 	(*WriteResponse)(nil),                  // 1: olap.v1.WriteResponse
 	(*QueryRequest)(nil),                   // 2: olap.v1.QueryRequest
@@ -2575,7 +2574,7 @@ var file_olap_proto_goTypes = []any{
 	(*timestamppb.Timestamp)(nil),          // 45: google.protobuf.Timestamp
 	(*structpb.Struct)(nil),                // 46: google.protobuf.Struct
 }
-var file_olap_proto_depIdxs = []int32{
+var file_api_proto_olap_v1_olap_proto_depIdxs = []int32{
 	45, // 0: olap.v1.WriteRequest.timestamp:type_name -> google.protobuf.Timestamp
 	46, // 1: olap.v1.WriteRequest.payload:type_name -> google.protobuf.Struct
 	13, // 2: olap.v1.CreateTableRequest.config:type_name -> olap.v1.TableConfig
@@ -2632,12 +2631,12 @@ var file_olap_proto_depIdxs = []int32{
 	0,  // [0:17] is the sub-list for field type_name
 }
 
-func init() { file_olap_proto_init() }
-func file_olap_proto_init() {
-	if File_olap_proto != nil {
+func init() { file_api_proto_olap_v1_olap_proto_init() }
+func file_api_proto_olap_v1_olap_proto_init() {
+	if File_api_proto_olap_v1_olap_proto != nil {
 		return
 	}
-	file_olap_proto_msgTypes[17].OneofWrappers = []any{
+	file_api_proto_olap_v1_olap_proto_msgTypes[17].OneofWrappers = []any{
 		(*RecoverDataRequest_NodeId)(nil),
 		(*RecoverDataRequest_IdRange)(nil),
 		(*RecoverDataRequest_TimeRange)(nil),
@@ -2646,17 +2645,17 @@ func file_olap_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_olap_proto_rawDesc), len(file_olap_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_olap_v1_olap_proto_rawDesc), len(file_api_proto_olap_v1_olap_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_olap_proto_goTypes,
-		DependencyIndexes: file_olap_proto_depIdxs,
-		MessageInfos:      file_olap_proto_msgTypes,
+		GoTypes:           file_api_proto_olap_v1_olap_proto_goTypes,
+		DependencyIndexes: file_api_proto_olap_v1_olap_proto_depIdxs,
+		MessageInfos:      file_api_proto_olap_v1_olap_proto_msgTypes,
 	}.Build()
-	File_olap_proto = out.File
-	file_olap_proto_goTypes = nil
-	file_olap_proto_depIdxs = nil
+	File_api_proto_olap_v1_olap_proto = out.File
+	file_api_proto_olap_v1_olap_proto_goTypes = nil
+	file_api_proto_olap_v1_olap_proto_depIdxs = nil
 }

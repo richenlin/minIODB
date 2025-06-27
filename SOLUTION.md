@@ -37,7 +37,7 @@
 |    └─ Distributed Lock Management        |
 +------------------------------------------+
       ^   |                    ^   |
-      |   |                    |   |  (Service Discovery & Query Planning)
+      |   |                    |   | 
       |   v                    |   v
 +------------------------------------------+
 |        Connection Pool Manager           |
@@ -49,7 +49,7 @@
 |  └─ Health Check |    └─ Auto Failover   |
 +------------------------------------------+
       ^   |                    ^   |
-      |   v                    |   v
+      |   v                    |   v  (Service Discovery & Query Planning)
 +----------------+      +---------------------------------+
 | Redis          |      | Worker Nodes (Go Service)       |
 | ---------------|      |---------------------------------|
