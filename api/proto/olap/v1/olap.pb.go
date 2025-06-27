@@ -1663,6 +1663,647 @@ func (x *GetNodesResponse) GetTotal() int32 {
 	return 0
 }
 
+// 触发元数据备份
+type TriggerMetadataBackupRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Force         bool                   `protobuf:"varint,1,opt,name=force,proto3" json:"force,omitempty"` // 是否强制备份
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TriggerMetadataBackupRequest) Reset() {
+	*x = TriggerMetadataBackupRequest{}
+	mi := &file_olap_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TriggerMetadataBackupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TriggerMetadataBackupRequest) ProtoMessage() {}
+
+func (x *TriggerMetadataBackupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TriggerMetadataBackupRequest.ProtoReflect.Descriptor instead.
+func (*TriggerMetadataBackupRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *TriggerMetadataBackupRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+type TriggerMetadataBackupResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	BackupId      string                 `protobuf:"bytes,3,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TriggerMetadataBackupResponse) Reset() {
+	*x = TriggerMetadataBackupResponse{}
+	mi := &file_olap_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TriggerMetadataBackupResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TriggerMetadataBackupResponse) ProtoMessage() {}
+
+func (x *TriggerMetadataBackupResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TriggerMetadataBackupResponse.ProtoReflect.Descriptor instead.
+func (*TriggerMetadataBackupResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *TriggerMetadataBackupResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *TriggerMetadataBackupResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *TriggerMetadataBackupResponse) GetBackupId() string {
+	if x != nil {
+		return x.BackupId
+	}
+	return ""
+}
+
+// 列出元数据备份
+type ListMetadataBackupsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Days          int32                  `protobuf:"varint,1,opt,name=days,proto3" json:"days,omitempty"` // 查询多少天内的备份，默认30天
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListMetadataBackupsRequest) Reset() {
+	*x = ListMetadataBackupsRequest{}
+	mi := &file_olap_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListMetadataBackupsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListMetadataBackupsRequest) ProtoMessage() {}
+
+func (x *ListMetadataBackupsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListMetadataBackupsRequest.ProtoReflect.Descriptor instead.
+func (*ListMetadataBackupsRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ListMetadataBackupsRequest) GetDays() int32 {
+	if x != nil {
+		return x.Days
+	}
+	return 0
+}
+
+type ListMetadataBackupsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Backups       []*MetadataBackupInfo  `protobuf:"bytes,1,rep,name=backups,proto3" json:"backups,omitempty"`
+	Total         int32                  `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListMetadataBackupsResponse) Reset() {
+	*x = ListMetadataBackupsResponse{}
+	mi := &file_olap_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListMetadataBackupsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListMetadataBackupsResponse) ProtoMessage() {}
+
+func (x *ListMetadataBackupsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListMetadataBackupsResponse.ProtoReflect.Descriptor instead.
+func (*ListMetadataBackupsResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ListMetadataBackupsResponse) GetBackups() []*MetadataBackupInfo {
+	if x != nil {
+		return x.Backups
+	}
+	return nil
+}
+
+func (x *ListMetadataBackupsResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+type MetadataBackupInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Timestamp     string                 `protobuf:"bytes,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	Size          int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
+	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	Description   string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MetadataBackupInfo) Reset() {
+	*x = MetadataBackupInfo{}
+	mi := &file_olap_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MetadataBackupInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MetadataBackupInfo) ProtoMessage() {}
+
+func (x *MetadataBackupInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MetadataBackupInfo.ProtoReflect.Descriptor instead.
+func (*MetadataBackupInfo) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *MetadataBackupInfo) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *MetadataBackupInfo) GetTimestamp() string {
+	if x != nil {
+		return x.Timestamp
+	}
+	return ""
+}
+
+func (x *MetadataBackupInfo) GetSize() int64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *MetadataBackupInfo) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *MetadataBackupInfo) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+// 恢复元数据
+type RecoverMetadataRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	BackupFile     string                 `protobuf:"bytes,1,opt,name=backup_file,json=backupFile,proto3" json:"backup_file,omitempty"`              // 备份文件名，为空则使用最新备份
+	Mode           string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`                                            // 恢复模式：dry_run, complete
+	ForceOverwrite bool                   `protobuf:"varint,3,opt,name=force_overwrite,json=forceOverwrite,proto3" json:"force_overwrite,omitempty"` // 是否强制覆盖
+	BackupCurrent  bool                   `protobuf:"varint,4,opt,name=backup_current,json=backupCurrent,proto3" json:"backup_current,omitempty"`    // 恢复前是否备份当前数据
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RecoverMetadataRequest) Reset() {
+	*x = RecoverMetadataRequest{}
+	mi := &file_olap_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecoverMetadataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecoverMetadataRequest) ProtoMessage() {}
+
+func (x *RecoverMetadataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecoverMetadataRequest.ProtoReflect.Descriptor instead.
+func (*RecoverMetadataRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *RecoverMetadataRequest) GetBackupFile() string {
+	if x != nil {
+		return x.BackupFile
+	}
+	return ""
+}
+
+func (x *RecoverMetadataRequest) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *RecoverMetadataRequest) GetForceOverwrite() bool {
+	if x != nil {
+		return x.ForceOverwrite
+	}
+	return false
+}
+
+func (x *RecoverMetadataRequest) GetBackupCurrent() bool {
+	if x != nil {
+		return x.BackupCurrent
+	}
+	return false
+}
+
+type RecoverMetadataResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Success        bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message        string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	RecoveredItems int32                  `protobuf:"varint,3,opt,name=recovered_items,json=recoveredItems,proto3" json:"recovered_items,omitempty"`
+	RecoveredKeys  []string               `protobuf:"bytes,4,rep,name=recovered_keys,json=recoveredKeys,proto3" json:"recovered_keys,omitempty"`
+	Warnings       []string               `protobuf:"bytes,5,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RecoverMetadataResponse) Reset() {
+	*x = RecoverMetadataResponse{}
+	mi := &file_olap_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecoverMetadataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecoverMetadataResponse) ProtoMessage() {}
+
+func (x *RecoverMetadataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecoverMetadataResponse.ProtoReflect.Descriptor instead.
+func (*RecoverMetadataResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *RecoverMetadataResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *RecoverMetadataResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *RecoverMetadataResponse) GetRecoveredItems() int32 {
+	if x != nil {
+		return x.RecoveredItems
+	}
+	return 0
+}
+
+func (x *RecoverMetadataResponse) GetRecoveredKeys() []string {
+	if x != nil {
+		return x.RecoveredKeys
+	}
+	return nil
+}
+
+func (x *RecoverMetadataResponse) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
+	}
+	return nil
+}
+
+// 获取元数据状态
+type GetMetadataStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMetadataStatusRequest) Reset() {
+	*x = GetMetadataStatusRequest{}
+	mi := &file_olap_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMetadataStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMetadataStatusRequest) ProtoMessage() {}
+
+func (x *GetMetadataStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMetadataStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetMetadataStatusRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{35}
+}
+
+type MetadataStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"` // 状态：healthy, degraded, error
+	LastBackup    string                 `protobuf:"bytes,2,opt,name=last_backup,json=lastBackup,proto3" json:"last_backup,omitempty"`
+	NextBackup    string                 `protobuf:"bytes,3,opt,name=next_backup,json=nextBackup,proto3" json:"next_backup,omitempty"`
+	TotalEntries  int32                  `protobuf:"varint,4,opt,name=total_entries,json=totalEntries,proto3" json:"total_entries,omitempty"`
+	TypeCounts    map[string]int32       `protobuf:"bytes,5,rep,name=type_counts,json=typeCounts,proto3" json:"type_counts,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MetadataStatusResponse) Reset() {
+	*x = MetadataStatusResponse{}
+	mi := &file_olap_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MetadataStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MetadataStatusResponse) ProtoMessage() {}
+
+func (x *MetadataStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MetadataStatusResponse.ProtoReflect.Descriptor instead.
+func (*MetadataStatusResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *MetadataStatusResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *MetadataStatusResponse) GetLastBackup() string {
+	if x != nil {
+		return x.LastBackup
+	}
+	return ""
+}
+
+func (x *MetadataStatusResponse) GetNextBackup() string {
+	if x != nil {
+		return x.NextBackup
+	}
+	return ""
+}
+
+func (x *MetadataStatusResponse) GetTotalEntries() int32 {
+	if x != nil {
+		return x.TotalEntries
+	}
+	return 0
+}
+
+func (x *MetadataStatusResponse) GetTypeCounts() map[string]int32 {
+	if x != nil {
+		return x.TypeCounts
+	}
+	return nil
+}
+
+// 验证元数据备份
+type ValidateMetadataBackupRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BackupFile    string                 `protobuf:"bytes,1,opt,name=backup_file,json=backupFile,proto3" json:"backup_file,omitempty"` // 要验证的备份文件
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidateMetadataBackupRequest) Reset() {
+	*x = ValidateMetadataBackupRequest{}
+	mi := &file_olap_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidateMetadataBackupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidateMetadataBackupRequest) ProtoMessage() {}
+
+func (x *ValidateMetadataBackupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidateMetadataBackupRequest.ProtoReflect.Descriptor instead.
+func (*ValidateMetadataBackupRequest) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ValidateMetadataBackupRequest) GetBackupFile() string {
+	if x != nil {
+		return x.BackupFile
+	}
+	return ""
+}
+
+type ValidateMetadataBackupResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Valid         bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Errors        []string               `protobuf:"bytes,3,rep,name=errors,proto3" json:"errors,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidateMetadataBackupResponse) Reset() {
+	*x = ValidateMetadataBackupResponse{}
+	mi := &file_olap_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidateMetadataBackupResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidateMetadataBackupResponse) ProtoMessage() {}
+
+func (x *ValidateMetadataBackupResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_olap_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidateMetadataBackupResponse.ProtoReflect.Descriptor instead.
+func (*ValidateMetadataBackupResponse) Descriptor() ([]byte, []int) {
+	return file_olap_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ValidateMetadataBackupResponse) GetValid() bool {
+	if x != nil {
+		return x.Valid
+	}
+	return false
+}
+
+func (x *ValidateMetadataBackupResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *ValidateMetadataBackupResponse) GetErrors() []string {
+	if x != nil {
+		return x.Errors
+	}
+	return nil
+}
+
 var File_olap_proto protoreflect.FileDescriptor
 
 const file_olap_proto_rawDesc = "" +
@@ -1803,7 +2444,56 @@ const file_olap_proto_rawDesc = "" +
 	"\tlast_seen\x18\x05 \x01(\x03R\blastSeen\"Q\n" +
 	"\x10GetNodesResponse\x12'\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x11.olap.v1.NodeInfoR\x05nodes\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\x05R\x05total2\x88\x06\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\"4\n" +
+	"\x1cTriggerMetadataBackupRequest\x12\x14\n" +
+	"\x05force\x18\x01 \x01(\bR\x05force\"p\n" +
+	"\x1dTriggerMetadataBackupResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1b\n" +
+	"\tbackup_id\x18\x03 \x01(\tR\bbackupId\"0\n" +
+	"\x1aListMetadataBackupsRequest\x12\x12\n" +
+	"\x04days\x18\x01 \x01(\x05R\x04days\"j\n" +
+	"\x1bListMetadataBackupsResponse\x125\n" +
+	"\abackups\x18\x01 \x03(\v2\x1b.olap.v1.MetadataBackupInfoR\abackups\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\"\x90\x01\n" +
+	"\x12MetadataBackupInfo\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\tR\ttimestamp\x12\x12\n" +
+	"\x04size\x18\x03 \x01(\x03R\x04size\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12 \n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\"\x9d\x01\n" +
+	"\x16RecoverMetadataRequest\x12\x1f\n" +
+	"\vbackup_file\x18\x01 \x01(\tR\n" +
+	"backupFile\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\x12'\n" +
+	"\x0fforce_overwrite\x18\x03 \x01(\bR\x0eforceOverwrite\x12%\n" +
+	"\x0ebackup_current\x18\x04 \x01(\bR\rbackupCurrent\"\xb9\x01\n" +
+	"\x17RecoverMetadataResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12'\n" +
+	"\x0frecovered_items\x18\x03 \x01(\x05R\x0erecoveredItems\x12%\n" +
+	"\x0erecovered_keys\x18\x04 \x03(\tR\rrecoveredKeys\x12\x1a\n" +
+	"\bwarnings\x18\x05 \x03(\tR\bwarnings\"\x1a\n" +
+	"\x18GetMetadataStatusRequest\"\xa8\x02\n" +
+	"\x16MetadataStatusResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1f\n" +
+	"\vlast_backup\x18\x02 \x01(\tR\n" +
+	"lastBackup\x12\x1f\n" +
+	"\vnext_backup\x18\x03 \x01(\tR\n" +
+	"nextBackup\x12#\n" +
+	"\rtotal_entries\x18\x04 \x01(\x05R\ftotalEntries\x12P\n" +
+	"\vtype_counts\x18\x05 \x03(\v2/.olap.v1.MetadataStatusResponse.TypeCountsEntryR\n" +
+	"typeCounts\x1a=\n" +
+	"\x0fTypeCountsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"@\n" +
+	"\x1dValidateMetadataBackupRequest\x12\x1f\n" +
+	"\vbackup_file\x18\x01 \x01(\tR\n" +
+	"backupFile\"h\n" +
+	"\x1eValidateMetadataBackupResponse\x12\x14\n" +
+	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x16\n" +
+	"\x06errors\x18\x03 \x03(\tR\x06errors2\xec\t\n" +
 	"\vOlapService\x126\n" +
 	"\x05Write\x12\x15.olap.v1.WriteRequest\x1a\x16.olap.v1.WriteResponse\x126\n" +
 	"\x05Query\x12\x15.olap.v1.QueryRequest\x1a\x16.olap.v1.QueryResponse\x12N\n" +
@@ -1816,7 +2506,12 @@ const file_olap_proto_rawDesc = "" +
 	"\tDropTable\x12\x19.olap.v1.DropTableRequest\x1a\x1a.olap.v1.DropTableResponse\x12E\n" +
 	"\n" +
 	"ListTables\x12\x1a.olap.v1.ListTablesRequest\x1a\x1b.olap.v1.ListTablesResponse\x12N\n" +
-	"\rDescribeTable\x12\x1d.olap.v1.DescribeTableRequest\x1a\x1e.olap.v1.DescribeTableResponseB\vZ\t./;olapv1b\x06proto3"
+	"\rDescribeTable\x12\x1d.olap.v1.DescribeTableRequest\x1a\x1e.olap.v1.DescribeTableResponse\x12f\n" +
+	"\x15TriggerMetadataBackup\x12%.olap.v1.TriggerMetadataBackupRequest\x1a&.olap.v1.TriggerMetadataBackupResponse\x12`\n" +
+	"\x13ListMetadataBackups\x12#.olap.v1.ListMetadataBackupsRequest\x1a$.olap.v1.ListMetadataBackupsResponse\x12T\n" +
+	"\x0fRecoverMetadata\x12\x1f.olap.v1.RecoverMetadataRequest\x1a .olap.v1.RecoverMetadataResponse\x12W\n" +
+	"\x11GetMetadataStatus\x12!.olap.v1.GetMetadataStatusRequest\x1a\x1f.olap.v1.MetadataStatusResponse\x12i\n" +
+	"\x16ValidateMetadataBackup\x12&.olap.v1.ValidateMetadataBackupRequest\x1a'.olap.v1.ValidateMetadataBackupResponseB\vZ\t./;olapv1b\x06proto3"
 
 var (
 	file_olap_proto_rawDescOnce sync.Once
@@ -1830,87 +2525,111 @@ func file_olap_proto_rawDescGZIP() []byte {
 	return file_olap_proto_rawDescData
 }
 
-var file_olap_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_olap_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_olap_proto_goTypes = []any{
-	(*WriteRequest)(nil),          // 0: olap.v1.WriteRequest
-	(*WriteResponse)(nil),         // 1: olap.v1.WriteResponse
-	(*QueryRequest)(nil),          // 2: olap.v1.QueryRequest
-	(*QueryResponse)(nil),         // 3: olap.v1.QueryResponse
-	(*CreateTableRequest)(nil),    // 4: olap.v1.CreateTableRequest
-	(*CreateTableResponse)(nil),   // 5: olap.v1.CreateTableResponse
-	(*DropTableRequest)(nil),      // 6: olap.v1.DropTableRequest
-	(*DropTableResponse)(nil),     // 7: olap.v1.DropTableResponse
-	(*ListTablesRequest)(nil),     // 8: olap.v1.ListTablesRequest
-	(*ListTablesResponse)(nil),    // 9: olap.v1.ListTablesResponse
-	(*DescribeTableRequest)(nil),  // 10: olap.v1.DescribeTableRequest
-	(*DescribeTableResponse)(nil), // 11: olap.v1.DescribeTableResponse
-	(*TableInfo)(nil),             // 12: olap.v1.TableInfo
-	(*TableConfig)(nil),           // 13: olap.v1.TableConfig
-	(*TableStats)(nil),            // 14: olap.v1.TableStats
-	(*TriggerBackupRequest)(nil),  // 15: olap.v1.TriggerBackupRequest
-	(*TriggerBackupResponse)(nil), // 16: olap.v1.TriggerBackupResponse
-	(*RecoverDataRequest)(nil),    // 17: olap.v1.RecoverDataRequest
-	(*IdRangeFilter)(nil),         // 18: olap.v1.IdRangeFilter
-	(*TimeRangeFilter)(nil),       // 19: olap.v1.TimeRangeFilter
-	(*RecoverDataResponse)(nil),   // 20: olap.v1.RecoverDataResponse
-	(*HealthCheckRequest)(nil),    // 21: olap.v1.HealthCheckRequest
-	(*HealthCheckResponse)(nil),   // 22: olap.v1.HealthCheckResponse
-	(*GetStatsRequest)(nil),       // 23: olap.v1.GetStatsRequest
-	(*GetStatsResponse)(nil),      // 24: olap.v1.GetStatsResponse
-	(*GetNodesRequest)(nil),       // 25: olap.v1.GetNodesRequest
-	(*NodeInfo)(nil),              // 26: olap.v1.NodeInfo
-	(*GetNodesResponse)(nil),      // 27: olap.v1.GetNodesResponse
-	nil,                           // 28: olap.v1.TableConfig.PropertiesEntry
-	nil,                           // 29: olap.v1.HealthCheckResponse.DetailsEntry
-	nil,                           // 30: olap.v1.GetStatsResponse.BufferStatsEntry
-	nil,                           // 31: olap.v1.GetStatsResponse.RedisStatsEntry
-	nil,                           // 32: olap.v1.GetStatsResponse.MinioStatsEntry
-	(*timestamppb.Timestamp)(nil), // 33: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 34: google.protobuf.Struct
+	(*WriteRequest)(nil),                   // 0: olap.v1.WriteRequest
+	(*WriteResponse)(nil),                  // 1: olap.v1.WriteResponse
+	(*QueryRequest)(nil),                   // 2: olap.v1.QueryRequest
+	(*QueryResponse)(nil),                  // 3: olap.v1.QueryResponse
+	(*CreateTableRequest)(nil),             // 4: olap.v1.CreateTableRequest
+	(*CreateTableResponse)(nil),            // 5: olap.v1.CreateTableResponse
+	(*DropTableRequest)(nil),               // 6: olap.v1.DropTableRequest
+	(*DropTableResponse)(nil),              // 7: olap.v1.DropTableResponse
+	(*ListTablesRequest)(nil),              // 8: olap.v1.ListTablesRequest
+	(*ListTablesResponse)(nil),             // 9: olap.v1.ListTablesResponse
+	(*DescribeTableRequest)(nil),           // 10: olap.v1.DescribeTableRequest
+	(*DescribeTableResponse)(nil),          // 11: olap.v1.DescribeTableResponse
+	(*TableInfo)(nil),                      // 12: olap.v1.TableInfo
+	(*TableConfig)(nil),                    // 13: olap.v1.TableConfig
+	(*TableStats)(nil),                     // 14: olap.v1.TableStats
+	(*TriggerBackupRequest)(nil),           // 15: olap.v1.TriggerBackupRequest
+	(*TriggerBackupResponse)(nil),          // 16: olap.v1.TriggerBackupResponse
+	(*RecoverDataRequest)(nil),             // 17: olap.v1.RecoverDataRequest
+	(*IdRangeFilter)(nil),                  // 18: olap.v1.IdRangeFilter
+	(*TimeRangeFilter)(nil),                // 19: olap.v1.TimeRangeFilter
+	(*RecoverDataResponse)(nil),            // 20: olap.v1.RecoverDataResponse
+	(*HealthCheckRequest)(nil),             // 21: olap.v1.HealthCheckRequest
+	(*HealthCheckResponse)(nil),            // 22: olap.v1.HealthCheckResponse
+	(*GetStatsRequest)(nil),                // 23: olap.v1.GetStatsRequest
+	(*GetStatsResponse)(nil),               // 24: olap.v1.GetStatsResponse
+	(*GetNodesRequest)(nil),                // 25: olap.v1.GetNodesRequest
+	(*NodeInfo)(nil),                       // 26: olap.v1.NodeInfo
+	(*GetNodesResponse)(nil),               // 27: olap.v1.GetNodesResponse
+	(*TriggerMetadataBackupRequest)(nil),   // 28: olap.v1.TriggerMetadataBackupRequest
+	(*TriggerMetadataBackupResponse)(nil),  // 29: olap.v1.TriggerMetadataBackupResponse
+	(*ListMetadataBackupsRequest)(nil),     // 30: olap.v1.ListMetadataBackupsRequest
+	(*ListMetadataBackupsResponse)(nil),    // 31: olap.v1.ListMetadataBackupsResponse
+	(*MetadataBackupInfo)(nil),             // 32: olap.v1.MetadataBackupInfo
+	(*RecoverMetadataRequest)(nil),         // 33: olap.v1.RecoverMetadataRequest
+	(*RecoverMetadataResponse)(nil),        // 34: olap.v1.RecoverMetadataResponse
+	(*GetMetadataStatusRequest)(nil),       // 35: olap.v1.GetMetadataStatusRequest
+	(*MetadataStatusResponse)(nil),         // 36: olap.v1.MetadataStatusResponse
+	(*ValidateMetadataBackupRequest)(nil),  // 37: olap.v1.ValidateMetadataBackupRequest
+	(*ValidateMetadataBackupResponse)(nil), // 38: olap.v1.ValidateMetadataBackupResponse
+	nil,                                    // 39: olap.v1.TableConfig.PropertiesEntry
+	nil,                                    // 40: olap.v1.HealthCheckResponse.DetailsEntry
+	nil,                                    // 41: olap.v1.GetStatsResponse.BufferStatsEntry
+	nil,                                    // 42: olap.v1.GetStatsResponse.RedisStatsEntry
+	nil,                                    // 43: olap.v1.GetStatsResponse.MinioStatsEntry
+	nil,                                    // 44: olap.v1.MetadataStatusResponse.TypeCountsEntry
+	(*timestamppb.Timestamp)(nil),          // 45: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                // 46: google.protobuf.Struct
 }
 var file_olap_proto_depIdxs = []int32{
-	33, // 0: olap.v1.WriteRequest.timestamp:type_name -> google.protobuf.Timestamp
-	34, // 1: olap.v1.WriteRequest.payload:type_name -> google.protobuf.Struct
+	45, // 0: olap.v1.WriteRequest.timestamp:type_name -> google.protobuf.Timestamp
+	46, // 1: olap.v1.WriteRequest.payload:type_name -> google.protobuf.Struct
 	13, // 2: olap.v1.CreateTableRequest.config:type_name -> olap.v1.TableConfig
 	12, // 3: olap.v1.ListTablesResponse.tables:type_name -> olap.v1.TableInfo
 	12, // 4: olap.v1.DescribeTableResponse.table_info:type_name -> olap.v1.TableInfo
 	14, // 5: olap.v1.DescribeTableResponse.stats:type_name -> olap.v1.TableStats
 	13, // 6: olap.v1.TableInfo.config:type_name -> olap.v1.TableConfig
-	28, // 7: olap.v1.TableConfig.properties:type_name -> olap.v1.TableConfig.PropertiesEntry
+	39, // 7: olap.v1.TableConfig.properties:type_name -> olap.v1.TableConfig.PropertiesEntry
 	18, // 8: olap.v1.RecoverDataRequest.id_range:type_name -> olap.v1.IdRangeFilter
 	19, // 9: olap.v1.RecoverDataRequest.time_range:type_name -> olap.v1.TimeRangeFilter
-	29, // 10: olap.v1.HealthCheckResponse.details:type_name -> olap.v1.HealthCheckResponse.DetailsEntry
-	30, // 11: olap.v1.GetStatsResponse.buffer_stats:type_name -> olap.v1.GetStatsResponse.BufferStatsEntry
-	31, // 12: olap.v1.GetStatsResponse.redis_stats:type_name -> olap.v1.GetStatsResponse.RedisStatsEntry
-	32, // 13: olap.v1.GetStatsResponse.minio_stats:type_name -> olap.v1.GetStatsResponse.MinioStatsEntry
+	40, // 10: olap.v1.HealthCheckResponse.details:type_name -> olap.v1.HealthCheckResponse.DetailsEntry
+	41, // 11: olap.v1.GetStatsResponse.buffer_stats:type_name -> olap.v1.GetStatsResponse.BufferStatsEntry
+	42, // 12: olap.v1.GetStatsResponse.redis_stats:type_name -> olap.v1.GetStatsResponse.RedisStatsEntry
+	43, // 13: olap.v1.GetStatsResponse.minio_stats:type_name -> olap.v1.GetStatsResponse.MinioStatsEntry
 	26, // 14: olap.v1.GetNodesResponse.nodes:type_name -> olap.v1.NodeInfo
-	0,  // 15: olap.v1.OlapService.Write:input_type -> olap.v1.WriteRequest
-	2,  // 16: olap.v1.OlapService.Query:input_type -> olap.v1.QueryRequest
-	15, // 17: olap.v1.OlapService.TriggerBackup:input_type -> olap.v1.TriggerBackupRequest
-	17, // 18: olap.v1.OlapService.RecoverData:input_type -> olap.v1.RecoverDataRequest
-	21, // 19: olap.v1.OlapService.HealthCheck:input_type -> olap.v1.HealthCheckRequest
-	23, // 20: olap.v1.OlapService.GetStats:input_type -> olap.v1.GetStatsRequest
-	25, // 21: olap.v1.OlapService.GetNodes:input_type -> olap.v1.GetNodesRequest
-	4,  // 22: olap.v1.OlapService.CreateTable:input_type -> olap.v1.CreateTableRequest
-	6,  // 23: olap.v1.OlapService.DropTable:input_type -> olap.v1.DropTableRequest
-	8,  // 24: olap.v1.OlapService.ListTables:input_type -> olap.v1.ListTablesRequest
-	10, // 25: olap.v1.OlapService.DescribeTable:input_type -> olap.v1.DescribeTableRequest
-	1,  // 26: olap.v1.OlapService.Write:output_type -> olap.v1.WriteResponse
-	3,  // 27: olap.v1.OlapService.Query:output_type -> olap.v1.QueryResponse
-	16, // 28: olap.v1.OlapService.TriggerBackup:output_type -> olap.v1.TriggerBackupResponse
-	20, // 29: olap.v1.OlapService.RecoverData:output_type -> olap.v1.RecoverDataResponse
-	22, // 30: olap.v1.OlapService.HealthCheck:output_type -> olap.v1.HealthCheckResponse
-	24, // 31: olap.v1.OlapService.GetStats:output_type -> olap.v1.GetStatsResponse
-	27, // 32: olap.v1.OlapService.GetNodes:output_type -> olap.v1.GetNodesResponse
-	5,  // 33: olap.v1.OlapService.CreateTable:output_type -> olap.v1.CreateTableResponse
-	7,  // 34: olap.v1.OlapService.DropTable:output_type -> olap.v1.DropTableResponse
-	9,  // 35: olap.v1.OlapService.ListTables:output_type -> olap.v1.ListTablesResponse
-	11, // 36: olap.v1.OlapService.DescribeTable:output_type -> olap.v1.DescribeTableResponse
-	26, // [26:37] is the sub-list for method output_type
-	15, // [15:26] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	32, // 15: olap.v1.ListMetadataBackupsResponse.backups:type_name -> olap.v1.MetadataBackupInfo
+	44, // 16: olap.v1.MetadataStatusResponse.type_counts:type_name -> olap.v1.MetadataStatusResponse.TypeCountsEntry
+	0,  // 17: olap.v1.OlapService.Write:input_type -> olap.v1.WriteRequest
+	2,  // 18: olap.v1.OlapService.Query:input_type -> olap.v1.QueryRequest
+	15, // 19: olap.v1.OlapService.TriggerBackup:input_type -> olap.v1.TriggerBackupRequest
+	17, // 20: olap.v1.OlapService.RecoverData:input_type -> olap.v1.RecoverDataRequest
+	21, // 21: olap.v1.OlapService.HealthCheck:input_type -> olap.v1.HealthCheckRequest
+	23, // 22: olap.v1.OlapService.GetStats:input_type -> olap.v1.GetStatsRequest
+	25, // 23: olap.v1.OlapService.GetNodes:input_type -> olap.v1.GetNodesRequest
+	4,  // 24: olap.v1.OlapService.CreateTable:input_type -> olap.v1.CreateTableRequest
+	6,  // 25: olap.v1.OlapService.DropTable:input_type -> olap.v1.DropTableRequest
+	8,  // 26: olap.v1.OlapService.ListTables:input_type -> olap.v1.ListTablesRequest
+	10, // 27: olap.v1.OlapService.DescribeTable:input_type -> olap.v1.DescribeTableRequest
+	28, // 28: olap.v1.OlapService.TriggerMetadataBackup:input_type -> olap.v1.TriggerMetadataBackupRequest
+	30, // 29: olap.v1.OlapService.ListMetadataBackups:input_type -> olap.v1.ListMetadataBackupsRequest
+	33, // 30: olap.v1.OlapService.RecoverMetadata:input_type -> olap.v1.RecoverMetadataRequest
+	35, // 31: olap.v1.OlapService.GetMetadataStatus:input_type -> olap.v1.GetMetadataStatusRequest
+	37, // 32: olap.v1.OlapService.ValidateMetadataBackup:input_type -> olap.v1.ValidateMetadataBackupRequest
+	1,  // 33: olap.v1.OlapService.Write:output_type -> olap.v1.WriteResponse
+	3,  // 34: olap.v1.OlapService.Query:output_type -> olap.v1.QueryResponse
+	16, // 35: olap.v1.OlapService.TriggerBackup:output_type -> olap.v1.TriggerBackupResponse
+	20, // 36: olap.v1.OlapService.RecoverData:output_type -> olap.v1.RecoverDataResponse
+	22, // 37: olap.v1.OlapService.HealthCheck:output_type -> olap.v1.HealthCheckResponse
+	24, // 38: olap.v1.OlapService.GetStats:output_type -> olap.v1.GetStatsResponse
+	27, // 39: olap.v1.OlapService.GetNodes:output_type -> olap.v1.GetNodesResponse
+	5,  // 40: olap.v1.OlapService.CreateTable:output_type -> olap.v1.CreateTableResponse
+	7,  // 41: olap.v1.OlapService.DropTable:output_type -> olap.v1.DropTableResponse
+	9,  // 42: olap.v1.OlapService.ListTables:output_type -> olap.v1.ListTablesResponse
+	11, // 43: olap.v1.OlapService.DescribeTable:output_type -> olap.v1.DescribeTableResponse
+	29, // 44: olap.v1.OlapService.TriggerMetadataBackup:output_type -> olap.v1.TriggerMetadataBackupResponse
+	31, // 45: olap.v1.OlapService.ListMetadataBackups:output_type -> olap.v1.ListMetadataBackupsResponse
+	34, // 46: olap.v1.OlapService.RecoverMetadata:output_type -> olap.v1.RecoverMetadataResponse
+	36, // 47: olap.v1.OlapService.GetMetadataStatus:output_type -> olap.v1.MetadataStatusResponse
+	38, // 48: olap.v1.OlapService.ValidateMetadataBackup:output_type -> olap.v1.ValidateMetadataBackupResponse
+	33, // [33:49] is the sub-list for method output_type
+	17, // [17:33] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_olap_proto_init() }
@@ -1929,7 +2648,7 @@ func file_olap_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_olap_proto_rawDesc), len(file_olap_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

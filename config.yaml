@@ -1,4 +1,3 @@
-
 server:
   grpc_port: ":8080"
   rest_port: ":8081"
@@ -60,30 +59,18 @@ backup:
   enabled: false
   interval: 3600  # 备份间隔（秒）
   minio:
-    endpoint: "localhost:9001"
+    endpoint: "localhost:9000"
     access_key_id: "minioadmin"
     secret_access_key: "minioadmin"
     use_ssl: false
-    bucket: "olap-backup"
-    region: "us-east-1"
-    # HTTP连接池配置
-    max_idle_conns: 100           # 最大空闲连接数
-    max_idle_conns_per_host: 50   # 每个主机最大空闲连接数
-    max_conns_per_host: 100       # 每个主机最大连接数
-    idle_conn_timeout: 90s        # 空闲连接超时
-    # 超时配置
-    dial_timeout: 30s             # 连接超时
-    tls_handshake_timeout: 10s    # TLS握手超时
-    response_header_timeout: 30s  # 响应头超时
-    expect_continue_timeout: 1s   # Expect Continue超时
-    # 重试和请求配置
-    max_retries: 3                # 最大重试次数
-    retry_delay: 100ms            # 重试延迟
-    request_timeout: 120s         # 请求超时
-    # Keep-Alive配置
-    keep_alive: 30s               # Keep-Alive时间
-    disable_keep_alive: false     # 禁用Keep-Alive
-    disable_compression: false    # 禁用压缩
+    bucket: "backup-data"
+  
+  # 元数据备份配置
+  metadata:
+    enabled: true                # 启用元数据备份
+    interval: 30m               # 备份间隔（30分钟）
+    retention_days: 7           # 保留天数
+    bucket: "olap-metadata"     # 元数据存储桶
 
 buffer:
   # 基础配置

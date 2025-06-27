@@ -28,6 +28,8 @@ import (
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
 
+	"minIODB/internal/metadata"
+	"minIODB/internal/pool"
 	"minIODB/internal/recovery"
 )
 
@@ -72,11 +74,11 @@ func main() {
 	// 获取连接池管理器
 	poolManager := storageInstance.GetPoolManager()
 
-	redisClient, err := storage.NewRedisClient(cfg.Redis)
-	if err != nil {
-		log.Fatalf("Failed to create Redis client: %v", err)
+	// 获取Redis连接池（支持高可用）
+	redisPool := poolManager.GetRedisPool()
+	if redisPool == nil {
+		log.Fatalf("Failed to get Redis pool from storage")
 	}
-	defer redisClient.Close()
 
 	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO)
 	if err != nil {
@@ -101,7 +103,7 @@ func main() {
 	)
 
 	ingesterService := ingest.NewIngester(concurrentBuffer)
-	querierService, err := query.NewQuerier(redisClient.GetClient(), primaryMinio, cfg, concurrentBuffer, logger)
+	querierService, err := query.NewQuerier(redisPool.GetRedisClient(), primaryMinio, cfg, concurrentBuffer, logger)
 	if err != nil {
 		log.Fatalf("Failed to create querier service: %v", err)
 	}
@@ -120,15 +122,39 @@ func main() {
 
 	// 初始化协调器
 	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry)
-	queryCoord := coordinator.NewQueryCoordinator(redisClient.GetClient(), serviceRegistry, querierService)
+	queryCoord := coordinator.NewQueryCoordinator(redisPool.GetRedisClient(), serviceRegistry, querierService)
+
+	// 启动元数据备份管理器
+	var metadataManager *metadata.Manager
+	if cfg.Backup.Metadata.Enabled {
+		metadataConfig := metadata.Config{
+			NodeID: cfg.Server.NodeID,
+			Backup: metadata.BackupConfig{
+				Interval:      cfg.Backup.Metadata.Interval,
+				RetentionDays: cfg.Backup.Metadata.RetentionDays,
+				Bucket:        cfg.Backup.Metadata.Bucket,
+			},
+			Recovery: metadata.RecoveryConfig{
+				Bucket: cfg.Backup.Metadata.Bucket,
+			},
+		}
+
+		metadataManager = metadata.NewManager(storageInstance, metadataConfig)
+
+		if err := metadataManager.Start(); err != nil {
+			log.Printf("Failed to start metadata manager: %v", err)
+		} else {
+			log.Println("Metadata manager started successfully")
+		}
+	}
 
 	// 创建gRPC传输层
 	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoord,
-		queryCoord, redisClient, primaryMinio, backupMinio)
+		queryCoord, redisPool, primaryMinio, backupMinio, metadataManager)
 
 	// 启动REST服务器
 	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoord,
-		queryCoord, redisClient, primaryMinio, backupMinio)
+		queryCoord, redisPool, primaryMinio, backupMinio, metadataManager)
 
 	// 启动指标服务器
 	var metricsServer *http.Server
@@ -144,8 +170,10 @@ func main() {
 
 	// 添加健康检查
 	healthChecker.AddCheck(recovery.NewDatabaseHealthCheck("redis", func() error {
-		// Redis 健康检查
-		return nil // 这里应该实际检查 Redis 连接
+		// Redis 健康检查 - 使用连接池的健康检查
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return redisPool.HealthCheck(ctx)
 	}))
 
 	healthChecker.AddCheck(recovery.NewDatabaseHealthCheck("minio", func() error {
@@ -166,14 +194,18 @@ func main() {
 	log.Println("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor)
+	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, metadataManager)
 
 	log.Println("MinIODB server stopped")
 }
 
-func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader) *grpc.Server {
+func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester,
+	querier *query.Querier, writeCoord *coordinator.WriteCoordinator,
+	queryCoord *coordinator.QueryCoordinator, redisPool *pool.RedisPool,
+	primaryMinio, backupMinio storage.Uploader, metadataManager *metadata.Manager) *grpc.Server {
 	// 创建统一的service层
-	olapService, err := service.NewOlapService(cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
+	olapService, err := service.NewOlapService(cfg, ingester, querier,
+		redisPool.GetRedisClient(), primaryMinio, backupMinio)
 	if err != nil {
 		log.Fatalf("Failed to create OLAP service: %v", err)
 	}
@@ -186,6 +218,11 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 
 	// 设置协调器
 	grpcService.SetCoordinators(writeCoord, queryCoord)
+
+	// 设置元数据管理器
+	if metadataManager != nil {
+		grpcService.SetMetadataManager(metadataManager)
+	}
 
 	grpcServer := grpc.NewServer()
 
@@ -211,9 +248,12 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	return grpcServer
 }
 
-func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier, writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator, redisClient *storage.RedisClient, primaryMinio, backupMinio storage.Uploader) *restTransport.Server {
+func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier,
+	writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator,
+	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader, metadataManager *metadata.Manager) *restTransport.Server {
 	// 创建统一的service层
-	olapService, err := service.NewOlapService(cfg, ingester, querier, redisClient.GetClient(), primaryMinio, backupMinio)
+	olapService, err := service.NewOlapService(cfg, ingester, querier,
+		redisPool.GetRedisClient(), primaryMinio, backupMinio)
 	if err != nil {
 		log.Fatalf("Failed to create OLAP service: %v", err)
 	}
@@ -223,6 +263,11 @@ func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 
 	// 设置协调器
 	restServer.SetCoordinators(writeCoord, queryCoord)
+
+	// 设置元数据管理器
+	if metadataManager != nil {
+		restServer.SetMetadataManager(metadataManager)
+	}
 
 	// 启动服务器
 	go func() {
@@ -251,7 +296,10 @@ func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.C
 	}
 }
 
-func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer *grpc.Server, restServer *restTransport.Server, metricsServer *http.Server, systemMonitor *metrics.SystemMonitor) {
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
+	grpcServer *grpc.Server, restServer *restTransport.Server,
+	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
+	metadataManager *metadata.Manager) {
 	// 创建信号通道
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -302,6 +350,12 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, grpcServer 
 	if systemMonitor != nil {
 		systemMonitor.Stop()
 		log.Println("System monitor stopped")
+	}
+
+	// 停止元数据备份管理器
+	if metadataManager != nil {
+		metadataManager.Stop()
+		log.Println("Metadata manager stopped")
 	}
 
 	log.Println("All servers stopped gracefully")

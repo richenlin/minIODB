@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	olapv1 "minIODB/api/proto/olap/v1"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
+	"minIODB/internal/metadata"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
 
@@ -23,6 +25,7 @@ type Server struct {
 	olapService      *service.OlapService
 	writeCoordinator *coordinator.WriteCoordinator
 	queryCoordinator *coordinator.QueryCoordinator
+	metadataManager  *metadata.Manager
 	cfg              *config.Config
 	router           *gin.Engine
 	server           *http.Server
@@ -211,6 +214,88 @@ type DropTableResponse struct {
 	FilesDeleted int32  `json:"files_deleted"`
 }
 
+// 元数据管理相关结构体
+
+// TriggerMetadataBackupRequest 触发元数据备份请求
+type TriggerMetadataBackupRequest struct {
+	Force bool `json:"force"` // 是否强制备份
+}
+
+// TriggerMetadataBackupResponse 触发元数据备份响应
+type TriggerMetadataBackupResponse struct {
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	BackupID  string `json:"backup_id"`
+	Timestamp string `json:"timestamp"`
+}
+
+// ListMetadataBackupsRequest 列出元数据备份请求
+type ListMetadataBackupsRequest struct {
+	Days int `json:"days"` // 查询最近多少天的备份，默认30天
+}
+
+// ListMetadataBackupsResponse 列出元数据备份响应
+type ListMetadataBackupsResponse struct {
+	Backups []MetadataBackupInfo `json:"backups"`
+	Total   int                  `json:"total"`
+}
+
+// MetadataBackupInfo 元数据备份信息
+type MetadataBackupInfo struct {
+	ObjectName   string `json:"object_name"`
+	NodeID       string `json:"node_id"`
+	Timestamp    string `json:"timestamp"`
+	Size         int64  `json:"size"`
+	LastModified string `json:"last_modified"`
+}
+
+// RecoverMetadataRequest 恢复元数据请求
+type RecoverMetadataRequest struct {
+	BackupFile  string                 `json:"backup_file,omitempty"`  // 指定备份文件，为空则使用最新备份
+	FromLatest  bool                   `json:"from_latest"`            // 是否从最新备份恢复
+	DryRun      bool                   `json:"dry_run"`                // 是否为干运行
+	Overwrite   bool                   `json:"overwrite"`              // 是否覆盖现有数据
+	Validate    bool                   `json:"validate"`               // 是否验证数据
+	Parallel    bool                   `json:"parallel"`               // 是否并行执行
+	Filters     map[string]interface{} `json:"filters,omitempty"`      // 过滤选项
+	KeyPatterns []string               `json:"key_patterns,omitempty"` // 键模式过滤
+}
+
+// RecoverMetadataResponse 恢复元数据响应
+type RecoverMetadataResponse struct {
+	Success        bool                   `json:"success"`
+	Message        string                 `json:"message"`
+	BackupFile     string                 `json:"backup_file"`
+	EntriesTotal   int                    `json:"entries_total"`
+	EntriesOK      int                    `json:"entries_ok"`
+	EntriesSkipped int                    `json:"entries_skipped"`
+	EntriesError   int                    `json:"entries_error"`
+	Duration       string                 `json:"duration"`
+	Errors         []string               `json:"errors,omitempty"`
+	Details        map[string]interface{} `json:"details,omitempty"`
+}
+
+// MetadataStatusResponse 元数据状态响应
+type MetadataStatusResponse struct {
+	NodeID       string                 `json:"node_id"`
+	BackupStatus map[string]interface{} `json:"backup_status"`
+	LastBackup   string                 `json:"last_backup"`
+	NextBackup   string                 `json:"next_backup"`
+	HealthStatus string                 `json:"health_status"`
+}
+
+// ValidateMetadataBackupRequest 验证元数据备份请求
+type ValidateMetadataBackupRequest struct {
+	BackupFile string `json:"backup_file" binding:"required"`
+}
+
+// ValidateMetadataBackupResponse 验证元数据备份响应
+type ValidateMetadataBackupResponse struct {
+	Valid   bool     `json:"valid"`
+	Message string   `json:"message"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
 // NewServer 创建新的REST服务器
 func NewServer(olapService *service.OlapService, cfg *config.Config) *Server {
 	// 设置Gin模式
@@ -273,6 +358,11 @@ func (s *Server) SetCoordinators(writeCoord *coordinator.WriteCoordinator, query
 	s.queryCoordinator = queryCoord
 }
 
+// SetMetadataManager 设置元数据管理器
+func (s *Server) SetMetadataManager(manager *metadata.Manager) {
+	s.metadataManager = manager
+}
+
 // setupRoutes 设置路由
 func (s *Server) setupRoutes() {
 	// API版本前缀
@@ -304,6 +394,13 @@ func (s *Server) setupRoutes() {
 			// 系统信息
 			authRequired.GET("/stats", s.getStats)
 			authRequired.GET("/nodes", s.getNodes)
+
+			// 元数据管理
+			authRequired.POST("/metadata/backup", s.triggerMetadataBackup)
+			authRequired.GET("/metadata/backups", s.listMetadataBackups)
+			authRequired.POST("/metadata/recover", s.recoverMetadata)
+			authRequired.GET("/metadata/status", s.getMetadataStatus)
+			authRequired.POST("/metadata/validate", s.validateMetadataBackup)
 		}
 	}
 }
@@ -898,6 +995,237 @@ func (s *Server) dropTable(c *gin.Context) {
 		Success:      grpcResp.Success,
 		Message:      grpcResp.Message,
 		FilesDeleted: grpcResp.FilesDeleted,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// 元数据管理处理方法
+
+// triggerMetadataBackup 触发元数据备份
+func (s *Server) triggerMetadataBackup(c *gin.Context) {
+	if s.metadataManager == nil {
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error:   "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Message: "Metadata manager not available",
+		})
+		return
+	}
+
+	var req TriggerMetadataBackupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
+		})
+		return
+	}
+
+	// 触发手动备份
+	if err := s.metadataManager.TriggerBackup(c.Request.Context()); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "backup_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Failed to trigger backup: %v", err),
+		})
+		return
+	}
+
+	response := TriggerMetadataBackupResponse{
+		Success:   true,
+		Message:   "Metadata backup triggered successfully",
+		BackupID:  fmt.Sprintf("backup_%d", time.Now().Unix()),
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// listMetadataBackups 列出元数据备份
+func (s *Server) listMetadataBackups(c *gin.Context) {
+	if s.metadataManager == nil {
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error:   "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Message: "Metadata manager not available",
+		})
+		return
+	}
+
+	// 获取查询参数
+	days := 30 // 默认30天
+	if daysParam := c.Query("days"); daysParam != "" {
+		if parsedDays, err := strconv.Atoi(daysParam); err == nil && parsedDays > 0 {
+			days = parsedDays
+		}
+	}
+
+	// 获取备份列表
+	backups, err := s.metadataManager.ListBackups(c.Request.Context(), days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "list_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Failed to list backups: %v", err),
+		})
+		return
+	}
+
+	// 转换为响应格式
+	var backupInfos []MetadataBackupInfo
+	for _, backup := range backups {
+		backupInfos = append(backupInfos, MetadataBackupInfo{
+			ObjectName:   backup.ObjectName,
+			NodeID:       backup.NodeID,
+			Timestamp:    backup.Timestamp.Format(time.RFC3339),
+			Size:         backup.Size,
+			LastModified: backup.LastModified.Format(time.RFC3339),
+		})
+	}
+
+	response := ListMetadataBackupsResponse{
+		Backups: backupInfos,
+		Total:   len(backupInfos),
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// recoverMetadata 恢复元数据
+func (s *Server) recoverMetadata(c *gin.Context) {
+	if s.metadataManager == nil {
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error:   "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Message: "Metadata manager not available",
+		})
+		return
+	}
+
+	var req RecoverMetadataRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
+		})
+		return
+	}
+
+	// 构建恢复选项
+	options := metadata.RecoveryOptions{
+		Overwrite:   req.Overwrite,
+		Validate:    req.Validate,
+		DryRun:      req.DryRun,
+		Parallel:    req.Parallel,
+		Filters:     req.Filters,
+		KeyPatterns: req.KeyPatterns,
+	}
+
+	// 设置恢复模式
+	if req.DryRun {
+		options.Mode = metadata.RecoveryModeDryRun
+	} else {
+		options.Mode = metadata.RecoveryModeComplete
+	}
+
+	var result *metadata.RecoveryResult
+	var err error
+
+	// 根据请求类型执行恢复
+	if req.FromLatest || req.BackupFile == "" {
+		result, err = s.metadataManager.RecoverFromLatest(c.Request.Context(), options)
+	} else {
+		result, err = s.metadataManager.RecoverFromBackup(c.Request.Context(), req.BackupFile, options)
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "recovery_error",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Failed to recover metadata: %v", err),
+		})
+		return
+	}
+
+	response := RecoverMetadataResponse{
+		Success:        result.Success,
+		Message:        "Metadata recovery completed",
+		BackupFile:     result.BackupFile,
+		EntriesTotal:   result.EntriesTotal,
+		EntriesOK:      result.EntriesOK,
+		EntriesSkipped: result.EntriesSkipped,
+		EntriesError:   result.EntriesError,
+		Duration:       result.Duration.String(),
+		Errors:         result.Errors,
+		Details:        result.Details,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// getMetadataStatus 获取元数据状态
+func (s *Server) getMetadataStatus(c *gin.Context) {
+	if s.metadataManager == nil {
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error:   "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Message: "Metadata manager not available",
+		})
+		return
+	}
+
+	// 获取管理器状态
+	status := s.metadataManager.GetStatus()
+
+	response := MetadataStatusResponse{
+		NodeID:       s.cfg.Server.NodeID,
+		BackupStatus: status,
+		LastBackup:   "", // TODO: 从状态中获取
+		NextBackup:   "", // TODO: 从状态中获取
+		HealthStatus: "healthy",
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// validateMetadataBackup 验证元数据备份
+func (s *Server) validateMetadataBackup(c *gin.Context) {
+	if s.metadataManager == nil {
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error:   "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Message: "Metadata manager not available",
+		})
+		return
+	}
+
+	var req ValidateMetadataBackupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("Invalid request: %v", err),
+		})
+		return
+	}
+
+	// 验证备份文件
+	if err := s.metadataManager.ValidateBackup(c.Request.Context(), req.BackupFile); err != nil {
+		response := ValidateMetadataBackupResponse{
+			Valid:   false,
+			Message: fmt.Sprintf("Backup validation failed: %v", err),
+			Errors:  []string{err.Error()},
+		}
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	response := ValidateMetadataBackupResponse{
+		Valid:   true,
+		Message: "Backup validation passed",
 	}
 
 	c.JSON(http.StatusOK, response)

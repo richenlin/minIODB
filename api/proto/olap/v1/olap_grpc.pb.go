@@ -19,17 +19,22 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	OlapService_Write_FullMethodName         = "/olap.v1.OlapService/Write"
-	OlapService_Query_FullMethodName         = "/olap.v1.OlapService/Query"
-	OlapService_TriggerBackup_FullMethodName = "/olap.v1.OlapService/TriggerBackup"
-	OlapService_RecoverData_FullMethodName   = "/olap.v1.OlapService/RecoverData"
-	OlapService_HealthCheck_FullMethodName   = "/olap.v1.OlapService/HealthCheck"
-	OlapService_GetStats_FullMethodName      = "/olap.v1.OlapService/GetStats"
-	OlapService_GetNodes_FullMethodName      = "/olap.v1.OlapService/GetNodes"
-	OlapService_CreateTable_FullMethodName   = "/olap.v1.OlapService/CreateTable"
-	OlapService_DropTable_FullMethodName     = "/olap.v1.OlapService/DropTable"
-	OlapService_ListTables_FullMethodName    = "/olap.v1.OlapService/ListTables"
-	OlapService_DescribeTable_FullMethodName = "/olap.v1.OlapService/DescribeTable"
+	OlapService_Write_FullMethodName                  = "/olap.v1.OlapService/Write"
+	OlapService_Query_FullMethodName                  = "/olap.v1.OlapService/Query"
+	OlapService_TriggerBackup_FullMethodName          = "/olap.v1.OlapService/TriggerBackup"
+	OlapService_RecoverData_FullMethodName            = "/olap.v1.OlapService/RecoverData"
+	OlapService_HealthCheck_FullMethodName            = "/olap.v1.OlapService/HealthCheck"
+	OlapService_GetStats_FullMethodName               = "/olap.v1.OlapService/GetStats"
+	OlapService_GetNodes_FullMethodName               = "/olap.v1.OlapService/GetNodes"
+	OlapService_CreateTable_FullMethodName            = "/olap.v1.OlapService/CreateTable"
+	OlapService_DropTable_FullMethodName              = "/olap.v1.OlapService/DropTable"
+	OlapService_ListTables_FullMethodName             = "/olap.v1.OlapService/ListTables"
+	OlapService_DescribeTable_FullMethodName          = "/olap.v1.OlapService/DescribeTable"
+	OlapService_TriggerMetadataBackup_FullMethodName  = "/olap.v1.OlapService/TriggerMetadataBackup"
+	OlapService_ListMetadataBackups_FullMethodName    = "/olap.v1.OlapService/ListMetadataBackups"
+	OlapService_RecoverMetadata_FullMethodName        = "/olap.v1.OlapService/RecoverMetadata"
+	OlapService_GetMetadataStatus_FullMethodName      = "/olap.v1.OlapService/GetMetadataStatus"
+	OlapService_ValidateMetadataBackup_FullMethodName = "/olap.v1.OlapService/ValidateMetadataBackup"
 )
 
 // OlapServiceClient is the client API for OlapService service.
@@ -55,6 +60,12 @@ type OlapServiceClient interface {
 	DropTable(ctx context.Context, in *DropTableRequest, opts ...grpc.CallOption) (*DropTableResponse, error)
 	ListTables(ctx context.Context, in *ListTablesRequest, opts ...grpc.CallOption) (*ListTablesResponse, error)
 	DescribeTable(ctx context.Context, in *DescribeTableRequest, opts ...grpc.CallOption) (*DescribeTableResponse, error)
+	// 元数据管理接口
+	TriggerMetadataBackup(ctx context.Context, in *TriggerMetadataBackupRequest, opts ...grpc.CallOption) (*TriggerMetadataBackupResponse, error)
+	ListMetadataBackups(ctx context.Context, in *ListMetadataBackupsRequest, opts ...grpc.CallOption) (*ListMetadataBackupsResponse, error)
+	RecoverMetadata(ctx context.Context, in *RecoverMetadataRequest, opts ...grpc.CallOption) (*RecoverMetadataResponse, error)
+	GetMetadataStatus(ctx context.Context, in *GetMetadataStatusRequest, opts ...grpc.CallOption) (*MetadataStatusResponse, error)
+	ValidateMetadataBackup(ctx context.Context, in *ValidateMetadataBackupRequest, opts ...grpc.CallOption) (*ValidateMetadataBackupResponse, error)
 }
 
 type olapServiceClient struct {
@@ -175,6 +186,56 @@ func (c *olapServiceClient) DescribeTable(ctx context.Context, in *DescribeTable
 	return out, nil
 }
 
+func (c *olapServiceClient) TriggerMetadataBackup(ctx context.Context, in *TriggerMetadataBackupRequest, opts ...grpc.CallOption) (*TriggerMetadataBackupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TriggerMetadataBackupResponse)
+	err := c.cc.Invoke(ctx, OlapService_TriggerMetadataBackup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *olapServiceClient) ListMetadataBackups(ctx context.Context, in *ListMetadataBackupsRequest, opts ...grpc.CallOption) (*ListMetadataBackupsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMetadataBackupsResponse)
+	err := c.cc.Invoke(ctx, OlapService_ListMetadataBackups_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *olapServiceClient) RecoverMetadata(ctx context.Context, in *RecoverMetadataRequest, opts ...grpc.CallOption) (*RecoverMetadataResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RecoverMetadataResponse)
+	err := c.cc.Invoke(ctx, OlapService_RecoverMetadata_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *olapServiceClient) GetMetadataStatus(ctx context.Context, in *GetMetadataStatusRequest, opts ...grpc.CallOption) (*MetadataStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MetadataStatusResponse)
+	err := c.cc.Invoke(ctx, OlapService_GetMetadataStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *olapServiceClient) ValidateMetadataBackup(ctx context.Context, in *ValidateMetadataBackupRequest, opts ...grpc.CallOption) (*ValidateMetadataBackupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateMetadataBackupResponse)
+	err := c.cc.Invoke(ctx, OlapService_ValidateMetadataBackup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OlapServiceServer is the server API for OlapService service.
 // All implementations must embed UnimplementedOlapServiceServer
 // for forward compatibility.
@@ -198,6 +259,12 @@ type OlapServiceServer interface {
 	DropTable(context.Context, *DropTableRequest) (*DropTableResponse, error)
 	ListTables(context.Context, *ListTablesRequest) (*ListTablesResponse, error)
 	DescribeTable(context.Context, *DescribeTableRequest) (*DescribeTableResponse, error)
+	// 元数据管理接口
+	TriggerMetadataBackup(context.Context, *TriggerMetadataBackupRequest) (*TriggerMetadataBackupResponse, error)
+	ListMetadataBackups(context.Context, *ListMetadataBackupsRequest) (*ListMetadataBackupsResponse, error)
+	RecoverMetadata(context.Context, *RecoverMetadataRequest) (*RecoverMetadataResponse, error)
+	GetMetadataStatus(context.Context, *GetMetadataStatusRequest) (*MetadataStatusResponse, error)
+	ValidateMetadataBackup(context.Context, *ValidateMetadataBackupRequest) (*ValidateMetadataBackupResponse, error)
 	mustEmbedUnimplementedOlapServiceServer()
 }
 
@@ -240,6 +307,21 @@ func (UnimplementedOlapServiceServer) ListTables(context.Context, *ListTablesReq
 }
 func (UnimplementedOlapServiceServer) DescribeTable(context.Context, *DescribeTableRequest) (*DescribeTableResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DescribeTable not implemented")
+}
+func (UnimplementedOlapServiceServer) TriggerMetadataBackup(context.Context, *TriggerMetadataBackupRequest) (*TriggerMetadataBackupResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TriggerMetadataBackup not implemented")
+}
+func (UnimplementedOlapServiceServer) ListMetadataBackups(context.Context, *ListMetadataBackupsRequest) (*ListMetadataBackupsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListMetadataBackups not implemented")
+}
+func (UnimplementedOlapServiceServer) RecoverMetadata(context.Context, *RecoverMetadataRequest) (*RecoverMetadataResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecoverMetadata not implemented")
+}
+func (UnimplementedOlapServiceServer) GetMetadataStatus(context.Context, *GetMetadataStatusRequest) (*MetadataStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetMetadataStatus not implemented")
+}
+func (UnimplementedOlapServiceServer) ValidateMetadataBackup(context.Context, *ValidateMetadataBackupRequest) (*ValidateMetadataBackupResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ValidateMetadataBackup not implemented")
 }
 func (UnimplementedOlapServiceServer) mustEmbedUnimplementedOlapServiceServer() {}
 func (UnimplementedOlapServiceServer) testEmbeddedByValue()                     {}
@@ -460,6 +542,96 @@ func _OlapService_DescribeTable_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OlapService_TriggerMetadataBackup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TriggerMetadataBackupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).TriggerMetadataBackup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_TriggerMetadataBackup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).TriggerMetadataBackup(ctx, req.(*TriggerMetadataBackupRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OlapService_ListMetadataBackups_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMetadataBackupsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).ListMetadataBackups(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_ListMetadataBackups_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).ListMetadataBackups(ctx, req.(*ListMetadataBackupsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OlapService_RecoverMetadata_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecoverMetadataRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).RecoverMetadata(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_RecoverMetadata_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).RecoverMetadata(ctx, req.(*RecoverMetadataRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OlapService_GetMetadataStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMetadataStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).GetMetadataStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_GetMetadataStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).GetMetadataStatus(ctx, req.(*GetMetadataStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OlapService_ValidateMetadataBackup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateMetadataBackupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OlapServiceServer).ValidateMetadataBackup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OlapService_ValidateMetadataBackup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OlapServiceServer).ValidateMetadataBackup(ctx, req.(*ValidateMetadataBackupRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OlapService_ServiceDesc is the grpc.ServiceDesc for OlapService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -510,6 +682,26 @@ var OlapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DescribeTable",
 			Handler:    _OlapService_DescribeTable_Handler,
+		},
+		{
+			MethodName: "TriggerMetadataBackup",
+			Handler:    _OlapService_TriggerMetadataBackup_Handler,
+		},
+		{
+			MethodName: "ListMetadataBackups",
+			Handler:    _OlapService_ListMetadataBackups_Handler,
+		},
+		{
+			MethodName: "RecoverMetadata",
+			Handler:    _OlapService_RecoverMetadata_Handler,
+		},
+		{
+			MethodName: "GetMetadataStatus",
+			Handler:    _OlapService_GetMetadataStatus_Handler,
+		},
+		{
+			MethodName: "ValidateMetadataBackup",
+			Handler:    _OlapService_ValidateMetadataBackup_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

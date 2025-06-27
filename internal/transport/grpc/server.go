@@ -10,6 +10,7 @@ import (
 	olapv1 "minIODB/api/proto/olap/v1"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
+	"minIODB/internal/metadata"
 	"minIODB/internal/metrics"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
@@ -23,6 +24,7 @@ type Server struct {
 	olapService      *service.OlapService
 	writeCoordinator *coordinator.WriteCoordinator
 	queryCoordinator *coordinator.QueryCoordinator
+	metadataManager  *metadata.Manager
 	cfg              config.Config
 
 	// 认证相关
@@ -77,6 +79,11 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 func (s *Server) SetCoordinators(writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator) {
 	s.writeCoordinator = writeCoord
 	s.queryCoordinator = queryCoord
+}
+
+// SetMetadataManager 设置元数据管理器
+func (s *Server) SetMetadataManager(manager *metadata.Manager) {
+	s.metadataManager = manager
 }
 
 // Start 启动gRPC服务器
@@ -256,4 +263,250 @@ func (s *Server) GetNodes(ctx context.Context, req *olapv1.GetNodesRequest) (*ol
 
 	// 委托给service层处理
 	return s.olapService.GetNodes(ctx, req)
+}
+
+// 元数据管理RPC方法实现
+
+// TriggerMetadataBackup 触发元数据备份
+func (s *Server) TriggerMetadataBackup(ctx context.Context, req *olapv1.TriggerMetadataBackupRequest) (*olapv1.TriggerMetadataBackupResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("TriggerMetadataBackup")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("TriggerMetadataBackup request from user: %s (ID: %s)", user.Username, user.ID)
+		}
+	} else {
+		log.Printf("Received TriggerMetadataBackup request")
+	}
+
+	if s.metadataManager == nil {
+		return &olapv1.TriggerMetadataBackupResponse{
+			Success: false,
+			Message: "Metadata manager not available",
+		}, nil
+	}
+
+	if err := s.metadataManager.TriggerBackup(ctx); err != nil {
+		return &olapv1.TriggerMetadataBackupResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to trigger metadata backup: %v", err),
+		}, nil
+	}
+
+	return &olapv1.TriggerMetadataBackupResponse{
+		Success:  true,
+		Message:  "Metadata backup triggered successfully",
+		BackupId: fmt.Sprintf("backup_%d", time.Now().Unix()),
+	}, nil
+}
+
+// ListMetadataBackups 列出元数据备份
+func (s *Server) ListMetadataBackups(ctx context.Context, req *olapv1.ListMetadataBackupsRequest) (*olapv1.ListMetadataBackupsResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("ListMetadataBackups")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("ListMetadataBackups request from user: %s (ID: %s)", user.Username, user.ID)
+		}
+	} else {
+		log.Printf("Received ListMetadataBackups request")
+	}
+
+	if s.metadataManager == nil {
+		return &olapv1.ListMetadataBackupsResponse{
+			Backups: []*olapv1.MetadataBackupInfo{},
+			Total:   0,
+		}, nil
+	}
+
+	days := req.Days
+	if days <= 0 {
+		days = 30 // 默认30天
+	}
+
+	backups, err := s.metadataManager.ListBackups(ctx, int(days))
+	if err != nil {
+		return &olapv1.ListMetadataBackupsResponse{
+			Backups: []*olapv1.MetadataBackupInfo{},
+			Total:   0,
+		}, nil
+	}
+
+	var backupInfos []*olapv1.MetadataBackupInfo
+	for _, backup := range backups {
+		backupInfos = append(backupInfos, &olapv1.MetadataBackupInfo{
+			Id:          backup.ObjectName,
+			Timestamp:   backup.Timestamp.Format(time.RFC3339),
+			Size:        backup.Size,
+			Status:      "completed",
+			Description: fmt.Sprintf("Backup from node %s", backup.NodeID),
+		})
+	}
+
+	return &olapv1.ListMetadataBackupsResponse{
+		Backups: backupInfos,
+		Total:   int32(len(backupInfos)),
+	}, nil
+}
+
+// RecoverMetadata 恢复元数据
+func (s *Server) RecoverMetadata(ctx context.Context, req *olapv1.RecoverMetadataRequest) (*olapv1.RecoverMetadataResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("RecoverMetadata")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("RecoverMetadata request from user: %s (ID: %s)", user.Username, user.ID)
+		}
+	} else {
+		log.Printf("Received RecoverMetadata request")
+	}
+
+	if s.metadataManager == nil {
+		return &olapv1.RecoverMetadataResponse{
+			Success: false,
+			Message: "Metadata manager not available",
+		}, nil
+	}
+
+	options := metadata.RecoveryOptions{
+		Overwrite: req.ForceOverwrite,
+		DryRun:    req.Mode == "dry_run",
+	}
+
+	// 设置恢复模式
+	switch req.Mode {
+	case "dry_run":
+		options.Mode = metadata.RecoveryModeDryRun
+	case "complete":
+		options.Mode = metadata.RecoveryModeComplete
+	default:
+		options.Mode = metadata.RecoveryModeComplete
+	}
+
+	var result *metadata.RecoveryResult
+	var err error
+
+	if req.BackupFile == "" {
+		// 从最新备份恢复
+		result, err = s.metadataManager.RecoverFromLatest(ctx, options)
+	} else {
+		// 从指定备份恢复
+		result, err = s.metadataManager.RecoverFromBackup(ctx, req.BackupFile, options)
+	}
+
+	if err != nil {
+		return &olapv1.RecoverMetadataResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to recover metadata: %v", err),
+		}, nil
+	}
+
+	return &olapv1.RecoverMetadataResponse{
+		Success:        result.Success,
+		Message:        "Metadata recovery completed",
+		RecoveredItems: int32(result.EntriesOK),
+		RecoveredKeys:  []string{}, // 实际的键列表需要从result.Details中提取
+		Warnings:       result.Errors,
+	}, nil
+}
+
+// GetMetadataStatus 获取元数据状态
+func (s *Server) GetMetadataStatus(ctx context.Context, req *olapv1.GetMetadataStatusRequest) (*olapv1.MetadataStatusResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("GetMetadataStatus")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("GetMetadataStatus request from user: %s (ID: %s)", user.Username, user.ID)
+		}
+	} else {
+		log.Printf("Received GetMetadataStatus request")
+	}
+
+	if s.metadataManager == nil {
+		return &olapv1.MetadataStatusResponse{
+			Status:       "unavailable",
+			LastBackup:   "",
+			NextBackup:   "",
+			TotalEntries: 0,
+			TypeCounts:   make(map[string]int32),
+		}, nil
+	}
+
+	// 获取状态信息 - 由于Manager没有GetStatus方法，我们返回基本信息
+	return &olapv1.MetadataStatusResponse{
+		Status:       "healthy",
+		LastBackup:   "",
+		NextBackup:   "",
+		TotalEntries: 0,
+		TypeCounts:   make(map[string]int32),
+	}, nil
+}
+
+// ValidateMetadataBackup 验证元数据备份
+func (s *Server) ValidateMetadataBackup(ctx context.Context, req *olapv1.ValidateMetadataBackupRequest) (*olapv1.ValidateMetadataBackupResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("ValidateMetadataBackup")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("ValidateMetadataBackup request from user: %s (ID: %s)", user.Username, user.ID)
+		}
+	} else {
+		log.Printf("Received ValidateMetadataBackup request")
+	}
+
+	if s.metadataManager == nil {
+		return &olapv1.ValidateMetadataBackupResponse{
+			Valid:   false,
+			Message: "Metadata manager not available",
+			Errors:  []string{"Metadata manager is not initialized"},
+		}, nil
+	}
+
+	if err := s.metadataManager.ValidateBackup(ctx, req.BackupFile); err != nil {
+		return &olapv1.ValidateMetadataBackupResponse{
+			Valid:   false,
+			Message: fmt.Sprintf("Backup validation failed: %v", err),
+			Errors:  []string{err.Error()},
+		}, nil
+	}
+
+	return &olapv1.ValidateMetadataBackupResponse{
+		Valid:   true,
+		Message: "Backup validation successful",
+		Errors:  []string{},
+	}, nil
+}
+
+// convertTypeCounts 转换类型计数格式
+func convertTypeCounts(counts map[string]int) map[string]int32 {
+	result := make(map[string]int32)
+	for k, v := range counts {
+		result[k] = int32(v)
+	}
+	return result
 }

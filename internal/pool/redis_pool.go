@@ -33,36 +33,36 @@ type RedisPoolConfig struct {
 	Addr     string    `yaml:"addr"`     // 单机模式地址
 	Password string    `yaml:"password"` // 密码
 	DB       int       `yaml:"db"`       // 数据库编号（集群模式不支持）
-	
+
 	// 哨兵模式配置
-	MasterName    string   `yaml:"master_name"`    // 主节点名称
-	SentinelAddrs []string `yaml:"sentinel_addrs"` // 哨兵地址列表
-	SentinelPassword string `yaml:"sentinel_password"` // 哨兵密码
-	
+	MasterName       string   `yaml:"master_name"`       // 主节点名称
+	SentinelAddrs    []string `yaml:"sentinel_addrs"`    // 哨兵地址列表
+	SentinelPassword string   `yaml:"sentinel_password"` // 哨兵密码
+
 	// 集群模式配置
 	ClusterAddrs []string `yaml:"cluster_addrs"` // 集群地址列表
-	
+
 	// 连接池配置
-	PoolSize        int           `yaml:"pool_size"`         // 连接池大小
-	MinIdleConns    int           `yaml:"min_idle_conns"`    // 最小空闲连接数
-	MaxConnAge      time.Duration `yaml:"max_conn_age"`      // 连接最大生存时间
-	PoolTimeout     time.Duration `yaml:"pool_timeout"`      // 获取连接超时
-	IdleTimeout     time.Duration `yaml:"idle_timeout"`      // 空闲连接超时
-	IdleCheckFreq   time.Duration `yaml:"idle_check_freq"`   // 空闲连接检查频率
-	
+	PoolSize      int           `yaml:"pool_size"`       // 连接池大小
+	MinIdleConns  int           `yaml:"min_idle_conns"`  // 最小空闲连接数
+	MaxConnAge    time.Duration `yaml:"max_conn_age"`    // 连接最大生存时间
+	PoolTimeout   time.Duration `yaml:"pool_timeout"`    // 获取连接超时
+	IdleTimeout   time.Duration `yaml:"idle_timeout"`    // 空闲连接超时
+	IdleCheckFreq time.Duration `yaml:"idle_check_freq"` // 空闲连接检查频率
+
 	// 网络配置
 	DialTimeout  time.Duration `yaml:"dial_timeout"`  // 连接超时
 	ReadTimeout  time.Duration `yaml:"read_timeout"`  // 读取超时
 	WriteTimeout time.Duration `yaml:"write_timeout"` // 写入超时
-	
+
 	// 重试配置
 	MaxRetries      int           `yaml:"max_retries"`       // 最大重试次数
 	MinRetryBackoff time.Duration `yaml:"min_retry_backoff"` // 最小重试间隔
 	MaxRetryBackoff time.Duration `yaml:"max_retry_backoff"` // 最大重试间隔
-	
+
 	// 集群特定配置
-	MaxRedirects   int  `yaml:"max_redirects"`   // 最大重定向次数
-	ReadOnly       bool `yaml:"read_only"`       // 只读模式
+	MaxRedirects   int  `yaml:"max_redirects"`    // 最大重定向次数
+	ReadOnly       bool `yaml:"read_only"`        // 只读模式
 	RouteByLatency bool `yaml:"route_by_latency"` // 按延迟路由
 	RouteRandomly  bool `yaml:"route_randomly"`   // 随机路由
 }
@@ -98,32 +98,32 @@ func DefaultRedisPoolConfig() *RedisPoolConfig {
 type RedisPool struct {
 	config *RedisPoolConfig
 	client redis.Cmdable // 统一接口，支持单机、哨兵、集群
-	
+
 	// 具体客户端实例
 	standaloneClient *redis.Client
 	sentinelClient   *redis.Client
 	clusterClient    *redis.ClusterClient
-	
+
 	mutex sync.RWMutex
 	stats *RedisPoolStats
 }
 
 // RedisPoolStats Redis连接池统计信息
 type RedisPoolStats struct {
-	Mode              string            `json:"mode"`
-	TotalConns        uint32            `json:"total_conns"`
-	IdleConns         uint32            `json:"idle_conns"`
-	StaleConns        uint32            `json:"stale_conns"`
-	Hits              uint64            `json:"hits"`
-	Misses            uint64            `json:"misses"`
-	Timeouts          uint64            `json:"timeouts"`
-	TotalRequests     uint64            `json:"total_requests"`
-	SuccessRequests   uint64            `json:"success_requests"`
-	FailedRequests    uint64            `json:"failed_requests"`
-	AvgResponseTime   time.Duration     `json:"avg_response_time"`
-	LastHealthCheck   time.Time         `json:"last_health_check"`
-	HealthStatus      string            `json:"health_status"`
-	ClusterNodes      map[string]string `json:"cluster_nodes,omitempty"` // 集群节点状态
+	Mode            string            `json:"mode"`
+	TotalConns      uint32            `json:"total_conns"`
+	IdleConns       uint32            `json:"idle_conns"`
+	StaleConns      uint32            `json:"stale_conns"`
+	Hits            uint64            `json:"hits"`
+	Misses          uint64            `json:"misses"`
+	Timeouts        uint64            `json:"timeouts"`
+	TotalRequests   uint64            `json:"total_requests"`
+	SuccessRequests uint64            `json:"success_requests"`
+	FailedRequests  uint64            `json:"failed_requests"`
+	AvgResponseTime time.Duration     `json:"avg_response_time"`
+	LastHealthCheck time.Time         `json:"last_health_check"`
+	HealthStatus    string            `json:"health_status"`
+	ClusterNodes    map[string]string `json:"cluster_nodes,omitempty"` // 集群节点状态
 }
 
 // NewRedisPool 创建新的Redis连接池
@@ -158,7 +158,7 @@ func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
 	// 执行健康检查
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	if err := pool.HealthCheck(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("initial health check failed: %w", err)
@@ -175,21 +175,21 @@ func (p *RedisPool) createStandaloneClient() error {
 	}
 
 	options := &redis.Options{
-		Addr:            p.config.Addr,
-		Password:        p.config.Password,
-		DB:              p.config.DB,
-		PoolSize:        p.config.PoolSize,
-		MinIdleConns:    p.config.MinIdleConns,
-		MaxConnAge:      p.config.MaxConnAge,
-		PoolTimeout:     p.config.PoolTimeout,
-		IdleTimeout:     p.config.IdleTimeout,
+		Addr:               p.config.Addr,
+		Password:           p.config.Password,
+		DB:                 p.config.DB,
+		PoolSize:           p.config.PoolSize,
+		MinIdleConns:       p.config.MinIdleConns,
+		MaxConnAge:         p.config.MaxConnAge,
+		PoolTimeout:        p.config.PoolTimeout,
+		IdleTimeout:        p.config.IdleTimeout,
 		IdleCheckFrequency: p.config.IdleCheckFreq,
-		DialTimeout:     p.config.DialTimeout,
-		ReadTimeout:     p.config.ReadTimeout,
-		WriteTimeout:    p.config.WriteTimeout,
-		MaxRetries:      p.config.MaxRetries,
-		MinRetryBackoff: p.config.MinRetryBackoff,
-		MaxRetryBackoff: p.config.MaxRetryBackoff,
+		DialTimeout:        p.config.DialTimeout,
+		ReadTimeout:        p.config.ReadTimeout,
+		WriteTimeout:       p.config.WriteTimeout,
+		MaxRetries:         p.config.MaxRetries,
+		MinRetryBackoff:    p.config.MinRetryBackoff,
+		MaxRetryBackoff:    p.config.MaxRetryBackoff,
 	}
 
 	p.standaloneClient = redis.NewClient(options)
@@ -207,23 +207,23 @@ func (p *RedisPool) createSentinelClient() error {
 	}
 
 	options := &redis.FailoverOptions{
-		MasterName:       p.config.MasterName,
-		SentinelAddrs:    p.config.SentinelAddrs,
-		SentinelPassword: p.config.SentinelPassword,
-		Password:         p.config.Password,
-		DB:               p.config.DB,
-		PoolSize:         p.config.PoolSize,
-		MinIdleConns:     p.config.MinIdleConns,
-		MaxConnAge:       p.config.MaxConnAge,
-		PoolTimeout:      p.config.PoolTimeout,
-		IdleTimeout:      p.config.IdleTimeout,
+		MasterName:         p.config.MasterName,
+		SentinelAddrs:      p.config.SentinelAddrs,
+		SentinelPassword:   p.config.SentinelPassword,
+		Password:           p.config.Password,
+		DB:                 p.config.DB,
+		PoolSize:           p.config.PoolSize,
+		MinIdleConns:       p.config.MinIdleConns,
+		MaxConnAge:         p.config.MaxConnAge,
+		PoolTimeout:        p.config.PoolTimeout,
+		IdleTimeout:        p.config.IdleTimeout,
 		IdleCheckFrequency: p.config.IdleCheckFreq,
-		DialTimeout:      p.config.DialTimeout,
-		ReadTimeout:      p.config.ReadTimeout,
-		WriteTimeout:     p.config.WriteTimeout,
-		MaxRetries:       p.config.MaxRetries,
-		MinRetryBackoff:  p.config.MinRetryBackoff,
-		MaxRetryBackoff:  p.config.MaxRetryBackoff,
+		DialTimeout:        p.config.DialTimeout,
+		ReadTimeout:        p.config.ReadTimeout,
+		WriteTimeout:       p.config.WriteTimeout,
+		MaxRetries:         p.config.MaxRetries,
+		MinRetryBackoff:    p.config.MinRetryBackoff,
+		MaxRetryBackoff:    p.config.MaxRetryBackoff,
 	}
 
 	p.sentinelClient = redis.NewFailoverClient(options)
@@ -238,24 +238,24 @@ func (p *RedisPool) createClusterClient() error {
 	}
 
 	options := &redis.ClusterOptions{
-		Addrs:           p.config.ClusterAddrs,
-		Password:        p.config.Password,
-		PoolSize:        p.config.PoolSize,
-		MinIdleConns:    p.config.MinIdleConns,
-		MaxConnAge:      p.config.MaxConnAge,
-		PoolTimeout:     p.config.PoolTimeout,
-		IdleTimeout:     p.config.IdleTimeout,
+		Addrs:              p.config.ClusterAddrs,
+		Password:           p.config.Password,
+		PoolSize:           p.config.PoolSize,
+		MinIdleConns:       p.config.MinIdleConns,
+		MaxConnAge:         p.config.MaxConnAge,
+		PoolTimeout:        p.config.PoolTimeout,
+		IdleTimeout:        p.config.IdleTimeout,
 		IdleCheckFrequency: p.config.IdleCheckFreq,
-		DialTimeout:     p.config.DialTimeout,
-		ReadTimeout:     p.config.ReadTimeout,
-		WriteTimeout:    p.config.WriteTimeout,
-		MaxRetries:      p.config.MaxRetries,
-		MinRetryBackoff: p.config.MinRetryBackoff,
-		MaxRetryBackoff: p.config.MaxRetryBackoff,
-		MaxRedirects:    p.config.MaxRedirects,
-		ReadOnly:        p.config.ReadOnly,
-		RouteByLatency:  p.config.RouteByLatency,
-		RouteRandomly:   p.config.RouteRandomly,
+		DialTimeout:        p.config.DialTimeout,
+		ReadTimeout:        p.config.ReadTimeout,
+		WriteTimeout:       p.config.WriteTimeout,
+		MaxRetries:         p.config.MaxRetries,
+		MinRetryBackoff:    p.config.MinRetryBackoff,
+		MaxRetryBackoff:    p.config.MaxRetryBackoff,
+		MaxRedirects:       p.config.MaxRedirects,
+		ReadOnly:           p.config.ReadOnly,
+		RouteByLatency:     p.config.RouteByLatency,
+		RouteRandomly:      p.config.RouteRandomly,
 	}
 
 	p.clusterClient = redis.NewClusterClient(options)
@@ -345,12 +345,12 @@ func (p *RedisPool) checkStandaloneHealth(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to ping server: %w", err)
 	}
-	
+
 	// 验证PING响应
 	if result != "PONG" {
 		return fmt.Errorf("unexpected ping response: %s", result)
 	}
-	
+
 	return nil
 }
 
@@ -361,12 +361,12 @@ func (p *RedisPool) checkSentinelHealth(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to ping server: %w", err)
 	}
-	
+
 	// 验证PING响应
 	if result != "PONG" {
 		return fmt.Errorf("unexpected ping response: %s", result)
 	}
-	
+
 	return nil
 }
 
@@ -377,37 +377,37 @@ func (p *RedisPool) checkClusterHealth(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get cluster nodes: %w", err)
 	}
-	
+
 	// 解析节点状态
 	p.stats.ClusterNodes = make(map[string]string)
 	lines := strings.Split(nodes, "\n")
 	healthyNodes := 0
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		parts := strings.Fields(line)
 		if len(parts) >= 8 {
 			nodeId := parts[0]
 			flags := parts[2]
-			
+
 			p.stats.ClusterNodes[nodeId] = flags
-			
+
 			// 检查节点是否健康 (master或slave且连接正常)
-			if (strings.Contains(flags, "master") || strings.Contains(flags, "slave")) && 
-			   !strings.Contains(flags, "fail") && !strings.Contains(flags, "fail?") {
+			if (strings.Contains(flags, "master") || strings.Contains(flags, "slave")) &&
+				!strings.Contains(flags, "fail") && !strings.Contains(flags, "fail?") {
 				healthyNodes++
 			}
 		}
 	}
-	
+
 	if healthyNodes == 0 {
 		return fmt.Errorf("no healthy nodes found in cluster")
 	}
-	
+
 	return nil
 }
 
@@ -459,13 +459,13 @@ func (p *RedisPool) GetStats() *RedisPoolStats {
 func (p *RedisPool) UpdatePoolSize(newSize int) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	
+
 	if newSize <= 0 {
 		return fmt.Errorf("pool size must be positive")
 	}
-	
+
 	p.config.PoolSize = newSize
-	
+
 	// 注意: go-redis不支持动态调整连接池大小
 	// 这里只更新配置，实际生效需要重新创建连接池
 	log.Printf("Pool size updated to %d (requires restart to take effect)", newSize)
@@ -476,7 +476,7 @@ func (p *RedisPool) UpdatePoolSize(newSize int) error {
 func (p *RedisPool) GetConfig() *RedisPoolConfig {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
-	
+
 	// 创建配置副本
 	configCopy := *p.config
 	return &configCopy
@@ -486,9 +486,9 @@ func (p *RedisPool) GetConfig() *RedisPoolConfig {
 func (p *RedisPool) Close() error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	
+
 	var err error
-	
+
 	switch p.config.Mode {
 	case RedisModeStandalone:
 		if p.standaloneClient != nil {
@@ -506,13 +506,13 @@ func (p *RedisPool) Close() error {
 			p.clusterClient = nil
 		}
 	}
-	
+
 	p.client = nil
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to close Redis client: %w", err)
 	}
-	
+
 	log.Printf("Redis pool (%s mode) closed successfully", p.config.Mode)
 	return nil
 }
@@ -521,12 +521,12 @@ func (p *RedisPool) Close() error {
 func (p *RedisPool) GetConnectionInfo() map[string]interface{} {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
-	
+
 	info := map[string]interface{}{
 		"mode":      p.config.Mode,
 		"pool_size": p.config.PoolSize,
 	}
-	
+
 	switch p.config.Mode {
 	case RedisModeStandalone:
 		info["addr"] = p.config.Addr
@@ -539,36 +539,36 @@ func (p *RedisPool) GetConnectionInfo() map[string]interface{} {
 		info["cluster_addrs"] = p.config.ClusterAddrs
 		info["read_only"] = p.config.ReadOnly
 	}
-	
+
 	return info
 }
 
 // ExecuteWithRetry 执行带重试的Redis操作
 func (p *RedisPool) ExecuteWithRetry(ctx context.Context, operation func() error) error {
 	var lastErr error
-	
+
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
 		p.stats.TotalRequests++
-		
+
 		err := operation()
 		if err == nil {
 			p.stats.SuccessRequests++
 			return nil
 		}
-		
+
 		lastErr = err
 		p.stats.FailedRequests++
-		
+
 		if attempt < p.config.MaxRetries {
 			// 计算退避时间
 			backoff := p.config.MinRetryBackoff * time.Duration(1<<uint(attempt))
 			if backoff > p.config.MaxRetryBackoff {
 				backoff = p.config.MaxRetryBackoff
 			}
-			
-			log.Printf("Redis operation failed (attempt %d/%d), retrying in %v: %v", 
+
+			log.Printf("Redis operation failed (attempt %d/%d), retrying in %v: %v",
 				attempt+1, p.config.MaxRetries+1, backoff, err)
-			
+
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -577,6 +577,43 @@ func (p *RedisPool) ExecuteWithRetry(ctx context.Context, operation func() error
 			}
 		}
 	}
-	
+
 	return fmt.Errorf("operation failed after %d attempts: %w", p.config.MaxRetries+1, lastErr)
-} 
+}
+
+// GetConcreteClient 获取具体的Redis客户端类型
+// 注意：此方法仅用于需要具体客户端类型的场景，一般情况下应使用GetClient()
+func (p *RedisPool) GetConcreteClient() interface{} {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		return p.standaloneClient
+	case RedisModeSentinel:
+		return p.sentinelClient
+	case RedisModeCluster:
+		return p.clusterClient
+	default:
+		return nil
+	}
+}
+
+// GetRedisClient 获取Redis客户端（兼容性方法）
+// 对于单机和哨兵模式返回*redis.Client，对于集群模式返回nil
+func (p *RedisPool) GetRedisClient() *redis.Client {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		return p.standaloneClient
+	case RedisModeSentinel:
+		return p.sentinelClient
+	case RedisModeCluster:
+		// 集群模式不能返回*redis.Client类型
+		return nil
+	default:
+		return nil
+	}
+}

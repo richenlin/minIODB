@@ -13,40 +13,6 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-// Storage 存储接口
-type Storage interface {
-	// Redis operations
-	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
-	Get(ctx context.Context, key string) (string, error)
-	Del(ctx context.Context, keys ...string) error
-	SAdd(ctx context.Context, key string, members ...interface{}) error
-	SMembers(ctx context.Context, key string) ([]string, error)
-	Exists(ctx context.Context, keys ...string) (int64, error)
-
-	// MinIO operations
-	PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64) error
-	GetObject(ctx context.Context, bucketName, objectName string) (*minio.Object, error)
-	ListObjects(ctx context.Context, bucketName string, prefix string) <-chan minio.ObjectInfo
-	DeleteObject(ctx context.Context, bucketName, objectName string) error
-
-	// Health check
-	HealthCheck(ctx context.Context) error
-
-	// Close connections
-	Close() error
-
-	// Get pool manager
-	GetPoolManager() *pool.PoolManager
-
-	// Get stats
-	GetStats() map[string]interface{}
-
-	// Redis mode detection
-	GetRedisMode() string
-	IsRedisCluster() bool
-	IsRedisSentinel() bool
-}
-
 // StorageImpl 存储实现
 type StorageImpl struct {
 	poolManager *pool.PoolManager
@@ -55,96 +21,8 @@ type StorageImpl struct {
 
 // NewStorage 创建新的存储实例
 func NewStorage(cfg *config.Config) (Storage, error) {
-	// 创建连接池管理器配置
-	poolConfig := &pool.PoolManagerConfig{
-		Redis: &pool.RedisPoolConfig{
-			Mode:             pool.RedisMode(cfg.Redis.Mode),
-			Addr:             cfg.Redis.Addr,
-			Password:         cfg.Redis.Password,
-			DB:               cfg.Redis.DB,
-			MasterName:       cfg.Redis.MasterName,
-			SentinelAddrs:    cfg.Redis.SentinelAddrs,
-			SentinelPassword: cfg.Redis.SentinelPassword,
-			ClusterAddrs:     cfg.Redis.ClusterAddrs,
-			PoolSize:         cfg.Redis.PoolSize,
-			MinIdleConns:     cfg.Redis.MinIdleConns,
-			MaxConnAge:       cfg.Redis.MaxConnAge,
-			PoolTimeout:      cfg.Redis.PoolTimeout,
-			IdleTimeout:      cfg.Redis.IdleTimeout,
-			IdleCheckFreq:    time.Minute, // 默认值
-			DialTimeout:      cfg.Redis.DialTimeout,
-			ReadTimeout:      cfg.Redis.ReadTimeout,
-			WriteTimeout:     cfg.Redis.WriteTimeout,
-			MaxRetries:       3,                      // 默认值
-			MinRetryBackoff:  8 * time.Millisecond,   // 默认值
-			MaxRetryBackoff:  512 * time.Millisecond, // 默认值
-			MaxRedirects:     cfg.Redis.MaxRedirects,
-			ReadOnly:         cfg.Redis.ReadOnly,
-			RouteByLatency:   false, // 默认值
-			RouteRandomly:    false, // 默认值
-		},
-		MinIO: &pool.MinIOPoolConfig{
-			Endpoint:              cfg.MinIO.Endpoint,
-			AccessKeyID:           cfg.MinIO.AccessKeyID,
-			SecretAccessKey:       cfg.MinIO.SecretAccessKey,
-			UseSSL:                cfg.MinIO.UseSSL,
-			Region:                "us-east-1",      // 默认值
-			MaxIdleConns:          100,              // 默认值
-			MaxIdleConnsPerHost:   10,               // 默认值
-			MaxConnsPerHost:       0,                // 默认值
-			IdleConnTimeout:       90 * time.Second, // 默认值
-			DialTimeout:           30 * time.Second, // 默认值
-			TLSHandshakeTimeout:   10 * time.Second, // 默认值
-			ResponseHeaderTimeout: 0,                // 默认值
-			ExpectContinueTimeout: 1 * time.Second,  // 默认值
-			MaxRetries:            3,                // 默认值
-			RetryDelay:            1 * time.Second,  // 默认值
-			RequestTimeout:        0,                // 默认值
-			KeepAlive:             30 * time.Second, // 默认值
-			DisableKeepAlive:      false,            // 默认值
-			DisableCompression:    false,            // 默认值
-		},
-		HealthCheckInterval: 30 * time.Second, // 默认值
-	}
-
-	// 如果配置了备份MinIO，添加到配置中
-	if cfg.Backup.Enabled && cfg.Backup.MinIO.Endpoint != "" {
-		poolConfig.BackupMinIO = &pool.MinIOPoolConfig{
-			Endpoint:              cfg.Backup.MinIO.Endpoint,
-			AccessKeyID:           cfg.Backup.MinIO.AccessKeyID,
-			SecretAccessKey:       cfg.Backup.MinIO.SecretAccessKey,
-			UseSSL:                cfg.Backup.MinIO.UseSSL,
-			Region:                "us-east-1",      // 默认值
-			MaxIdleConns:          100,              // 默认值
-			MaxIdleConnsPerHost:   10,               // 默认值
-			MaxConnsPerHost:       0,                // 默认值
-			IdleConnTimeout:       90 * time.Second, // 默认值
-			DialTimeout:           30 * time.Second, // 默认值
-			TLSHandshakeTimeout:   10 * time.Second, // 默认值
-			ResponseHeaderTimeout: 0,                // 默认值
-			ExpectContinueTimeout: 1 * time.Second,  // 默认值
-			MaxRetries:            3,                // 默认值
-			RetryDelay:            1 * time.Second,  // 默认值
-			RequestTimeout:        0,                // 默认值
-			KeepAlive:             30 * time.Second, // 默认值
-			DisableKeepAlive:      false,            // 默认值
-			DisableCompression:    false,            // 默认值
-		}
-	}
-
-	// 创建连接池管理器
-	poolManager, err := pool.NewPoolManager(poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create pool manager: %w", err)
-	}
-
-	storage := &StorageImpl{
-		poolManager: poolManager,
-		config:      cfg,
-	}
-
-	log.Println("Storage initialized with connection pools")
-	return storage, nil
+	log.Println("Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
+	return NewUnifiedStorage(cfg)
 }
 
 // Redis operations
@@ -489,4 +367,103 @@ func (s *StorageImpl) IsRedisSentinel() bool {
 		return false
 	}
 	return redisPool.GetMode() == pool.RedisModeSentinel
+}
+
+// BucketExists 检查存储桶是否存在
+func (s *StorageImpl) BucketExists(ctx context.Context, bucketName string) (bool, error) {
+	minioPool := s.poolManager.GetMinIOPool()
+	if minioPool == nil {
+		return false, fmt.Errorf("MinIO连接池不可用")
+	}
+
+	client := minioPool.GetClient()
+	if client == nil {
+		return false, fmt.Errorf("MinIO客户端不可用")
+	}
+
+	return client.BucketExists(ctx, bucketName)
+}
+
+// MakeBucket 创建存储桶
+func (s *StorageImpl) MakeBucket(ctx context.Context, bucketName string) error {
+	minioPool := s.poolManager.GetMinIOPool()
+	if minioPool == nil {
+		return fmt.Errorf("MinIO连接池不可用")
+	}
+
+	client := minioPool.GetClient()
+	if client == nil {
+		return fmt.Errorf("MinIO客户端不可用")
+	}
+
+	return client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+}
+
+// GetObjectBytes 获取对象字节数据
+func (s *StorageImpl) GetObjectBytes(ctx context.Context, bucketName, objectName string) ([]byte, error) {
+	minioPool := s.poolManager.GetMinIOPool()
+	if minioPool == nil {
+		return nil, fmt.Errorf("MinIO连接池不可用")
+	}
+
+	client := minioPool.GetClient()
+	if client == nil {
+		return nil, fmt.Errorf("MinIO客户端不可用")
+	}
+
+	obj, err := client.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer obj.Close()
+
+	// 读取对象内容
+	data := make([]byte, 0)
+	buffer := make([]byte, 1024)
+	for {
+		n, err := obj.Read(buffer)
+		if n > 0 {
+			data = append(data, buffer[:n]...)
+		}
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, err
+		}
+	}
+
+	return data, nil
+}
+
+// ListObjectsSimple 简单列出对象
+func (s *StorageImpl) ListObjectsSimple(ctx context.Context, bucketName string, prefix string) ([]ObjectInfo, error) {
+	minioPool := s.poolManager.GetMinIOPool()
+	if minioPool == nil {
+		return nil, fmt.Errorf("MinIO连接池不可用")
+	}
+
+	client := minioPool.GetClient()
+	if client == nil {
+		return nil, fmt.Errorf("MinIO客户端不可用")
+	}
+
+	objectCh := client.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	var objects []ObjectInfo
+	for obj := range objectCh {
+		if obj.Err != nil {
+			return nil, obj.Err
+		}
+		objects = append(objects, ObjectInfo{
+			Name:         obj.Key,
+			Size:         obj.Size,
+			LastModified: obj.LastModified,
+		})
+	}
+
+	return objects, nil
 }

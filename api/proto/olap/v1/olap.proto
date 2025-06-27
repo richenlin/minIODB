@@ -28,6 +28,13 @@ service OlapService {
   rpc DropTable(DropTableRequest) returns (DropTableResponse);
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
+  
+  // 元数据管理接口
+  rpc TriggerMetadataBackup(TriggerMetadataBackupRequest) returns (TriggerMetadataBackupResponse);
+  rpc ListMetadataBackups(ListMetadataBackupsRequest) returns (ListMetadataBackupsResponse);
+  rpc RecoverMetadata(RecoverMetadataRequest) returns (RecoverMetadataResponse);
+  rpc GetMetadataStatus(GetMetadataStatusRequest) returns (MetadataStatusResponse);
+  rpc ValidateMetadataBackup(ValidateMetadataBackupRequest) returns (ValidateMetadataBackupResponse);
 }
 
 message WriteRequest {
@@ -201,4 +208,75 @@ message NodeInfo {
 message GetNodesResponse {
   repeated NodeInfo nodes = 1;  // 节点列表
   int32 total = 2;             // 节点总数
-} 
+}
+
+// 元数据管理消息定义
+
+// 触发元数据备份
+message TriggerMetadataBackupRequest {
+  bool force = 1;  // 是否强制备份
+}
+
+message TriggerMetadataBackupResponse {
+  bool success = 1;
+  string message = 2;
+  string backup_id = 3;
+}
+
+// 列出元数据备份
+message ListMetadataBackupsRequest {
+  int32 days = 1;  // 查询多少天内的备份，默认30天
+}
+
+message ListMetadataBackupsResponse {
+  repeated MetadataBackupInfo backups = 1;
+  int32 total = 2;
+}
+
+message MetadataBackupInfo {
+  string id = 1;
+  string timestamp = 2;
+  int64 size = 3;
+  string status = 4;
+  string description = 5;
+}
+
+// 恢复元数据
+message RecoverMetadataRequest {
+  string backup_file = 1;  // 备份文件名，为空则使用最新备份
+  string mode = 2;         // 恢复模式：dry_run, complete
+  bool force_overwrite = 3; // 是否强制覆盖
+  bool backup_current = 4;  // 恢复前是否备份当前数据
+}
+
+message RecoverMetadataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 recovered_items = 3;
+  repeated string recovered_keys = 4;
+  repeated string warnings = 5;
+}
+
+// 获取元数据状态
+message GetMetadataStatusRequest {
+  // 获取元数据状态请求，暂无特殊参数
+}
+
+message MetadataStatusResponse {
+  string status = 1;  // 状态：healthy, degraded, error
+  string last_backup = 2;
+  string next_backup = 3;
+  int32 total_entries = 4;
+  map<string, int32> type_counts = 5;
+}
+
+// 验证元数据备份
+message ValidateMetadataBackupRequest {
+  string backup_file = 1;  // 要验证的备份文件
+}
+
+message ValidateMetadataBackupResponse {
+  bool valid = 1;
+  string message = 2;
+  repeated string errors = 3;
+}

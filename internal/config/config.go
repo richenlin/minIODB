@@ -100,6 +100,17 @@ type BackupConfig struct {
 	Enabled  bool        `yaml:"enabled"`
 	Interval int         `yaml:"interval"`
 	MinIO    MinioConfig `yaml:"minio"`
+
+	// 元数据备份配置
+	Metadata MetadataBackupConfig `yaml:"metadata"`
+}
+
+// MetadataBackupConfig 元数据备份配置
+type MetadataBackupConfig struct {
+	Enabled       bool          `yaml:"enabled"`        // 是否启用元数据备份
+	Interval      time.Duration `yaml:"interval"`       // 备份间隔
+	RetentionDays int           `yaml:"retention_days"` // 保留天数
+	Bucket        string        `yaml:"bucket"`         // 存储桶
 }
 
 // SecurityConfig 安全配置
@@ -243,6 +254,12 @@ func (c *Config) setDefaults() {
 	c.Backup = BackupConfig{
 		Enabled:  false,
 		Interval: 3600,
+		Metadata: MetadataBackupConfig{
+			Enabled:       true,
+			Interval:      30 * time.Minute, // 30分钟备份一次
+			RetentionDays: 7,                // 保留7天
+			Bucket:        "olap-metadata",  // 默认元数据存储桶
+		},
 	}
 
 	// 安全默认配置
