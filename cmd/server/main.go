@@ -139,7 +139,7 @@ func main() {
 			},
 		}
 
-		metadataManager = metadata.NewManager(storageInstance, metadataConfig)
+		metadataManager = metadata.NewManager(storageInstance, storageInstance, &metadataConfig)
 
 		if err := metadataManager.Start(); err != nil {
 			log.Printf("Failed to start metadata manager: %v", err)
