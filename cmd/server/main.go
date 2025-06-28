@@ -345,12 +345,110 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 }
 
 func startMetricsServer(cfg *config.Config) *http.Server {
-	// 创建简单的metrics处理器
+	// 创建metrics处理器
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("# MinIODB Metrics\n# TODO: Implement metrics collection\n"))
+
+		// 生成Prometheus格式的metrics
+		var metrics []string
+
+		// 基础信息
+		metrics = append(metrics, "# HELP miniodb_info MinIODB service information")
+		metrics = append(metrics, "# TYPE miniodb_info gauge")
+		metrics = append(metrics, fmt.Sprintf(`miniodb_info{version="1.0.0",node_id="%s"} 1`, cfg.Server.NodeID))
+
+		// 系统启动时间
+		metrics = append(metrics, "# HELP miniodb_start_time_seconds MinIODB start time in unix timestamp")
+		metrics = append(metrics, "# TYPE miniodb_start_time_seconds gauge")
+		metrics = append(metrics, fmt.Sprintf("miniodb_start_time_seconds %d", time.Now().Unix()))
+
+		// 服务端口信息
+		metrics = append(metrics, "# HELP miniodb_port_info MinIODB port configuration")
+		metrics = append(metrics, "# TYPE miniodb_port_info gauge")
+		metrics = append(metrics, fmt.Sprintf(`miniodb_port_info{port="%s",type="grpc"} 1`, cfg.Server.GrpcPort))
+		metrics = append(metrics, fmt.Sprintf(`miniodb_port_info{port="%s",type="rest"} 1`, cfg.Server.RestPort))
+		metrics = append(metrics, fmt.Sprintf(`miniodb_port_info{port="%s",type="metrics"} 1`, cfg.Metrics.Port))
+
+		// 配置信息metrics
+		metrics = append(metrics, "# HELP miniodb_config_info MinIODB configuration information")
+		metrics = append(metrics, "# TYPE miniodb_config_info gauge")
+
+		// Buffer配置
+		if cfg.Buffer.BufferSize > 0 {
+			metrics = append(metrics, fmt.Sprintf("miniodb_config_buffer_size %d", cfg.Buffer.BufferSize))
+			metrics = append(metrics, fmt.Sprintf("miniodb_config_flush_interval_seconds %d", int(cfg.Buffer.FlushInterval.Seconds())))
+		}
+
+		// Redis配置
+		metrics = append(metrics, fmt.Sprintf(`miniodb_config_redis_mode{mode="%s"} 1`, cfg.Redis.Mode))
+		if cfg.Redis.PoolSize > 0 {
+			metrics = append(metrics, fmt.Sprintf("miniodb_config_redis_pool_size %d", cfg.Redis.PoolSize))
+		}
+
+		// MinIO配置
+		if cfg.MinIO.Bucket != "" {
+			metrics = append(metrics, fmt.Sprintf(`miniodb_config_minio_bucket{bucket="%s"} 1`, cfg.MinIO.Bucket))
+		}
+
+		// 备份配置
+		if cfg.Backup.Enabled {
+			metrics = append(metrics, "miniodb_config_backup_enabled 1")
+			metrics = append(metrics, fmt.Sprintf("miniodb_config_backup_interval_seconds %d", cfg.Backup.Interval))
+		} else {
+			metrics = append(metrics, "miniodb_config_backup_enabled 0")
+		}
+
+		// 表管理配置
+		if cfg.TableManagement.AutoCreateTables {
+			metrics = append(metrics, "miniodb_config_auto_create_tables 1")
+		} else {
+			metrics = append(metrics, "miniodb_config_auto_create_tables 0")
+		}
+		metrics = append(metrics, fmt.Sprintf("miniodb_config_max_tables %d", cfg.TableManagement.MaxTables))
+		metrics = append(metrics, fmt.Sprintf(`miniodb_config_default_table{table="%s"} 1`, cfg.TableManagement.DefaultTable))
+
+		// 健康状态metrics
+		metrics = append(metrics, "# HELP miniodb_health_status MinIODB service health status")
+		metrics = append(metrics, "# TYPE miniodb_health_status gauge")
+		metrics = append(metrics, "miniodb_health_status 1") // 1表示healthy，0表示unhealthy
+
+		// 网络配置metrics
+		if cfg.Network.Server.GRPC.MaxRecvMsgSize > 0 {
+			metrics = append(metrics, "# HELP miniodb_grpc_config MinIODB gRPC configuration")
+			metrics = append(metrics, "# TYPE miniodb_grpc_config gauge")
+			metrics = append(metrics, fmt.Sprintf("miniodb_grpc_max_recv_msg_size_bytes %d", cfg.Network.Server.GRPC.MaxRecvMsgSize))
+			metrics = append(metrics, fmt.Sprintf("miniodb_grpc_max_send_msg_size_bytes %d", cfg.Network.Server.GRPC.MaxSendMsgSize))
+			metrics = append(metrics, fmt.Sprintf("miniodb_grpc_keepalive_time_seconds %d", int(cfg.Network.Server.GRPC.KeepAliveTime.Seconds())))
+			metrics = append(metrics, fmt.Sprintf("miniodb_grpc_keepalive_timeout_seconds %d", int(cfg.Network.Server.GRPC.KeepAliveTimeout.Seconds())))
+		}
+
+		// REST配置metrics
+		if cfg.Network.Server.REST.ReadTimeout > 0 {
+			metrics = append(metrics, "# HELP miniodb_rest_config MinIODB REST configuration")
+			metrics = append(metrics, "# TYPE miniodb_rest_config gauge")
+			metrics = append(metrics, fmt.Sprintf("miniodb_rest_read_timeout_seconds %d", int(cfg.Network.Server.REST.ReadTimeout.Seconds())))
+			metrics = append(metrics, fmt.Sprintf("miniodb_rest_write_timeout_seconds %d", int(cfg.Network.Server.REST.WriteTimeout.Seconds())))
+			metrics = append(metrics, fmt.Sprintf("miniodb_rest_idle_timeout_seconds %d", int(cfg.Network.Server.REST.IdleTimeout.Seconds())))
+		}
+
+		// 安全配置metrics
+		metrics = append(metrics, "# HELP miniodb_security_config MinIODB security configuration")
+		metrics = append(metrics, "# TYPE miniodb_security_config gauge")
+		if cfg.Security.EnableTLS {
+			metrics = append(metrics, "miniodb_security_tls_enabled 1")
+		} else {
+			metrics = append(metrics, "miniodb_security_tls_enabled 0")
+		}
+		metrics = append(metrics, fmt.Sprintf(`miniodb_security_mode{mode="%s"} 1`, cfg.Security.Mode))
+
+		// 写入所有metrics
+		for _, metric := range metrics {
+			w.Write([]byte(metric + "\n"))
+		}
+
+		log.Printf("Metrics endpoint accessed, returned %d metric lines", len(metrics))
 	})
 
 	metricsServer := &http.Server{

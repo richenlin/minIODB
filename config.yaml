@@ -1,7 +1,6 @@
 # MinIODB 优化配置文件
-# 集成前三阶段优化：智能限流、网络优化、查询优化
 
-# 统一网络配置 (第二阶段优化)
+# 统一网络配置
 network:
   # gRPC服务器配置
   grpc:
@@ -76,7 +75,7 @@ network:
       disable_keep_alive: false
       disable_compression: false
 
-# 智能限流系统 (第一阶段优化)
+# 智能限流系统 
 rate_limiting:
   enabled: true
   
@@ -138,7 +137,7 @@ rate_limiting:
     include_window: true           # 包含时间窗口信息
     include_retry_after: true      # 包含重试间隔信息
 
-# 查询性能优化 (第三阶段优化)
+# 查询性能优化
 query_optimization:
   # 查询缓存配置
   query_cache:
@@ -303,7 +302,7 @@ table_management:
   
   tables: {}
 
-# 存储引擎优化配置 (第四阶段优化)
+# 存储引擎优化配置 
 storage_engine:
   # 启用存储引擎优化
   enabled: true
