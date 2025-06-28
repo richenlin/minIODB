@@ -16,6 +16,7 @@ import (
 	"minIODB/internal/service"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 // Server is the implementation of the OlapServiceServer
@@ -134,21 +135,40 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 	unaryInterceptors = append(unaryInterceptors, grpcInterceptor.UnaryServerInterceptor())
 	streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamServerInterceptor())
 	
-	// 创建gRPC服务器，集成拦截器链
-	var grpcServer *grpc.Server
-	if len(unaryInterceptors) > 1 {
-		grpcServer = grpc.NewServer(
-			grpc.ChainUnaryInterceptor(unaryInterceptors...),
-			grpc.ChainStreamInterceptor(streamInterceptors...),
-		)
-	} else if len(unaryInterceptors) == 1 {
-		grpcServer = grpc.NewServer(
-			grpc.UnaryInterceptor(unaryInterceptors[0]),
-			grpc.StreamInterceptor(streamInterceptors[0]),
-		)
-	} else {
-		grpcServer = grpc.NewServer()
+	// 准备gRPC服务器选项 - 集成网络配置优化
+	var grpcOpts []grpc.ServerOption
+	
+	// 添加网络配置优化参数
+	grpcNetworkConfig := getGRPCNetworkConfig(&cfg)
+	
+	// Keep-Alive配置 - 优化长连接
+	kaParams := keepalive.ServerParameters{
+		Time:    grpcNetworkConfig.KeepAliveTime,    // 30s
+		Timeout: grpcNetworkConfig.KeepAliveTimeout, // 5s
 	}
+	kaPolicy := keepalive.EnforcementPolicy{
+		MinTime:             10 * time.Second, // 最小Keep-Alive间隔
+		PermitWithoutStream: true,             // 允许无流时发送Keep-Alive
+	}
+	grpcOpts = append(grpcOpts, grpc.KeepaliveParams(kaParams))
+	grpcOpts = append(grpcOpts, grpc.KeepaliveEnforcementPolicy(kaPolicy))
+	
+	// 连接配置
+	grpcOpts = append(grpcOpts, grpc.ConnectionTimeout(grpcNetworkConfig.ConnectionTimeout))
+	grpcOpts = append(grpcOpts, grpc.MaxSendMsgSize(grpcNetworkConfig.MaxSendMsgSize))
+	grpcOpts = append(grpcOpts, grpc.MaxRecvMsgSize(grpcNetworkConfig.MaxRecvMsgSize))
+	
+	// 添加拦截器
+	if len(unaryInterceptors) > 1 {
+		grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(unaryInterceptors...))
+		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(streamInterceptors...))
+	} else if len(unaryInterceptors) == 1 {
+		grpcOpts = append(grpcOpts, grpc.UnaryInterceptor(unaryInterceptors[0]))
+		grpcOpts = append(grpcOpts, grpc.StreamInterceptor(streamInterceptors[0]))
+	}
+	
+	// 创建gRPC服务器
+	grpcServer := grpc.NewServer(grpcOpts...)
 
 	// 注册服务
 	olapv1.RegisterOlapServiceServer(grpcServer, server)
@@ -601,4 +621,26 @@ func convertTypeCounts(counts map[string]int) map[string]int32 {
 		result[k] = int32(v)
 	}
 	return result
+}
+
+// getGRPCNetworkConfig 获取gRPC网络配置，优先使用Network配置，否则使用默认值
+func getGRPCNetworkConfig(cfg *config.Config) *config.GRPCNetworkConfig {
+	// 检查是否有新的网络配置
+	if cfg.Network.Server.GRPC.MaxConnections > 0 {
+		return &cfg.Network.Server.GRPC
+	}
+	
+	// 返回默认配置
+	return &config.GRPCNetworkConfig{
+		MaxConnections:         1000,
+		ConnectionTimeout:      30 * time.Second,
+		StreamTimeout:         60 * time.Second,
+		KeepAliveTime:         30 * time.Second,
+		KeepAliveTimeout:      5 * time.Second,
+		MaxConnectionIdle:     15 * time.Minute,
+		MaxConnectionAge:      30 * time.Minute,
+		MaxConnectionAgeGrace: 5 * time.Second,
+		MaxSendMsgSize:        4194304, // 4MB
+		MaxRecvMsgSize:        4194304, // 4MB
+	}
 }

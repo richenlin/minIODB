@@ -13,8 +13,9 @@ import (
 // Config 应用配置
 type Config struct {
 	Server          ServerConfig          `yaml:"server"`
-	Redis           RedisConfig           `yaml:"redis"`
-	MinIO           MinioConfig           `yaml:"minio"`
+	Network         NetworkConfig         `yaml:"network"`          // 新增网络配置
+	Redis           RedisConfig           `yaml:"redis"`            // 保持向后兼容，但优先使用Network.Pools.Redis
+	MinIO           MinioConfig           `yaml:"minio"`            // 保持向后兼容，但优先使用Network.Pools.MinIO
 	Buffer          BufferConfig          `yaml:"buffer"`
 	Backup          BackupConfig          `yaml:"backup"`
 	Security        SecurityConfig        `yaml:"security"`
@@ -52,6 +53,118 @@ type ServerConfig struct {
 	GrpcPort string `yaml:"grpc_port"`
 	RestPort string `yaml:"rest_port"`
 	NodeID   string `yaml:"node_id"`
+}
+
+// NetworkConfig 网络配置 - 统一管理所有网络相关配置
+type NetworkConfig struct {
+	Server ServerNetworkConfig `yaml:"server"` // 服务器网络配置
+	Pools  PoolsConfig         `yaml:"pools"`  // 连接池配置
+}
+
+// ServerNetworkConfig 服务器网络配置
+type ServerNetworkConfig struct {
+	GRPC GRPCNetworkConfig `yaml:"grpc"` // gRPC服务器网络配置
+	REST RESTNetworkConfig `yaml:"rest"` // REST服务器网络配置
+}
+
+// GRPCNetworkConfig gRPC服务器网络配置
+type GRPCNetworkConfig struct {
+	MaxConnections          int           `yaml:"max_connections"`           // 最大并发连接数
+	ConnectionTimeout       time.Duration `yaml:"connection_timeout"`        // 连接超时
+	StreamTimeout          time.Duration `yaml:"stream_timeout"`            // 流超时
+	KeepAliveTime          time.Duration `yaml:"keep_alive_time"`           // 保活时间
+	KeepAliveTimeout       time.Duration `yaml:"keep_alive_timeout"`        // 保活超时
+	MaxConnectionIdle      time.Duration `yaml:"max_connection_idle"`       // 最大连接空闲时间
+	MaxConnectionAge       time.Duration `yaml:"max_connection_age"`        // 最大连接存活时间
+	MaxConnectionAgeGrace  time.Duration `yaml:"max_connection_age_grace"`  // 连接存活优雅期
+	MaxSendMsgSize         int           `yaml:"max_send_msg_size"`         // 最大发送消息大小
+	MaxRecvMsgSize         int           `yaml:"max_recv_msg_size"`         // 最大接收消息大小
+}
+
+// RESTNetworkConfig REST服务器网络配置
+type RESTNetworkConfig struct {
+	ReadTimeout        time.Duration `yaml:"read_timeout"`         // 读取超时
+	WriteTimeout       time.Duration `yaml:"write_timeout"`        // 写入超时
+	IdleTimeout        time.Duration `yaml:"idle_timeout"`         // 空闲超时
+	ReadHeaderTimeout  time.Duration `yaml:"read_header_timeout"`  // 读取头超时
+	MaxHeaderBytes     int           `yaml:"max_header_bytes"`     // 最大头字节数
+	ShutdownTimeout    time.Duration `yaml:"shutdown_timeout"`     // 优雅关闭超时
+}
+
+// PoolsConfig 连接池配置
+type PoolsConfig struct {
+	Redis               EnhancedRedisConfig `yaml:"redis"`                // Redis连接池配置
+	MinIO               EnhancedMinIOConfig `yaml:"minio"`                // MinIO连接池配置
+	BackupMinIO         *EnhancedMinIOConfig `yaml:"backup_minio,omitempty"` // 备份MinIO连接池配置（可选）
+	HealthCheckInterval time.Duration       `yaml:"health_check_interval"` // 健康检查间隔
+}
+
+// EnhancedRedisConfig 增强的Redis配置（包含所有pool配置参数）
+type EnhancedRedisConfig struct {
+	// 继承原有RedisConfig的所有字段
+	Mode         string        `yaml:"mode"`
+	Addr         string        `yaml:"addr"`
+	Password     string        `yaml:"password"`
+	DB           int           `yaml:"db"`
+	PoolSize     int           `yaml:"pool_size"`
+	MinIdleConns int           `yaml:"min_idle_conns"`
+	MaxConnAge   time.Duration `yaml:"max_conn_age"`
+	PoolTimeout  time.Duration `yaml:"pool_timeout"`
+	IdleTimeout  time.Duration `yaml:"idle_timeout"`
+	DialTimeout  time.Duration `yaml:"dial_timeout"`
+	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	WriteTimeout time.Duration `yaml:"write_timeout"`
+
+	// 新增的池配置字段
+	IdleCheckFreq   time.Duration `yaml:"idle_check_freq"`    // 空闲连接检查频率
+	MaxRetries      int           `yaml:"max_retries"`        // 最大重试次数
+	MinRetryBackoff time.Duration `yaml:"min_retry_backoff"`  // 最小重试间隔
+	MaxRetryBackoff time.Duration `yaml:"max_retry_backoff"`  // 最大重试间隔
+
+	// 集群模式配置
+	ClusterAddrs   []string `yaml:"cluster_addrs"`    // 集群地址列表
+	MaxRedirects   int      `yaml:"max_redirects"`    // 最大重定向次数
+	ReadOnly       bool     `yaml:"read_only"`        // 只读模式
+	RouteByLatency bool     `yaml:"route_by_latency"` // 按延迟路由
+	RouteRandomly  bool     `yaml:"route_randomly"`   // 随机路由
+
+	// 哨兵模式配置
+	MasterName       string   `yaml:"master_name"`       // 主节点名称
+	SentinelAddrs    []string `yaml:"sentinel_addrs"`    // 哨兵地址列表
+	SentinelPassword string   `yaml:"sentinel_password"` // 哨兵密码
+}
+
+// EnhancedMinIOConfig 增强的MinIO配置（包含所有连接池参数）
+type EnhancedMinIOConfig struct {
+	// 基础连接配置
+	Endpoint        string `yaml:"endpoint"`
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
+	UseSSL          bool   `yaml:"use_ssl"`
+	Region          string `yaml:"region"`
+	Bucket          string `yaml:"bucket"`
+	
+	// HTTP连接池配置
+	MaxIdleConns        int           `yaml:"max_idle_conns"`         // 最大空闲连接数
+	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host"` // 每个主机的最大空闲连接数
+	MaxConnsPerHost     int           `yaml:"max_conns_per_host"`     // 每个主机的最大连接数
+	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"`      // 空闲连接超时
+	
+	// 超时配置
+	DialTimeout           time.Duration `yaml:"dial_timeout"`            // 连接超时
+	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout"`   // TLS握手超时
+	ResponseHeaderTimeout time.Duration `yaml:"response_header_timeout"` // 响应头超时
+	ExpectContinueTimeout time.Duration `yaml:"expect_continue_timeout"` // Expect: 100-continue超时
+	
+	// 重试和背压配置
+	MaxRetries     int           `yaml:"max_retries"`     // 最大重试次数
+	RetryDelay     time.Duration `yaml:"retry_delay"`     // 重试延迟
+	RequestTimeout time.Duration `yaml:"request_timeout"` // 请求超时
+	
+	// 连接保活配置
+	KeepAlive          time.Duration `yaml:"keep_alive"`           // TCP保活间隔
+	DisableKeepAlive   bool          `yaml:"disable_keep_alive"`   // 禁用保活
+	DisableCompression bool          `yaml:"disable_compression"`  // 禁用压缩
 }
 
 // RedisConfig Redis配置
@@ -296,7 +409,80 @@ func (c *Config) setDefaults() {
 		NodeID:   "node-1",
 	}
 
-	// Redis默认配置
+	// 网络配置默认值 - 性能优化
+	c.Network = NetworkConfig{
+		Server: ServerNetworkConfig{
+			GRPC: GRPCNetworkConfig{
+				MaxConnections:         1000,
+				ConnectionTimeout:      30 * time.Second,
+				StreamTimeout:         60 * time.Second,
+				KeepAliveTime:         30 * time.Second,
+				KeepAliveTimeout:      5 * time.Second,
+				MaxConnectionIdle:     15 * time.Minute,
+				MaxConnectionAge:      30 * time.Minute,
+				MaxConnectionAgeGrace: 5 * time.Second,
+				MaxSendMsgSize:        4194304, // 4MB
+				MaxRecvMsgSize:        4194304, // 4MB
+			},
+			REST: RESTNetworkConfig{
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      30 * time.Second,
+				IdleTimeout:       60 * time.Second,
+				ReadHeaderTimeout: 10 * time.Second,
+				MaxHeaderBytes:    1048576, // 1MB
+				ShutdownTimeout:   30 * time.Second,
+			},
+		},
+		Pools: PoolsConfig{
+			Redis: EnhancedRedisConfig{
+				Mode:            "standalone",
+				Addr:            "localhost:6379",
+				Password:        "",
+				DB:              0,
+				PoolSize:        250,
+				MinIdleConns:    25,
+				MaxConnAge:      30 * time.Minute,
+				PoolTimeout:     3 * time.Second,
+				IdleTimeout:     5 * time.Minute,
+				DialTimeout:     3 * time.Second,
+				ReadTimeout:     2 * time.Second,
+				WriteTimeout:    2 * time.Second,
+				IdleCheckFreq:   time.Minute,
+				MaxRetries:      3,
+				MinRetryBackoff: 8 * time.Millisecond,
+				MaxRetryBackoff: 512 * time.Millisecond,
+				MaxRedirects:    8,
+				ReadOnly:        false,
+				RouteByLatency:  true,
+				RouteRandomly:   false,
+			},
+			MinIO: EnhancedMinIOConfig{
+				Endpoint:              "localhost:9000",
+				AccessKeyID:           "minioadmin",
+				SecretAccessKey:       "minioadmin",
+				UseSSL:                false,
+				Region:                "us-east-1",
+				Bucket:                "olap-data",
+				MaxIdleConns:          300,
+				MaxIdleConnsPerHost:   150,
+				MaxConnsPerHost:       300,
+				IdleConnTimeout:       90 * time.Second,
+				DialTimeout:           5 * time.Second,
+				TLSHandshakeTimeout:   5 * time.Second,
+				ResponseHeaderTimeout: 15 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxRetries:            3,
+				RetryDelay:            100 * time.Millisecond,
+				RequestTimeout:        60 * time.Second,
+				KeepAlive:             30 * time.Second,
+				DisableKeepAlive:      false,
+				DisableCompression:    false,
+			},
+			HealthCheckInterval: 15 * time.Second,
+		},
+	}
+
+	// Redis默认配置（保持向后兼容）
 	c.Redis = RedisConfig{
 		Mode:         "standalone",
 		Addr:         "localhost:6379",
@@ -309,7 +495,7 @@ func (c *Config) setDefaults() {
 		WriteTimeout: 3 * time.Second,
 	}
 
-	// MinIO默认配置
+	// MinIO默认配置（保持向后兼容）
 	c.MinIO = MinioConfig{
 		Endpoint:        "localhost:9000",
 		AccessKeyID:     "minioadmin",

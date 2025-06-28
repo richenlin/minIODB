@@ -797,12 +797,27 @@ func (s *Server) getNodes(c *gin.Context) {
 
 // Start 启动服务器
 func (s *Server) Start(port string) error {
+	// 获取REST网络配置
+	restNetworkConfig := getRESTNetworkConfig(s.cfg)
+	
+	// 创建优化的HTTP服务器配置
 	s.server = &http.Server{
-		Addr:    port,
-		Handler: s.router,
+		Addr:              port,
+		Handler:           s.router,
+		ReadTimeout:       restNetworkConfig.ReadTimeout,       // 30s
+		WriteTimeout:      restNetworkConfig.WriteTimeout,      // 30s  
+		IdleTimeout:       restNetworkConfig.IdleTimeout,       // 60s
+		ReadHeaderTimeout: restNetworkConfig.ReadHeaderTimeout, // 10s
+		MaxHeaderBytes:    restNetworkConfig.MaxHeaderBytes,    // 1MB
 	}
 
-	log.Printf("REST server starting on %s", port)
+	log.Printf("REST server starting on %s with optimized network config", port)
+	log.Printf("REST server timeouts - Read: %v, Write: %v, Idle: %v, ReadHeader: %v", 
+		restNetworkConfig.ReadTimeout, 
+		restNetworkConfig.WriteTimeout,
+		restNetworkConfig.IdleTimeout,
+		restNetworkConfig.ReadHeaderTimeout)
+		
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start REST server: %w", err)
 	}
@@ -814,7 +829,15 @@ func (s *Server) Start(port string) error {
 func (s *Server) Stop(ctx context.Context) error {
 	log.Println("Stopping REST server...")
 	if s.server != nil {
-		return s.server.Shutdown(ctx)
+		// 获取优雅关闭超时配置
+		restNetworkConfig := getRESTNetworkConfig(s.cfg)
+		
+		// 创建带超时的context
+		shutdownCtx, cancel := context.WithTimeout(ctx, restNetworkConfig.ShutdownTimeout)
+		defer cancel()
+		
+		log.Printf("REST server graceful shutdown timeout: %v", restNetworkConfig.ShutdownTimeout)
+		return s.server.Shutdown(shutdownCtx)
 	}
 	return nil
 }
@@ -1297,4 +1320,22 @@ func (s *Server) flushBuffer(c *gin.Context) {
 	}
 	
 	c.JSON(http.StatusOK, response)
+}
+
+// getRESTNetworkConfig 获取REST网络配置，优先使用Network配置，否则使用默认值
+func getRESTNetworkConfig(cfg *config.Config) *config.RESTNetworkConfig {
+	// 检查是否有新的网络配置
+	if cfg.Network.Server.REST.ReadTimeout > 0 {
+		return &cfg.Network.Server.REST
+	}
+	
+	// 返回默认配置
+	return &config.RESTNetworkConfig{
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    1048576, // 1MB
+		ShutdownTimeout:   30 * time.Second,
+	}
 }
