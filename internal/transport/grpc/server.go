@@ -52,6 +52,11 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 
 	// 创建gRPC拦截器
 	grpcInterceptor := security.NewGRPCInterceptor(authManager)
+	
+	// 配置限流
+	if cfg.Security.RateLimit.Enabled {
+		grpcInterceptor.EnableRateLimit(cfg.Security.RateLimit.RequestsPerMinute)
+	}
 
 	server := &Server{
 		olapService:     olapService,
@@ -60,17 +65,43 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 		grpcInterceptor: grpcInterceptor,
 	}
 
-	// 创建gRPC服务器，集成拦截器
-	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(grpcInterceptor.UnaryServerInterceptor()),
-		grpc.StreamInterceptor(grpcInterceptor.StreamServerInterceptor()),
-	)
+	// 构建拦截器链
+	var unaryInterceptors []grpc.UnaryServerInterceptor
+	var streamInterceptors []grpc.StreamServerInterceptor
+	
+	// 添加限流拦截器（如果启用）
+	if cfg.Security.RateLimit.Enabled {
+		unaryInterceptors = append(unaryInterceptors, grpcInterceptor.RateLimitInterceptor())
+		streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamRateLimitInterceptor())
+	}
+	
+	// 添加认证拦截器
+	unaryInterceptors = append(unaryInterceptors, grpcInterceptor.UnaryServerInterceptor())
+	streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamServerInterceptor())
+	
+	// 创建gRPC服务器，集成拦截器链
+	var grpcServer *grpc.Server
+	if len(unaryInterceptors) > 1 {
+		grpcServer = grpc.NewServer(
+			grpc.ChainUnaryInterceptor(unaryInterceptors...),
+			grpc.ChainStreamInterceptor(streamInterceptors...),
+		)
+	} else {
+		grpcServer = grpc.NewServer(
+			grpc.UnaryInterceptor(unaryInterceptors[0]),
+			grpc.StreamInterceptor(streamInterceptors[0]),
+		)
+	}
 
 	// 注册服务
 	olapv1.RegisterOlapServiceServer(grpcServer, server)
 	server.grpcServer = grpcServer
 
-	log.Printf("gRPC server initialized with authentication mode: %s", cfg.Security.Mode)
+	rateLimitStatus := "disabled"
+	if cfg.Security.RateLimit.Enabled {
+		rateLimitStatus = fmt.Sprintf("enabled (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
+	}
+	log.Printf("gRPC server initialized with authentication mode: %s, rate limit: %s", cfg.Security.Mode, rateLimitStatus)
 
 	return server, nil
 }
