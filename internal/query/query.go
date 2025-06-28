@@ -52,7 +52,7 @@ type Querier struct {
 	minioClient    storage.Uploader
 	db             *sql.DB
 	buffer         *buffer.ConcurrentBuffer
-	tableExtractor *EnhancedTableExtractor // 升级到增强版本
+	tableExtractor *TableExtractor // 升级到增强版本
 	logger         *zap.Logger
 	tempDir        string
 	config         *config.Config
@@ -126,7 +126,7 @@ func NewQuerier(redisClient *redis.Client, minioClient storage.Uploader,
 		minioClient:    minioClient,
 		db:             db,
 		buffer:         buf,
-		tableExtractor: NewEnhancedTableExtractor(), // 使用增强版本
+		tableExtractor: NewTableExtractor(), // 使用增强版本
 		logger:         logger,
 		tempDir:        tempDir,
 		config:         cfg,

@@ -331,8 +331,8 @@ func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, er
 
 // extractTablesFromSQL 从SQL中提取表名
 func (qc *QueryCoordinator) extractTablesFromSQL(sql string) ([]string, error) {
-	// 使用现有的SimpleTableExtractor
-	extractor := query.NewSimpleTableExtractor()
+	// 使用增强的TableExtractor
+	extractor := query.NewTableExtractor()
 	tables := extractor.ExtractTableNames(sql)
 	return tables, nil
 }

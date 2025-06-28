@@ -80,6 +80,27 @@ func main() {
 		log.Fatalf("Failed to get Redis pool from storage")
 	}
 
+	// 初始化存储引擎优化器（第四阶段集成）
+	var storageEngine *storage.StorageEngine
+	if cfg.StorageEngine.Enabled {
+		log.Println("Initializing storage engine optimizer...")
+		storageEngine = storage.NewStorageEngine(cfg, redisPool.GetRedisClient())
+		
+		// 启动自动优化
+		if cfg.StorageEngine.AutoOptimization {
+			if err := storageEngine.StartAutoOptimization(); err != nil {
+				log.Printf("Failed to start auto optimization: %v", err)
+			} else {
+				log.Println("Storage engine auto optimization started")
+			}
+		}
+		
+		// 启动性能监控
+		if cfg.StorageEngine.EnableMonitoring {
+			log.Println("Storage engine performance monitoring enabled")
+		}
+	}
+
 	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO)
 	if err != nil {
 		log.Fatalf("Failed to create primary MinIO client: %v", err)
@@ -194,7 +215,7 @@ func main() {
 	log.Println("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, metadataManager)
+	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, metadataManager, storageEngine)
 
 	log.Println("MinIODB server stopped")
 }
@@ -299,7 +320,7 @@ func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.C
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	grpcServer *grpc.Server, restServer *restTransport.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
-	metadataManager *metadata.Manager) {
+	metadataManager *metadata.Manager, storageEngine *storage.StorageEngine) {
 	// 创建信号通道
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -356,6 +377,15 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	if metadataManager != nil {
 		metadataManager.Stop()
 		log.Println("Metadata manager stopped")
+	}
+
+	// 停止存储引擎优化器
+	if storageEngine != nil {
+		if err := storageEngine.StopAutoOptimization(); err != nil {
+			log.Printf("Failed to stop storage engine optimizer: %v", err)
+		} else {
+			log.Println("Storage engine optimizer stopped")
+		}
 	}
 
 	log.Println("All servers stopped gracefully")
