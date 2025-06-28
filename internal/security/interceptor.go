@@ -2,7 +2,6 @@ package security
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"strings"
 	"sync"

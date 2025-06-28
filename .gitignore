@@ -4,3 +4,5 @@ bin
 miniodb
 test/performance/tools/jwt_generator
 minIODB
+test/performance/results/
+miniodb-test
