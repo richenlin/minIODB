@@ -7,3 +7,4 @@ minIODB
 test/performance/results/
 miniodb-test
 minIODB
+test/performance/test_results/
