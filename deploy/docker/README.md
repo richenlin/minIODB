@@ -1,6 +1,6 @@
-# Docker Compose 部署指南
+# MinIODB Docker Compose 部署指南
 
-这个目录包含了MinIODB系统的Docker Compose部署配置，支持单机环境快速启动完整的系统实例。
+这个目录包含了MinIODB系统的Docker Compose部署配置，支持单机环境快速启动完整的系统实例。现已支持**多架构自动检测部署**，包括AMD64和ARM64架构。
 
 ## 🏗️ 架构概览
 
@@ -35,7 +35,69 @@ Docker Compose部署包含以下服务：
 - **minio-backup**: 备份存储服务，用于数据备份和恢复
 - **minio-init**: 初始化服务，创建存储桶和配置
 
+## 🔧 多架构支持
+
+MinIODB现在支持以下CPU架构的自动检测和部署：
+
+- **AMD64 (x86_64)** - Intel/AMD 64位处理器
+- **ARM64 (aarch64)** - ARM 64位处理器 (Apple Silicon M1/M2/M3, ARM服务器)
+
+### 文件结构
+
+```
+deploy/docker/
+├── Dockerfile          # AMD64架构专用Dockerfile
+├── Dockerfile.arm      # ARM64架构专用Dockerfile
+├── docker-compose.yml  # 多架构Docker Compose配置
+├── detect-arch.sh      # 架构自动检测脚本
+├── start.sh           # 多架构自动启动脚本
+├── .env               # 环境配置文件
+├── .env.arch          # 自动生成的架构配置
+└── .env.merged        # 合并后的完整配置
+```
+
+### 架构检测原理
+
+架构检测脚本通过以下步骤自动选择合适的Dockerfile：
+
+1. 使用 `uname -m` 获取系统架构
+2. 根据架构映射选择相应的Dockerfile：
+   - `x86_64` → `Dockerfile` (AMD64)
+   - `arm64`/`aarch64` → `Dockerfile.arm` (ARM64)
+3. 生成架构特定的环境变量配置
+4. 自动选择对应的镜像标签和构建平台
+
 ## 🚀 快速开始
+
+### 方法一：多架构自动启动（推荐）
+
+使用智能启动脚本，自动检测系统架构并选择合适的Dockerfile：
+
+```bash
+# 使用自动启动脚本（推荐）
+./start.sh
+
+# 强制重新构建镜像
+./start.sh up --force-rebuild
+
+# 查看帮助信息
+./start.sh --help
+```
+
+### 方法二：手动架构检测
+
+```bash
+# 1. 检测系统架构
+./detect-arch.sh
+
+# 2. 查看生成的架构配置
+cat .env.arch
+
+# 3. 启动服务
+docker-compose --env-file .env.merged up --build -d
+```
+
+### 方法三：传统部署方式
 
 ### 1. 环境准备
 
@@ -132,7 +194,44 @@ open http://localhost:9003
 
 ## 🔧 常用操作
 
-### 服务管理
+### 多架构启动脚本
+
+智能启动脚本支持以下命令：
+
+```bash
+# 启动所有服务（默认）
+./start.sh
+
+# 停止所有服务
+./start.sh down
+
+# 重启所有服务
+./start.sh restart
+
+# 仅构建镜像
+./start.sh build
+
+# 查看日志
+./start.sh logs
+
+# 查看服务状态
+./start.sh status
+
+# 清理资源
+./start.sh clean
+```
+
+### 启动脚本选项
+
+| 选项 | 说明 |
+|------|------|
+| `--force-rebuild` | 强制重新构建镜像 |
+| `--no-cache` | 构建时不使用缓存 |
+| `--detach` | 后台运行（默认） |
+| `--foreground` | 前台运行 |
+| `-h, --help` | 显示帮助信息 |
+
+### 传统服务管理
 
 ```bash
 # 启动服务
@@ -323,9 +422,47 @@ services:
 
 ## 🛠️ 故障排除
 
+### 多架构相关问题
+
+1. **架构检测失败**
+
+**问题**: `不支持的架构: xxx`
+
+**解决方案**:
+```bash
+# 检查系统架构
+uname -m
+
+# 手动设置架构（如果支持但未识别）
+export DOCKERFILE=Dockerfile      # 或 Dockerfile.arm
+export PLATFORM_TAG=amd64         # 或 arm64
+```
+
+2. **Docker构建失败**
+
+**问题**: `failed to solve: process "/bin/sh -c go build..."`
+
+**解决方案**:
+```bash
+# 清理Docker缓存
+docker builder prune -f
+
+# 强制重新构建
+./start.sh up --force-rebuild --no-cache
+```
+
+3. **CGO编译错误**
+
+**问题**: `gcc: error: unrecognized command-line option`
+
+**解决方案**:
+- 确保使用正确的架构Dockerfile
+- 检查Docker Desktop是否支持目标架构
+- 尝试使用 `--no-cache` 选项重新构建
+
 ### 常见问题
 
-1. **端口被占用**
+4. **端口被占用**
 ```bash
 # 查找占用端口的进程
 sudo lsof -i :8080
@@ -334,7 +471,7 @@ sudo netstat -tlnp | grep :8080
 # 解决方案：修改端口映射或停止占用进程
 ```
 
-2. **数据目录权限问题**
+5. **数据目录权限问题**
 ```bash
 # 检查目录权限
 ls -la data/
@@ -344,19 +481,19 @@ sudo chown -R $USER:$USER data/
 chmod -R 755 data/
 ```
 
-3. **服务启动失败**
+6. **服务启动失败**
 ```bash
 # 查看详细错误信息
-docker-compose logs miniodb
+./start.sh logs miniodb
 
 # 检查配置文件
 docker-compose config
 
 # 重新构建镜像
-docker-compose build --no-cache miniodb
+./start.sh build --no-cache
 ```
 
-4. **内存不足**
+7. **内存不足**
 ```bash
 # 检查系统资源
 docker stats
@@ -367,6 +504,37 @@ deploy:
   resources:
     limits:
       memory: 2G
+```
+
+8. **服务启动超时**
+
+**问题**: 服务健康检查失败
+
+**解决方案**:
+```bash
+# 查看详细日志
+./start.sh logs miniodb
+
+# 检查端口占用
+netstat -tlnp | grep -E ':(8080|8081|9000|9001|6379)'
+
+# 重启服务
+./start.sh restart
+```
+
+### 调试模式
+
+启用详细日志进行调试：
+
+```bash
+# 设置调试模式
+export DEBUG=1
+
+# 前台运行查看详细输出
+./start.sh up --foreground
+
+# 查看架构检测详情
+./detect-arch.sh
 ```
 
 ### 性能优化
@@ -439,9 +607,41 @@ docker-compose exec miniodb /app/scripts/restore.sh
 docker-compose down -v  # 删除所有数据
 ```
 
+## 🔄 版本兼容性
+
+### 支持的版本
+
+- **Docker**: 20.10+
+- **Docker Compose**: 2.0+
+- **Go**: 1.24+
+- **系统**: Linux, macOS
+
+### 测试环境
+
+以下环境已经过完整测试：
+
+| 系统 | 架构 | Docker版本 | 状态 |
+|------|------|------------|------|
+| macOS Monterey+ | ARM64 (M1/M2/M3) | 24.0+ | ✅ 完全支持 |
+| Ubuntu 20.04+ | AMD64 | 20.10+ | ✅ 完全支持 |
+| Ubuntu 20.04+ | ARM64 | 20.10+ | ✅ 完全支持 |
+| CentOS 8+ | AMD64 | 20.10+ | ✅ 完全支持 |
+
 ## 🔗 相关链接
 
 - [MinIODB主项目](../../README.md)
+- [性能测试文档](../../test/performance/README.md)
 - [API使用示例](../../examples/README.md)
 - [Kubernetes部署](../k8s/README.md)
-- [部署脚本](../scripts/README.md) 
+- [部署脚本](../scripts/README.md)
+
+## 🆘 获取帮助
+
+如果遇到问题，请：
+
+1. 查看 [故障排除](#故障排除) 部分
+2. 检查 [常见问题](#常见问题)
+3. 查看详细日志：`./start.sh logs`
+4. 提交issue到项目仓库
+
+---

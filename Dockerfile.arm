@@ -1,5 +1,5 @@
-# AMD64架构专用Dockerfile
-# 使用官方Go镜像作为构建环境 (AMD64)
+# ARM64架构专用Dockerfile
+# 使用官方Go镜像作为构建环境 (ARM64)
 FROM golang:1.24 AS builder
 
 # 设置工作目录
@@ -17,11 +17,13 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# 设置环境变量
+# 设置环境变量 - ARM64特定配置
 ENV CGO_ENABLED=1
 ENV GOOS=linux
-ENV GOARCH=amd64
+ENV GOARCH=arm64
 ENV GOPROXY='https://goproxy.cn,direct'
+ENV CC=gcc
+ENV CXX=g++
 
 # 复制go.mod和go.sum文件
 COPY go.mod go.sum ./
@@ -32,10 +34,10 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 构建应用
-RUN go build -o miniodb cmd/server/main.go
+# 构建应用 - ARM64优化
+RUN go build -ldflags="-s -w" -o miniodb cmd/server/main.go
 
-# 使用Ubuntu作为运行时镜像
+# 使用Ubuntu ARM64作为运行时镜像
 FROM ubuntu:22.04
 
 # 安装运行时依赖

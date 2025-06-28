@@ -1,0 +1,257 @@
+server:
+  grpc_port: ":8080"
+  rest_port: ":8081"
+  node_id: "test-node-1"
+  
+redis:
+  # 基础配置
+  mode: "standalone"          # Redis模式: standalone, sentinel, cluster
+  addr: "redis:6379"          # 单机模式地址
+  password: "redis123"        # 密码
+  db: 0                       # 数据库编号（集群模式不支持）
+  bucket: "miniodb-data"      # 存储桶名称 - 修改为与docker-compose.yml一致
+  
+  # 哨兵模式配置（当mode为sentinel时使用）
+  # master_name: "mymaster"                    # 主节点名称
+  # sentinel_addrs:                            # 哨兵地址列表
+  #   - "localhost:26379"
+  #   - "localhost:26380"
+  #   - "localhost:26381"
+  # sentinel_password: ""                      # 哨兵密码
+  
+  # 集群模式配置（当mode为cluster时使用）
+  # cluster_addrs:                             # 集群地址列表
+  #   - "localhost:7000"
+  #   - "localhost:7001"
+  #   - "localhost:7002"
+  #   - "localhost:7003"
+  #   - "localhost:7004"
+  #   - "localhost:7005"
+  
+  # 连接池配置
+  pool_size: 100              # 连接池大小
+  min_idle_conns: 10          # 最小空闲连接数
+  max_conn_age: 1800s         # 连接最大生存时间 (30分钟)
+  pool_timeout: 4s            # 获取连接超时
+  idle_timeout: 300s          # 空闲连接超时 (5分钟)
+  idle_check_freq: 60s        # 空闲连接检查频率
+  dial_timeout: 5s            # 连接超时
+  read_timeout: 3s            # 读取超时
+  write_timeout: 3s           # 写入超时
+  max_retries: 3              # 最大重试次数
+  min_retry_backoff: 8ms      # 最小重试间隔
+  max_retry_backoff: 512ms    # 最大重试间隔
+  
+  # 集群特定配置（当mode为cluster时使用）
+  max_redirects: 8            # 最大重定向次数
+  read_only: false            # 只读模式
+  route_by_latency: false     # 按延迟路由
+  route_randomly: true        # 随机路由
+
+minio:
+  endpoint: "minio:9000"
+  access_key_id: "minioadmin"
+  secret_access_key: "minioadmin"
+  use_ssl: false
+  bucket: "miniodb-data"      # 修改为与docker-compose.yml一致
+
+backup:
+  enabled: false
+  interval: 3600  # 备份间隔（秒）
+  minio:
+    endpoint: "minio-backup:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    bucket: "miniodb-backup"  # 修改为与docker-compose.yml一致
+  
+  # 元数据备份配置
+  metadata:
+    enabled: true                # 启用元数据备份
+    interval: 30m               # 备份间隔（30分钟）
+    retention_days: 7           # 保留天数
+    bucket: "miniodb-metadata"  # 元数据存储桶
+
+buffer:
+  # 基础配置
+  buffer_size: 1000           # 缓冲区大小
+  flush_interval: 30s         # 刷新间隔
+  
+  # 并发配置
+  worker_pool_size: 10        # 工作池大小
+  task_queue_size: 100        # 任务队列大小
+  batch_flush_size: 5         # 批量刷新大小
+  enable_batching: true       # 启用批量处理
+  flush_timeout: 60s          # 刷新超时
+  max_retries: 3              # 最大重试次数
+  retry_delay: 1s             # 重试延迟
+  
+  # 性能优化配置
+  enable_concurrent: true     # 启用并发缓冲区
+  enable_metrics: true        # 启用指标收集
+
+log:
+  level: "info"
+  format: "json"
+  output: "both"
+  filename: "logs/minIODB.log"
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+  compress: true
+
+monitoring:
+  enabled: true
+  port: ":8082"
+  path: "/metrics"
+  prometheus: true
+
+security:
+  mode: "disabled"
+  jwt_secret: ""
+  enable_tls: false
+  valid_tokens: []
+  cert_file: "certs/server.crt"  # 证书文件路径
+  key_file: "certs/server.key"   # 私钥文件路径
+  rate_limit:
+    enabled: true
+    requests_per_minute: 1000    # 每分钟请求数限制，适合性能测试
+
+# 新增认证配置
+auth:
+  enable_jwt: true
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  token_expiry: "24h"
+  enable_api_key: true
+  api_keys:
+    - "api-key-1234567890abcdef"
+    - "api-key-0987654321fedcba"
+  skip_auth_paths:
+    - "/health"
+    - "/metrics"
+    - "/v1/health"
+  require_auth_paths:
+    - "/v1/write"
+    - "/v1/query"
+    - "/v1/backup/trigger"
+    - "/v1/recover"
+  admin_roles:
+    - "admin"
+    - "superuser"
+  user_roles:
+    - "user"
+    - "api"
+
+# 连接池配置
+pool:
+  # Redis连接池配置
+  redis:
+    # 基础配置
+    mode: "standalone"          # Redis模式: standalone, sentinel, cluster
+    addr: "redis:6379"          # 单机模式地址
+    password: "redis123"        # 密码
+    db: 0                       # 数据库编号
+    bucket: "miniodb-data"      # 存储桶名称 - 修改为与docker-compose.yml一致
+    
+    # 哨兵模式配置（当mode为sentinel时使用）
+    # master_name: "mymaster"
+    # sentinel_addrs:
+    #   - "localhost:26379"
+    #   - "localhost:26380"
+    #   - "localhost:26381"
+    # sentinel_password: ""
+    
+    # 集群模式配置（当mode为cluster时使用）
+    # cluster_addrs:
+    #   - "localhost:7000"
+    #   - "localhost:7001"
+    #   - "localhost:7002"
+    #   - "localhost:7003"
+    #   - "localhost:7004"
+    #   - "localhost:7005"
+    
+    # 连接池配置
+    pool_size: 100
+    min_idle_conns: 10
+    max_conn_age: 1800s
+    pool_timeout: 4s
+    idle_timeout: 300s
+    idle_check_freq: 60s
+    dial_timeout: 5s
+    read_timeout: 3s
+    write_timeout: 3s
+    max_retries: 3
+    min_retry_backoff: 8ms
+    max_retry_backoff: 512ms
+    
+    # 集群特定配置
+    max_redirects: 8
+    read_only: false
+    route_by_latency: false
+    route_randomly: true
+  
+  # MinIO连接池配置
+  minio:
+    endpoint: "minio:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    region: "us-east-1"
+    # HTTP连接池配置
+    max_idle_conns: 100
+    max_idle_conns_per_host: 50
+    max_conns_per_host: 100
+    idle_conn_timeout: 90s
+    # 超时配置
+    dial_timeout: 30s
+    tls_handshake_timeout: 10s
+    response_header_timeout: 30s
+    expect_continue_timeout: 1s
+    # 重试和请求配置
+    max_retries: 3
+    retry_delay: 100ms
+    request_timeout: 120s
+    # Keep-Alive配置
+    keep_alive: 30s
+    disable_keep_alive: false
+    disable_compression: false
+  
+  # 备份MinIO连接池配置（可选）
+  backup_minio:
+    endpoint: "backup.localhost:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    region: "us-east-1"
+    max_idle_conns: 50
+    max_idle_conns_per_host: 25
+    max_conns_per_host: 50
+    idle_conn_timeout: 90s
+    dial_timeout: 30s
+    tls_handshake_timeout: 10s
+    response_header_timeout: 30s
+    expect_continue_timeout: 1s
+    max_retries: 3
+    retry_delay: 100ms
+    request_timeout: 120s
+    keep_alive: 30s
+    disable_keep_alive: false
+    disable_compression: false
+  
+  # 健康检查间隔
+  health_check_interval: 30s
+
+tables:
+  default_config:
+    buffer_size: 1000
+    flush_interval: 30s
+    retention_days: 365
+    backup_enabled: true
+    properties: {}
+  tables: {}
+
+table_management:
+  auto_create_tables: true
+  default_table: "default"
+  max_tables: 1000
+  table_name_pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" 
