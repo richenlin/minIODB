@@ -373,6 +373,11 @@ func (c *Config) overrideWithEnv() {
 		c.Backup.MinIO.Bucket = minioBackupBucket
 	}
 
+	// 元数据备份配置环境变量覆盖
+	if metadataBucket := os.Getenv("METADATA_BACKUP_BUCKET"); metadataBucket != "" {
+		c.Backup.Metadata.Bucket = metadataBucket
+	}
+
 	// 认证配置环境变量覆盖
 	if authMode := os.Getenv("AUTH_MODE"); authMode != "" {
 		c.Security.Mode = authMode

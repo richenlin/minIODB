@@ -56,13 +56,13 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 			MaxIdleConnsPerHost:   10,               // 默认值
 			MaxConnsPerHost:       0,                // 默认值
 			IdleConnTimeout:       90 * time.Second, // 默认值
-			DialTimeout:           30 * time.Second, // 默认值
-			TLSHandshakeTimeout:   10 * time.Second, // 默认值
-			ResponseHeaderTimeout: 0,                // 默认值
+			DialTimeout:           60 * time.Second, // 增加连接超时
+			TLSHandshakeTimeout:   30 * time.Second, // 增加TLS握手超时
+			ResponseHeaderTimeout: 30 * time.Second, // 设置响应头超时
 			ExpectContinueTimeout: 1 * time.Second,  // 默认值
 			MaxRetries:            3,                // 默认值
 			RetryDelay:            1 * time.Second,  // 默认值
-			RequestTimeout:        0,                // 默认值
+			RequestTimeout:        60 * time.Second, // 设置请求超时
 			KeepAlive:             30 * time.Second, // 默认值
 			DisableKeepAlive:      false,            // 默认值
 			DisableCompression:    false,            // 默认值
@@ -82,13 +82,13 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 			MaxIdleConnsPerHost:   10,               // 默认值
 			MaxConnsPerHost:       0,                // 默认值
 			IdleConnTimeout:       90 * time.Second, // 默认值
-			DialTimeout:           30 * time.Second, // 默认值
-			TLSHandshakeTimeout:   10 * time.Second, // 默认值
-			ResponseHeaderTimeout: 0,                // 默认值
+			DialTimeout:           60 * time.Second, // 增加连接超时
+			TLSHandshakeTimeout:   30 * time.Second, // 增加TLS握手超时
+			ResponseHeaderTimeout: 30 * time.Second, // 设置响应头超时
 			ExpectContinueTimeout: 1 * time.Second,  // 默认值
 			MaxRetries:            3,                // 默认值
 			RetryDelay:            1 * time.Second,  // 默认值
-			RequestTimeout:        0,                // 默认值
+			RequestTimeout:        60 * time.Second, // 设置请求超时
 			KeepAlive:             30 * time.Second, // 默认值
 			DisableKeepAlive:      false,            // 默认值
 			DisableCompression:    false,            // 默认值

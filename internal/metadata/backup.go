@@ -129,6 +129,8 @@ func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage s
 // Start 启动备份管理器
 func (bm *BackupManager) Start() error {
 	bm.logger.Printf("Starting metadata backup manager, interval: %v", bm.config.Interval)
+	bm.logger.Printf("Backup configuration: bucket=%s, storage=%v, objectStorage=%v, cacheStorage=%v", 
+		bm.bucket, bm.storage != nil, bm.objectStorage != nil, bm.cacheStorage != nil)
 
 	// 立即执行一次备份
 	if err := bm.performBackup(); err != nil {
@@ -181,6 +183,7 @@ func (bm *BackupManager) backupLoop() {
 func (bm *BackupManager) performBackup() error {
 	startTime := time.Now()
 	bm.logger.Printf("Starting metadata backup")
+	bm.logger.Printf("Backup target bucket: %s", bm.bucket)
 
 	// 收集元数据
 	entries, err := bm.collectMetadata()
@@ -214,17 +217,23 @@ func (bm *BackupManager) performBackup() error {
 
 	reader := bytes.NewReader(data)
 
+	// 调试日志
+	bm.logger.Printf("Attempting to upload backup to bucket: %s, object: %s", bm.bucket, objectName)
+
 	// 使用新的存储接口
 	var uploadErr error
 	if bm.objectStorage != nil {
+		bm.logger.Printf("Using object storage interface for backup upload")
 		uploadErr = bm.objectStorage.PutObject(context.Background(), bm.bucket, objectName, reader, int64(len(data)))
 	} else if bm.storage != nil {
+		bm.logger.Printf("Using unified storage interface for backup upload")
 		uploadErr = bm.storage.PutObject(context.Background(), bm.bucket, objectName, reader, int64(len(data)))
 	} else {
 		return fmt.Errorf("no object storage available")
 	}
 
 	if uploadErr != nil {
+		bm.logger.Printf("Backup upload failed to bucket %s: %v", bm.bucket, uploadErr)
 		return fmt.Errorf("failed to upload backup: %w", uploadErr)
 	}
 
