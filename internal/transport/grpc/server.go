@@ -31,6 +31,10 @@ type Server struct {
 	authManager     *security.AuthManager
 	grpcInterceptor *security.GRPCInterceptor
 	grpcServer      *grpc.Server
+	
+	// 智能限流相关
+	smartRateLimiter     *security.SmartRateLimiter
+	grpcSmartRateLimiter *security.GRPCSmartRateLimiter
 }
 
 // NewServer creates a new gRPC server
@@ -53,26 +57,77 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 	// 创建gRPC拦截器
 	grpcInterceptor := security.NewGRPCInterceptor(authManager)
 	
-	// 配置限流
-	if cfg.Security.RateLimit.Enabled {
-		grpcInterceptor.EnableRateLimit(cfg.Security.RateLimit.RequestsPerMinute)
+	// 创建智能限流器
+	var smartRateLimiter *security.SmartRateLimiter
+	var grpcSmartRateLimiter *security.GRPCSmartRateLimiter
+	
+	if cfg.Security.SmartRateLimit.Enabled {
+		// 转换配置格式
+		smartRateLimitConfig := security.SmartRateLimiterConfig{
+			Enabled:         cfg.Security.SmartRateLimit.Enabled,
+			DefaultTier:     cfg.Security.SmartRateLimit.DefaultTier,
+			CleanupInterval: cfg.Security.SmartRateLimit.CleanupInterval,
+		}
+		
+		// 转换限流等级
+		for _, tier := range cfg.Security.SmartRateLimit.Tiers {
+			smartRateLimitConfig.Tiers = append(smartRateLimitConfig.Tiers, security.RateLimitTier{
+				Name:            tier.Name,
+				RequestsPerSec:  tier.RequestsPerSec,
+				BurstSize:       tier.BurstSize,
+				Window:          tier.Window,
+				BackoffDuration: tier.BackoffDuration,
+			})
+		}
+		
+		// 转换路径限制
+		for _, pathLimit := range cfg.Security.SmartRateLimit.PathLimits {
+			smartRateLimitConfig.PathLimits = append(smartRateLimitConfig.PathLimits, security.PathRateLimit{
+				Pattern: pathLimit.Pattern,
+				Tier:    pathLimit.Tier,
+				Enabled: pathLimit.Enabled,
+			})
+		}
+		
+		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
+		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
+		log.Printf("gRPC smart rate limiter initialized with %d tiers and %d path rules", 
+			len(smartRateLimitConfig.Tiers), len(smartRateLimitConfig.PathLimits))
+	} else {
+		// 使用默认配置但禁用
+		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
+		defaultConfig.Enabled = false
+		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
+		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
+		log.Println("gRPC smart rate limiter disabled")
 	}
 
 	server := &Server{
-		olapService:     olapService,
-		cfg:             cfg,
-		authManager:     authManager,
-		grpcInterceptor: grpcInterceptor,
+		olapService:          olapService,
+		cfg:                  cfg,
+		authManager:          authManager,
+		grpcInterceptor:      grpcInterceptor,
+		smartRateLimiter:     smartRateLimiter,
+		grpcSmartRateLimiter: grpcSmartRateLimiter,
 	}
 
 	// 构建拦截器链
 	var unaryInterceptors []grpc.UnaryServerInterceptor
 	var streamInterceptors []grpc.StreamServerInterceptor
 	
-	// 添加限流拦截器（如果启用）
-	if cfg.Security.RateLimit.Enabled {
+	// 添加智能限流拦截器（优先）
+	if cfg.Security.SmartRateLimit.Enabled && grpcSmartRateLimiter != nil {
+		unaryInterceptors = append(unaryInterceptors, grpcSmartRateLimiter.UnaryServerInterceptor())
+		streamInterceptors = append(streamInterceptors, grpcSmartRateLimiter.StreamServerInterceptor())
+		log.Println("Smart rate limiter middleware enabled for gRPC API")
+	} else if cfg.Security.RateLimit.Enabled {
+		// 传统限流拦截器（向后兼容）
+		grpcInterceptor.EnableRateLimit(cfg.Security.RateLimit.RequestsPerMinute)
 		unaryInterceptors = append(unaryInterceptors, grpcInterceptor.RateLimitInterceptor())
 		streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamRateLimitInterceptor())
+		log.Printf("Traditional rate limiter middleware enabled for gRPC API (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
+	} else {
+		log.Println("Rate limiting disabled for gRPC API")
 	}
 	
 	// 添加认证拦截器
@@ -86,21 +141,27 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 			grpc.ChainUnaryInterceptor(unaryInterceptors...),
 			grpc.ChainStreamInterceptor(streamInterceptors...),
 		)
-	} else {
+	} else if len(unaryInterceptors) == 1 {
 		grpcServer = grpc.NewServer(
 			grpc.UnaryInterceptor(unaryInterceptors[0]),
 			grpc.StreamInterceptor(streamInterceptors[0]),
 		)
+	} else {
+		grpcServer = grpc.NewServer()
 	}
 
 	// 注册服务
 	olapv1.RegisterOlapServiceServer(grpcServer, server)
 	server.grpcServer = grpcServer
 
+	// 确定限流状态
 	rateLimitStatus := "disabled"
-	if cfg.Security.RateLimit.Enabled {
-		rateLimitStatus = fmt.Sprintf("enabled (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
+	if cfg.Security.SmartRateLimit.Enabled {
+		rateLimitStatus = fmt.Sprintf("smart limiter enabled (%d tiers)", len(cfg.Security.SmartRateLimit.Tiers))
+	} else if cfg.Security.RateLimit.Enabled {
+		rateLimitStatus = fmt.Sprintf("traditional limiter enabled (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
 	}
+	
 	log.Printf("gRPC server initialized with authentication mode: %s, rate limit: %s", cfg.Security.Mode, rateLimitStatus)
 
 	return server, nil

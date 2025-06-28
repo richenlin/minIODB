@@ -33,6 +33,7 @@ type Server struct {
 	// 安全相关
 	authManager        *security.AuthManager
 	securityMiddleware *security.SecurityMiddleware
+	smartRateLimiter   *security.SmartRateLimiter  // 新增智能限流器
 }
 
 // WriteRequest REST API写入请求
@@ -321,12 +322,54 @@ func NewServer(olapService *service.OlapService, cfg *config.Config) *Server {
 	// 创建安全中间件
 	securityMiddleware := security.NewSecurityMiddleware(authManager)
 
+	// 创建智能限流器
+	var smartRateLimiter *security.SmartRateLimiter
+	if cfg.Security.SmartRateLimit.Enabled {
+		// 转换配置格式
+		smartRateLimitConfig := security.SmartRateLimiterConfig{
+			Enabled:         cfg.Security.SmartRateLimit.Enabled,
+			DefaultTier:     cfg.Security.SmartRateLimit.DefaultTier,
+			CleanupInterval: cfg.Security.SmartRateLimit.CleanupInterval,
+		}
+		
+		// 转换限流等级
+		for _, tier := range cfg.Security.SmartRateLimit.Tiers {
+			smartRateLimitConfig.Tiers = append(smartRateLimitConfig.Tiers, security.RateLimitTier{
+				Name:            tier.Name,
+				RequestsPerSec:  tier.RequestsPerSec,
+				BurstSize:       tier.BurstSize,
+				Window:          tier.Window,
+				BackoffDuration: tier.BackoffDuration,
+			})
+		}
+		
+		// 转换路径限制
+		for _, pathLimit := range cfg.Security.SmartRateLimit.PathLimits {
+			smartRateLimitConfig.PathLimits = append(smartRateLimitConfig.PathLimits, security.PathRateLimit{
+				Pattern: pathLimit.Pattern,
+				Tier:    pathLimit.Tier,
+				Enabled: pathLimit.Enabled,
+			})
+		}
+		
+		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
+		log.Printf("Smart rate limiter initialized with %d tiers and %d path rules", 
+			len(smartRateLimitConfig.Tiers), len(smartRateLimitConfig.PathLimits))
+	} else {
+		// 使用默认配置但禁用
+		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
+		defaultConfig.Enabled = false
+		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
+		log.Println("Smart rate limiter disabled")
+	}
+
 	server := &Server{
 		olapService:        olapService,
 		cfg:                cfg,
 		router:             router,
 		authManager:        authManager,
 		securityMiddleware: securityMiddleware,
+		smartRateLimiter:   smartRateLimiter,
 	}
 
 	server.setupMiddleware()
@@ -348,9 +391,16 @@ func (s *Server) setupMiddleware() {
 	s.router.Use(s.securityMiddleware.SecurityHeaders())
 	s.router.Use(s.securityMiddleware.RequestLogger())
 
-	// 可选的限流中间件
-	if s.cfg.Security.RateLimit.Enabled {
+	// 智能限流中间件（优先使用）
+	if s.cfg.Security.SmartRateLimit.Enabled && s.smartRateLimiter != nil {
+		s.router.Use(s.smartRateLimiter.Middleware())
+		log.Println("Smart rate limiter middleware enabled for REST API")
+	} else if s.cfg.Security.RateLimit.Enabled {
+		// 传统限流中间件（向后兼容）
 		s.router.Use(s.securityMiddleware.RateLimiter(s.cfg.Security.RateLimit.RequestsPerMinute))
+		log.Println("Traditional rate limiter middleware enabled for REST API")
+	} else {
+		log.Println("Rate limiting disabled for REST API")
 	}
 }
 

@@ -113,16 +113,42 @@ type MetadataBackupConfig struct {
 	Bucket        string        `yaml:"bucket"`         // 存储桶
 }
 
-// SecurityConfig 安全配置
-type SecurityConfig struct {
-	Mode        string          `yaml:"mode"`
-	JWTSecret   string          `yaml:"jwt_secret"`
-	EnableTLS   bool            `yaml:"enable_tls"`
-	ValidTokens []string        `yaml:"valid_tokens"`
-	RateLimit   RateLimitConfig `yaml:"rate_limit"`
+// RateLimitTier 限流等级配置
+type RateLimitTier struct {
+	Name            string        `yaml:"name"`
+	RequestsPerSec  float64       `yaml:"requests_per_sec"`
+	BurstSize       int           `yaml:"burst_size"`
+	Window          time.Duration `yaml:"window"`
+	BackoffDuration time.Duration `yaml:"backoff_duration"`
 }
 
-// RateLimitConfig 速率限制配置
+// PathRateLimit 路径限流配置
+type PathRateLimit struct {
+	Pattern string `yaml:"pattern"`
+	Tier    string `yaml:"tier"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+// SmartRateLimitConfig 智能限流器配置
+type SmartRateLimitConfig struct {
+	Enabled         bool              `yaml:"enabled"`
+	DefaultTier     string            `yaml:"default_tier"`
+	Tiers           []RateLimitTier   `yaml:"tiers"`
+	PathLimits      []PathRateLimit   `yaml:"path_limits"`
+	CleanupInterval time.Duration     `yaml:"cleanup_interval"`
+}
+
+// SecurityConfig 安全配置
+type SecurityConfig struct {
+	Mode            string               `yaml:"mode"`
+	JWTSecret       string               `yaml:"jwt_secret"`
+	EnableTLS       bool                 `yaml:"enable_tls"`
+	ValidTokens     []string             `yaml:"valid_tokens"`
+	RateLimit       RateLimitConfig      `yaml:"rate_limit"`        // 传统限流配置（保持向后兼容）
+	SmartRateLimit  SmartRateLimitConfig `yaml:"smart_rate_limit"`  // 智能限流器配置
+}
+
+// RateLimitConfig 速率限制配置（传统配置，保持向后兼容）
 type RateLimitConfig struct {
 	Enabled           bool `yaml:"enabled"`
 	RequestsPerMinute int  `yaml:"requests_per_minute"`
