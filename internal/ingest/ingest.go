@@ -3,7 +3,7 @@ package ingest
 import (
 	"fmt"
 
-	olapv1 "minIODB/api/proto/olap/v1"
+	olapv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/buffer"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -50,7 +50,7 @@ func (i *Ingester) FlushBuffer() error {
 	if i.buffer == nil {
 		return fmt.Errorf("buffer not initialized")
 	}
-	
+
 	// 触发手动刷新所有缓冲区
 	return i.buffer.FlushDataPoints()
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,9 +12,7 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
 
-	pb "minIODB/api/proto/olap/v1"
 	"minIODB/internal/buffer"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
@@ -85,7 +82,7 @@ func main() {
 	if cfg.StorageEngine.Enabled {
 		log.Println("Initializing storage engine optimizer...")
 		storageEngine = storage.NewStorageEngine(cfg, redisPool.GetRedisClient())
-		
+
 		// 启动自动优化
 		if cfg.StorageEngine.AutoOptimization {
 			if err := storageEngine.StartAutoOptimization(); err != nil {
@@ -94,7 +91,7 @@ func main() {
 				log.Println("Storage engine auto optimization started")
 			}
 		}
-		
+
 		// 启动性能监控
 		if cfg.StorageEngine.EnableMonitoring {
 			log.Println("Storage engine performance monitoring enabled")
@@ -224,15 +221,16 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester,
 	querier *query.Querier, writeCoord *coordinator.WriteCoordinator,
 	queryCoord *coordinator.QueryCoordinator, redisPool *pool.RedisPool,
 	primaryMinio, backupMinio storage.Uploader, metadataManager *metadata.Manager) *grpc.Server {
-	// 创建统一的service层
-	olapService, err := service.NewOlapService(cfg, ingester, querier,
-		redisPool.GetRedisClient(), primaryMinio, backupMinio)
+
+	// 创建统一MinIODB服务
+	miniodbService, err := service.NewMinIODBService(cfg, ingester, querier,
+		redisPool.GetRedisClient(), metadataManager)
 	if err != nil {
-		log.Fatalf("Failed to create OLAP service: %v", err)
+		log.Fatalf("Failed to create MinIODB service: %v", err)
 	}
 
 	// 创建gRPC服务
-	grpcService, err := grpcTransport.NewServer(olapService, *cfg)
+	grpcService, err := grpcTransport.NewServer(miniodbService, *cfg)
 	if err != nil {
 		log.Fatalf("Failed to create gRPC service: %v", err)
 	}
@@ -245,42 +243,30 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester,
 		grpcService.SetMetadataManager(metadataManager)
 	}
 
-	grpcServer := grpc.NewServer()
-
-	// 注册服务
-	pb.RegisterOlapServiceServer(grpcServer, grpcService)
-
-	// 启用反射（用于调试）
-	reflection.Register(grpcServer)
-
 	// 启动gRPC服务器
 	go func() {
-		lis, err := net.Listen("tcp", cfg.Server.GrpcPort)
-		if err != nil {
-			log.Fatalf("Failed to listen on gRPC port %s: %v", cfg.Server.GrpcPort, err)
-		}
-
-		log.Printf("gRPC server starting on port %s", cfg.Server.GrpcPort)
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("Failed to serve gRPC: %v", err)
+		log.Printf("Starting gRPC server on port %s", cfg.Server.GrpcPort)
+		if err := grpcService.Start(cfg.Server.GrpcPort); err != nil {
+			log.Fatalf("Failed to start gRPC server: %v", err)
 		}
 	}()
 
-	return grpcServer
+	return nil // gRPC服务器在内部管理
 }
 
 func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier,
 	writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator,
-	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader, metadataManager *metadata.Manager) *restTransport.Server {
-	// 创建统一的service层
-	olapService, err := service.NewOlapService(cfg, ingester, querier,
-		redisPool.GetRedisClient(), primaryMinio, backupMinio)
+	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader, metadataManager *metadata.Manager) *http.Server {
+
+	// 创建统一MinIODB服务
+	miniodbService, err := service.NewMinIODBService(cfg, ingester, querier,
+		redisPool.GetRedisClient(), metadataManager)
 	if err != nil {
-		log.Fatalf("Failed to create OLAP service: %v", err)
+		log.Fatalf("Failed to create MinIODB service for REST: %v", err)
 	}
 
-	// 创建REST服务器
-	restServer := restTransport.NewServer(olapService, cfg)
+	// 创建REST服务
+	restServer := restTransport.NewServer(miniodbService, cfg)
 
 	// 设置协调器
 	restServer.SetCoordinators(writeCoord, queryCoord)
@@ -290,123 +276,110 @@ func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 		restServer.SetMetadataManager(metadataManager)
 	}
 
-	// 启动服务器
+	// 启动REST服务器
 	go func() {
-		log.Printf("REST server listening on port %s", cfg.Server.RestPort)
-		if err := restServer.Start(cfg.Server.RestPort); err != nil && err != http.ErrServerClosed {
+		log.Printf("Starting REST server on port %s", cfg.Server.RestPort)
+		if err := restServer.Start(fmt.Sprintf(":%s", cfg.Server.RestPort)); err != nil {
 			log.Fatalf("Failed to start REST server: %v", err)
 		}
 	}()
 
-	return restServer
+	return nil
 }
 
 func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
-	log.Println("Starting backup routine")
+	backupInterval := time.Duration(cfg.Backup.Interval) * time.Hour
+	if backupInterval == 0 {
+		backupInterval = 24 * time.Hour // 默认每24小时备份一次
+	}
 
-	ticker := time.NewTicker(time.Duration(cfg.Backup.Interval) * time.Second)
+	ticker := time.NewTicker(backupInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		log.Println("Starting backup process")
-
-		// 简化的备份逻辑
-		// TODO: 实现完整的备份逻辑
-
-		log.Println("Backup process completed")
+		log.Println("Starting scheduled backup...")
+		// 这里实现备份逻辑
 	}
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
-	grpcServer *grpc.Server, restServer *restTransport.Server,
+	grpcServer *grpc.Server, restServer *http.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
 	metadataManager *metadata.Manager, storageEngine *storage.StorageEngine) {
-	// 创建信号通道
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 等待信号
-	<-sigChan
-	log.Println("Shutting down servers...")
+	// 捕获中断信号
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
 
-	// 取消上下文
-	cancel()
+	log.Println("Received shutdown signal")
+	cancel() // 取消上下文
 
-	// 创建关闭上下文，设置超时
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
+	// 停止系统监视器
+	if systemMonitor != nil {
+		systemMonitor.Stop()
+	}
+
+	// 停止元数据管理器
+	if metadataManager != nil {
+		if err := metadataManager.Stop(); err != nil {
+			log.Printf("Error stopping metadata manager: %v", err)
+		}
+	}
+
+	// 关闭存储引擎
+	if storageEngine != nil {
+		log.Println("Closing storage engine...")
+		// TODO: 实现存储引擎关闭逻辑
+	}
 
 	// 停止gRPC服务器
-	done := make(chan struct{})
-	go func() {
+	if grpcServer != nil {
+		log.Println("Stopping gRPC server...")
 		grpcServer.GracefulStop()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		log.Println("gRPC server stopped")
-	case <-shutdownCtx.Done():
-		grpcServer.Stop()
-		log.Println("gRPC server force stopped")
 	}
 
 	// 停止REST服务器
-	if err := restServer.Stop(shutdownCtx); err != nil {
-		log.Printf("Failed to stop REST server: %v", err)
-	} else {
-		log.Println("REST server stopped")
+	if restServer != nil {
+		log.Println("Stopping REST server...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := restServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Error shutting down REST server: %v", err)
+		}
 	}
 
 	// 停止指标服务器
 	if metricsServer != nil {
+		log.Println("Stopping metrics server...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
 		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Failed to stop metrics server: %v", err)
-		} else {
-			log.Println("Metrics server stopped")
+			log.Printf("Error shutting down metrics server: %v", err)
 		}
 	}
-
-	// 停止系统监控器
-	if systemMonitor != nil {
-		systemMonitor.Stop()
-		log.Println("System monitor stopped")
-	}
-
-	// 停止元数据备份管理器
-	if metadataManager != nil {
-		metadataManager.Stop()
-		log.Println("Metadata manager stopped")
-	}
-
-	// 停止存储引擎优化器
-	if storageEngine != nil {
-		if err := storageEngine.StopAutoOptimization(); err != nil {
-			log.Printf("Failed to stop storage engine optimizer: %v", err)
-		} else {
-			log.Println("Storage engine optimizer stopped")
-		}
-	}
-
-	log.Println("All servers stopped gracefully")
 }
 
-// startMetricsServer 启动指标服务器
 func startMetricsServer(cfg *config.Config) *http.Server {
+	// 创建简单的metrics处理器
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.Handler())
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("# MinIODB Metrics\n# TODO: Implement metrics collection\n"))
+	})
 
-	server := &http.Server{
+	metricsServer := &http.Server{
 		Addr:    fmt.Sprintf(":%s", cfg.Metrics.Port),
 		Handler: mux,
 	}
 
 	go func() {
-		log.Printf("Metrics server starting on port %s", cfg.Metrics.Port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Failed to start metrics server: %v", err)
+		log.Printf("Starting metrics server on port %s", cfg.Metrics.Port)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start metrics server: %v", err)
 		}
 	}()
 
-	return server
+	return metricsServer
 }

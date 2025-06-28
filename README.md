@@ -353,7 +353,7 @@ import (
     "google.golang.org/grpc"
     "google.golang.org/protobuf/types/known/timestamppb"
     "google.golang.org/protobuf/types/known/structpb"
-    pb "minIODB/api/proto/olap/v1"
+    pb "minIODB/api/proto/miniodb/v1"
 )
 
 func main() {
