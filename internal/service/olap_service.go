@@ -8,6 +8,7 @@ import (
 	"time"
 
 	olapv1 "minIODB/api/proto/olap/v1"
+	"minIODB/internal/buffer"
 	"minIODB/internal/config"
 	"minIODB/internal/ingest"
 	"minIODB/internal/query"
@@ -78,9 +79,11 @@ func (s *OlapService) validateWriteRequest(req *olapv1.WriteRequest) error {
 
 // Write 写入数据
 func (s *OlapService) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.WriteResponse, error) {
-	// 处理表名：如果未指定则使用默认表
-	// 注意：由于protobuf重新生成问题，暂时使用默认表名
-	tableName := s.cfg.GetDefaultTableName()
+	// 处理表名：优先使用请求中的表名，如果为空则使用默认表
+	tableName := req.Table
+	if tableName == "" {
+		tableName = s.cfg.GetDefaultTableName()
+	}
 
 	log.Printf("Received write request for table: %s, ID: %s", tableName, req.Id)
 
@@ -107,7 +110,7 @@ func (s *OlapService) Write(ctx context.Context, req *olapv1.WriteRequest) (*ola
 	}
 
 	// 更新请求中的表名（确保一致性）
-	// 注意：由于protobuf重新生成问题，暂时跳过这步
+	req.Table = tableName
 
 	// 使用Ingester处理写入
 	if err := s.ingester.IngestData(req); err != nil {
@@ -881,4 +884,28 @@ func (s *OlapService) Close() error {
 		s.querier.Close()
 	}
 	return nil
+}
+
+// FlushBuffer 手动刷新缓冲区
+func (s *OlapService) FlushBuffer(ctx context.Context) error {
+	if s.ingester == nil {
+		return fmt.Errorf("ingester not initialized")
+	}
+	
+	log.Printf("Manual buffer flush triggered")
+	if err := s.ingester.FlushBuffer(); err != nil {
+		log.Printf("ERROR: manual buffer flush failed: %v", err)
+		return fmt.Errorf("buffer flush failed: %w", err)
+	}
+	
+	log.Printf("Manual buffer flush completed successfully")
+	return nil
+}
+
+// GetBufferStats 获取缓冲区统计信息
+func (s *OlapService) GetBufferStats(ctx context.Context) *buffer.ConcurrentBufferStats {
+	if s.ingester == nil {
+		return nil
+	}
+	return s.ingester.GetBufferStats()
 }

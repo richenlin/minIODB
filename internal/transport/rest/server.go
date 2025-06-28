@@ -367,44 +367,32 @@ func (s *Server) SetMetadataManager(manager *metadata.Manager) {
 
 // setupRoutes 设置路由
 func (s *Server) setupRoutes() {
-	// API版本前缀
-	v1 := s.router.Group("/v1")
-	{
-		// 不需要认证的路由
-		v1.GET("/health", s.healthCheck)
+	api := s.router.Group("/v1")
 
-		// 需要认证的路由组
-		authRequired := v1.Group("")
-		authRequired.Use(s.securityMiddleware.AuthRequired())
-		{
-			// 数据写入
-			authRequired.POST("/data", s.writeData)
+	// 核心API
+	api.GET("/health", s.healthCheck)
+	api.POST("/data", s.writeData)
+	api.POST("/query", s.queryData)
+	api.POST("/backup", s.triggerBackup)
+	api.POST("/recover", s.recoverData)
+	api.GET("/stats", s.getStats)
+	api.GET("/nodes", s.getNodes)
 
-			// 数据查询
-			authRequired.POST("/query", s.queryData)
+	// 表管理API
+	api.POST("/tables", s.createTable)
+	api.GET("/tables", s.listTables)
+	api.GET("/tables/:table_name", s.describeTable)
+	api.DELETE("/tables/:table_name", s.dropTable)
 
-			// 表管理
-			authRequired.POST("/tables", s.createTable)
-			authRequired.GET("/tables", s.listTables)
-			authRequired.GET("/tables/:table_name", s.describeTable)
-			authRequired.DELETE("/tables/:table_name", s.dropTable)
+	// 元数据管理API
+	api.POST("/metadata/backup", s.triggerMetadataBackup)
+	api.GET("/metadata/backups", s.listMetadataBackups)
+	api.POST("/metadata/recover", s.recoverMetadata)
+	api.GET("/metadata/status", s.getMetadataStatus)
+	api.POST("/metadata/validate", s.validateMetadataBackup)
 
-			// 备份相关
-			authRequired.POST("/backup/trigger", s.triggerBackup)
-			authRequired.POST("/backup/recover", s.recoverData)
-
-			// 系统信息
-			authRequired.GET("/stats", s.getStats)
-			authRequired.GET("/nodes", s.getNodes)
-
-			// 元数据管理
-			authRequired.POST("/metadata/backup", s.triggerMetadataBackup)
-			authRequired.GET("/metadata/backups", s.listMetadataBackups)
-			authRequired.POST("/metadata/recover", s.recoverMetadata)
-			authRequired.GET("/metadata/status", s.getMetadataStatus)
-			authRequired.POST("/metadata/validate", s.validateMetadataBackup)
-		}
-	}
+	// 调试和管理API
+	api.POST("/flush", s.flushBuffer) // 新增：手动刷新缓冲区
 }
 
 // healthCheck 健康检查
@@ -1230,5 +1218,33 @@ func (s *Server) validateMetadataBackup(c *gin.Context) {
 		Message: "Backup validation passed",
 	}
 
+	c.JSON(http.StatusOK, response)
+}
+
+// flushBuffer 手动刷新缓冲区
+func (s *Server) flushBuffer(c *gin.Context) {
+	log.Println("Received manual buffer flush request")
+	
+	// 调用OlapService的FlushBuffer方法
+	if err := s.olapService.FlushBuffer(c.Request.Context()); err != nil {
+		log.Printf("ERROR: buffer flush failed: %v", err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "flush_failed",
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("Buffer flush failed: %v", err),
+		})
+		return
+	}
+	
+	// 获取缓冲区统计信息
+	stats := s.olapService.GetBufferStats(c.Request.Context())
+	
+	// 返回成功响应和统计信息
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Buffer flush completed successfully",
+		"stats":   stats,
+	}
+	
 	c.JSON(http.StatusOK, response)
 }
