@@ -6,8 +6,8 @@ server:
 redis:
   # 基础配置
   mode: "standalone"          # Redis模式: standalone, sentinel, cluster
-  addr: "localhost:6379"      # 单机模式地址
-  password: ""                # 密码
+  addr: "redis:6379"          # 单机模式地址
+  password: "redis123"        # 密码
   db: 0                       # 数据库编号（集群模式不支持）
   bucket: "miniodb-data"      # 存储桶名称 - 修改为与docker-compose.yml一致
   
@@ -29,7 +29,7 @@ redis:
   #   - "localhost:7005"
   
   # 连接池配置
-  pool_size: 100              # 连接池大小
+  pool_size: 200              # 连接池大小，优化后增加一倍
   min_idle_conns: 10          # 最小空闲连接数
   max_conn_age: 1800s         # 连接最大生存时间 (30分钟)
   pool_timeout: 4s            # 获取连接超时
@@ -49,7 +49,7 @@ redis:
   route_randomly: true        # 随机路由
 
 minio:
-  endpoint: "localhost:9000"
+  endpoint: "minio:9000"
   access_key_id: "minioadmin"
   secret_access_key: "minioadmin"
   use_ssl: false
@@ -59,7 +59,7 @@ backup:
   enabled: false
   interval: 3600  # 备份间隔（秒）
   minio:
-    endpoint: "localhost:9000"
+    endpoint: "minio-backup:9000"
     access_key_id: "minioadmin"
     secret_access_key: "minioadmin"
     use_ssl: false
@@ -70,15 +70,15 @@ backup:
     enabled: true                # 启用元数据备份
     interval: 30m               # 备份间隔（30分钟）
     retention_days: 7           # 保留天数
-    bucket: "miniodb-metadata"  # 元数据存储桶 - 修改为更一致的命名
+    bucket: "miniodb-metadata"  # 元数据存储桶
 
 buffer:
   # 基础配置
-  buffer_size: 1000           # 缓冲区大小
-  flush_interval: 30s         # 刷新间隔
+  buffer_size: 5000           # 缓冲区大小，优化后提升5倍
+  flush_interval: 15s         # 刷新间隔，优化后减少一半
   
   # 并发配置
-  worker_pool_size: 10        # 工作池大小
+  worker_pool_size: 20        # 工作池大小，优化后增加一倍
   task_queue_size: 100        # 任务队列大小
   batch_flush_size: 5         # 批量刷新大小
   enable_batching: true       # 启用批量处理
@@ -115,7 +115,7 @@ security:
   key_file: "certs/server.key"   # 私钥文件路径
   rate_limit:
     enabled: true
-    requests_per_minute: 1000    # 每分钟请求数限制，适合性能测试
+    requests_per_minute: 10000    # 每分钟请求数限制，优化后提升10倍
 
 # 新增认证配置
 auth:
@@ -148,8 +148,8 @@ pool:
   redis:
     # 基础配置
     mode: "standalone"          # Redis模式: standalone, sentinel, cluster
-    addr: "localhost:6379"      # 单机模式地址
-    password: ""                # 密码
+    addr: "redis:6379"          # 单机模式地址
+    password: "redis123"        # 密码
     db: 0                       # 数据库编号
     bucket: "miniodb-data"      # 存储桶名称 - 修改为与docker-compose.yml一致
     
@@ -171,8 +171,8 @@ pool:
     #   - "localhost:7005"
     
     # 连接池配置
-    pool_size: 100
-    min_idle_conns: 10
+    pool_size: 200              # 连接池大小，优化后增加一倍
+    min_idle_conns: 20          # 最小空闲连接数，优化后增加一倍
     max_conn_age: 1800s
     pool_timeout: 4s
     idle_timeout: 300s
@@ -192,15 +192,15 @@ pool:
   
   # MinIO连接池配置
   minio:
-    endpoint: "localhost:9000"
+    endpoint: "minio:9000"
     access_key_id: "minioadmin"
     secret_access_key: "minioadmin"
     use_ssl: false
     region: "us-east-1"
     # HTTP连接池配置
-    max_idle_conns: 100
-    max_idle_conns_per_host: 50
-    max_conns_per_host: 100
+    max_idle_conns: 200          # 优化后增加一倍
+    max_idle_conns_per_host: 100 # 优化后增加一倍
+    max_conns_per_host: 200      # 优化后增加一倍
     idle_conn_timeout: 90s
     # 超时配置
     dial_timeout: 30s
