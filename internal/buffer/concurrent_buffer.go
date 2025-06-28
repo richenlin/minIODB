@@ -396,7 +396,7 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 
 	t := time.Unix(0, row.Timestamp)
 	dayStr := t.Format("2006-01-02")
-	
+
 	// 修复：使用表名/ID/日期格式，确保查询能正确找到缓冲区数据
 	tableName := row.Table
 	if tableName == "" {

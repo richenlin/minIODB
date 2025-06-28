@@ -13,19 +13,19 @@ import (
 // Config 应用配置
 type Config struct {
 	Server            ServerConfig            `yaml:"server"`
-	Network           NetworkConfig           `yaml:"network"`                // 新增网络配置
-	Redis             RedisConfig             `yaml:"redis"`                  // 保持向后兼容，但优先使用Network.Pools.Redis
-	MinIO             MinioConfig             `yaml:"minio"`                  // 保持向后兼容，但优先使用Network.Pools.MinIO
+	Network           NetworkConfig           `yaml:"network"` // 新增网络配置
+	Redis             RedisConfig             `yaml:"redis"`   // 保持向后兼容，但优先使用Network.Pools.Redis
+	MinIO             MinioConfig             `yaml:"minio"`   // 保持向后兼容，但优先使用Network.Pools.MinIO
 	Buffer            BufferConfig            `yaml:"buffer"`
 	Backup            BackupConfig            `yaml:"backup"`
 	Security          SecurityConfig          `yaml:"security"`
-	RateLimiting      SmartRateLimitConfig    `yaml:"rate_limiting"`          // 智能限流配置
-	QueryOptimization QueryOptimizationConfig `yaml:"query_optimization"`    // 查询优化配置
-	StorageEngine     StorageEngineConfig     `yaml:"storage_engine"`         // 存储引擎优化配置
-	Auth              AuthConfig              `yaml:"auth"`                   // 认证配置
+	RateLimiting      SmartRateLimitConfig    `yaml:"rate_limiting"`      // 智能限流配置
+	QueryOptimization QueryOptimizationConfig `yaml:"query_optimization"` // 查询优化配置
+	StorageEngine     StorageEngineConfig     `yaml:"storage_engine"`     // 存储引擎优化配置
+	Auth              AuthConfig              `yaml:"auth"`               // 认证配置
 	Metrics           MetricsConfig           `yaml:"metrics"`
-	Monitoring        MonitoringConfig        `yaml:"monitoring"`             // 监控配置
-	Log               LogConfig               `yaml:"log"`                    // 日志配置
+	Monitoring        MonitoringConfig        `yaml:"monitoring"` // 监控配置
+	Log               LogConfig               `yaml:"log"`        // 日志配置
 	Tables            TablesConfig            `yaml:"tables"`
 	TableManagement   TableManagementConfig   `yaml:"table_management"`
 }
@@ -75,34 +75,34 @@ type ServerNetworkConfig struct {
 
 // GRPCNetworkConfig gRPC服务器网络配置
 type GRPCNetworkConfig struct {
-	MaxConnections          int           `yaml:"max_connections"`           // 最大并发连接数
-	ConnectionTimeout       time.Duration `yaml:"connection_timeout"`        // 连接超时
-	StreamTimeout          time.Duration `yaml:"stream_timeout"`            // 流超时
-	KeepAliveTime          time.Duration `yaml:"keep_alive_time"`           // 保活时间
-	KeepAliveTimeout       time.Duration `yaml:"keep_alive_timeout"`        // 保活超时
-	MaxConnectionIdle      time.Duration `yaml:"max_connection_idle"`       // 最大连接空闲时间
-	MaxConnectionAge       time.Duration `yaml:"max_connection_age"`        // 最大连接存活时间
-	MaxConnectionAgeGrace  time.Duration `yaml:"max_connection_age_grace"`  // 连接存活优雅期
-	MaxSendMsgSize         int           `yaml:"max_send_msg_size"`         // 最大发送消息大小
-	MaxRecvMsgSize         int           `yaml:"max_recv_msg_size"`         // 最大接收消息大小
+	MaxConnections        int           `yaml:"max_connections"`          // 最大并发连接数
+	ConnectionTimeout     time.Duration `yaml:"connection_timeout"`       // 连接超时
+	StreamTimeout         time.Duration `yaml:"stream_timeout"`           // 流超时
+	KeepAliveTime         time.Duration `yaml:"keep_alive_time"`          // 保活时间
+	KeepAliveTimeout      time.Duration `yaml:"keep_alive_timeout"`       // 保活超时
+	MaxConnectionIdle     time.Duration `yaml:"max_connection_idle"`      // 最大连接空闲时间
+	MaxConnectionAge      time.Duration `yaml:"max_connection_age"`       // 最大连接存活时间
+	MaxConnectionAgeGrace time.Duration `yaml:"max_connection_age_grace"` // 连接存活优雅期
+	MaxSendMsgSize        int           `yaml:"max_send_msg_size"`        // 最大发送消息大小
+	MaxRecvMsgSize        int           `yaml:"max_recv_msg_size"`        // 最大接收消息大小
 }
 
 // RESTNetworkConfig REST服务器网络配置
 type RESTNetworkConfig struct {
-	ReadTimeout        time.Duration `yaml:"read_timeout"`         // 读取超时
-	WriteTimeout       time.Duration `yaml:"write_timeout"`        // 写入超时
-	IdleTimeout        time.Duration `yaml:"idle_timeout"`         // 空闲超时
-	ReadHeaderTimeout  time.Duration `yaml:"read_header_timeout"`  // 读取头超时
-	MaxHeaderBytes     int           `yaml:"max_header_bytes"`     // 最大头字节数
-	ShutdownTimeout    time.Duration `yaml:"shutdown_timeout"`     // 优雅关闭超时
+	ReadTimeout       time.Duration `yaml:"read_timeout"`        // 读取超时
+	WriteTimeout      time.Duration `yaml:"write_timeout"`       // 写入超时
+	IdleTimeout       time.Duration `yaml:"idle_timeout"`        // 空闲超时
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"` // 读取头超时
+	MaxHeaderBytes    int           `yaml:"max_header_bytes"`    // 最大头字节数
+	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`    // 优雅关闭超时
 }
 
 // PoolsConfig 连接池配置
 type PoolsConfig struct {
-	Redis               EnhancedRedisConfig `yaml:"redis"`                // Redis连接池配置
-	MinIO               EnhancedMinIOConfig `yaml:"minio"`                // MinIO连接池配置
+	Redis               EnhancedRedisConfig  `yaml:"redis"`                  // Redis连接池配置
+	MinIO               EnhancedMinIOConfig  `yaml:"minio"`                  // MinIO连接池配置
 	BackupMinIO         *EnhancedMinIOConfig `yaml:"backup_minio,omitempty"` // 备份MinIO连接池配置（可选）
-	HealthCheckInterval time.Duration       `yaml:"health_check_interval"` // 健康检查间隔
+	HealthCheckInterval time.Duration        `yaml:"health_check_interval"`  // 健康检查间隔
 }
 
 // EnhancedRedisConfig 增强的Redis配置（包含所有pool配置参数）
@@ -122,10 +122,10 @@ type EnhancedRedisConfig struct {
 	WriteTimeout time.Duration `yaml:"write_timeout"`
 
 	// 新增的池配置字段
-	IdleCheckFreq   time.Duration `yaml:"idle_check_freq"`    // 空闲连接检查频率
-	MaxRetries      int           `yaml:"max_retries"`        // 最大重试次数
-	MinRetryBackoff time.Duration `yaml:"min_retry_backoff"`  // 最小重试间隔
-	MaxRetryBackoff time.Duration `yaml:"max_retry_backoff"`  // 最大重试间隔
+	IdleCheckFreq   time.Duration `yaml:"idle_check_freq"`   // 空闲连接检查频率
+	MaxRetries      int           `yaml:"max_retries"`       // 最大重试次数
+	MinRetryBackoff time.Duration `yaml:"min_retry_backoff"` // 最小重试间隔
+	MaxRetryBackoff time.Duration `yaml:"max_retry_backoff"` // 最大重试间隔
 
 	// 集群模式配置
 	ClusterAddrs   []string `yaml:"cluster_addrs"`    // 集群地址列表
@@ -149,28 +149,28 @@ type EnhancedMinIOConfig struct {
 	UseSSL          bool   `yaml:"use_ssl"`
 	Region          string `yaml:"region"`
 	Bucket          string `yaml:"bucket"`
-	
+
 	// HTTP连接池配置
-	MaxIdleConns        int           `yaml:"max_idle_conns"`         // 最大空闲连接数
+	MaxIdleConns        int           `yaml:"max_idle_conns"`          // 最大空闲连接数
 	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host"` // 每个主机的最大空闲连接数
-	MaxConnsPerHost     int           `yaml:"max_conns_per_host"`     // 每个主机的最大连接数
-	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"`      // 空闲连接超时
-	
+	MaxConnsPerHost     int           `yaml:"max_conns_per_host"`      // 每个主机的最大连接数
+	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"`       // 空闲连接超时
+
 	// 超时配置
 	DialTimeout           time.Duration `yaml:"dial_timeout"`            // 连接超时
 	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout"`   // TLS握手超时
 	ResponseHeaderTimeout time.Duration `yaml:"response_header_timeout"` // 响应头超时
 	ExpectContinueTimeout time.Duration `yaml:"expect_continue_timeout"` // Expect: 100-continue超时
-	
+
 	// 重试和背压配置
 	MaxRetries     int           `yaml:"max_retries"`     // 最大重试次数
 	RetryDelay     time.Duration `yaml:"retry_delay"`     // 重试延迟
 	RequestTimeout time.Duration `yaml:"request_timeout"` // 请求超时
-	
+
 	// 连接保活配置
-	KeepAlive          time.Duration `yaml:"keep_alive"`           // TCP保活间隔
-	DisableKeepAlive   bool          `yaml:"disable_keep_alive"`   // 禁用保活
-	DisableCompression bool          `yaml:"disable_compression"`  // 禁用压缩
+	KeepAlive          time.Duration `yaml:"keep_alive"`          // TCP保活间隔
+	DisableKeepAlive   bool          `yaml:"disable_keep_alive"`  // 禁用保活
+	DisableCompression bool          `yaml:"disable_compression"` // 禁用压缩
 }
 
 // RedisConfig Redis配置
@@ -251,17 +251,17 @@ func (r *RateLimitTier) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		Window          string  `yaml:"window"`
 		BackoffDuration string  `yaml:"backoff_duration"`
 	}
-	
+
 	var raw RateLimitTierRaw
 	if err := unmarshal(&raw); err != nil {
 		return err
 	}
-	
+
 	// 设置非duration字段
 	r.Name = raw.Name
 	r.RequestsPerSec = raw.RequestsPerSec
 	r.BurstSize = raw.BurstSize
-	
+
 	// 解析duration字段
 	if raw.Window != "" {
 		if window, err := time.ParseDuration(raw.Window); err != nil {
@@ -270,7 +270,7 @@ func (r *RateLimitTier) UnmarshalYAML(unmarshal func(interface{}) error) error {
 			r.Window = window
 		}
 	}
-	
+
 	if raw.BackoffDuration != "" {
 		if backoff, err := time.ParseDuration(raw.BackoffDuration); err != nil {
 			return fmt.Errorf("invalid backoff_duration '%s': %w", raw.BackoffDuration, err)
@@ -278,7 +278,7 @@ func (r *RateLimitTier) UnmarshalYAML(unmarshal func(interface{}) error) error {
 			r.BackoffDuration = backoff
 		}
 	}
-	
+
 	return nil
 }
 
@@ -291,21 +291,21 @@ type PathRateLimit struct {
 
 // SmartRateLimitConfig 智能限流器配置（旧版本，保持向后兼容）
 type SmartRateLimitConfigOld struct {
-	Enabled         bool              `yaml:"enabled"`
-	DefaultTier     string            `yaml:"default_tier"`
-	Tiers           []RateLimitTier   `yaml:"tiers"`
-	PathLimits      []PathRateLimit   `yaml:"path_limits"`
-	CleanupInterval time.Duration     `yaml:"cleanup_interval"`
+	Enabled         bool            `yaml:"enabled"`
+	DefaultTier     string          `yaml:"default_tier"`
+	Tiers           []RateLimitTier `yaml:"tiers"`
+	PathLimits      []PathRateLimit `yaml:"path_limits"`
+	CleanupInterval time.Duration   `yaml:"cleanup_interval"`
 }
 
 // SecurityConfig 安全配置
 type SecurityConfig struct {
-	Mode            string                  `yaml:"mode"`
-	JWTSecret       string                  `yaml:"jwt_secret"`
-	EnableTLS       bool                    `yaml:"enable_tls"`
-	ValidTokens     []string                `yaml:"valid_tokens"`
-	RateLimit       RateLimitConfig         `yaml:"rate_limit"`        // 传统限流配置（保持向后兼容）
-	SmartRateLimit  SmartRateLimitConfigOld `yaml:"smart_rate_limit"`  // 智能限流器配置（旧版本）
+	Mode           string                  `yaml:"mode"`
+	JWTSecret      string                  `yaml:"jwt_secret"`
+	EnableTLS      bool                    `yaml:"enable_tls"`
+	ValidTokens    []string                `yaml:"valid_tokens"`
+	RateLimit      RateLimitConfig         `yaml:"rate_limit"`       // 传统限流配置（保持向后兼容）
+	SmartRateLimit SmartRateLimitConfigOld `yaml:"smart_rate_limit"` // 智能限流器配置（旧版本）
 }
 
 // RateLimitConfig 速率限制配置（传统配置，保持向后兼容）
@@ -316,10 +316,10 @@ type RateLimitConfig struct {
 
 // MetricsConfig 指标配置
 type MetricsConfig struct {
-	Enabled    bool `yaml:"enabled"`
+	Enabled    bool   `yaml:"enabled"`
 	Port       string `yaml:"port"`
 	Path       string `yaml:"path"`
-	Prometheus bool `yaml:"prometheus"`
+	Prometheus bool   `yaml:"prometheus"`
 }
 
 // MonitoringConfig 监控配置
@@ -344,12 +344,12 @@ type LogConfig struct {
 
 // AuthConfig 认证配置
 type AuthConfig struct {
-	EnableJWT      bool     `yaml:"enable_jwt"`
-	JWTSecret      string   `yaml:"jwt_secret"`
-	TokenExpiry    string   `yaml:"token_expiry"`
-	EnableAPIKey   bool     `yaml:"enable_api_key"`
-	APIKeys        []string `yaml:"api_keys"`
-	SkipAuthPaths  []string `yaml:"skip_auth_paths"`
+	EnableJWT        bool     `yaml:"enable_jwt"`
+	JWTSecret        string   `yaml:"jwt_secret"`
+	TokenExpiry      string   `yaml:"token_expiry"`
+	EnableAPIKey     bool     `yaml:"enable_api_key"`
+	APIKeys          []string `yaml:"api_keys"`
+	SkipAuthPaths    []string `yaml:"skip_auth_paths"`
 	RequireAuthPaths []string `yaml:"require_auth_paths"`
 }
 
@@ -362,15 +362,15 @@ type QueryOptimizationConfig struct {
 
 // QueryCacheConfig 查询缓存配置
 type QueryCacheConfig struct {
-	Enabled        bool                      `yaml:"enabled"`
-	RedisKeyPrefix string                    `yaml:"redis_key_prefix"`
-	DefaultTTL     time.Duration             `yaml:"default_ttl"`
-	MaxCacheSize   int64                     `yaml:"max_cache_size"`
-	EvictionPolicy string                    `yaml:"eviction_policy"`
-	CacheStrategies map[string]time.Duration `yaml:"cache_strategies"`
-	TableInvalidation TableInvalidationConfig `yaml:"table_invalidation"`
-	EnableStats    bool                      `yaml:"enable_stats"`
-	StatsInterval  time.Duration             `yaml:"stats_interval"`
+	Enabled           bool                     `yaml:"enabled"`
+	RedisKeyPrefix    string                   `yaml:"redis_key_prefix"`
+	DefaultTTL        time.Duration            `yaml:"default_ttl"`
+	MaxCacheSize      int64                    `yaml:"max_cache_size"`
+	EvictionPolicy    string                   `yaml:"eviction_policy"`
+	CacheStrategies   map[string]time.Duration `yaml:"cache_strategies"`
+	TableInvalidation TableInvalidationConfig  `yaml:"table_invalidation"`
+	EnableStats       bool                     `yaml:"enable_stats"`
+	StatsInterval     time.Duration            `yaml:"stats_interval"`
 }
 
 // TableInvalidationConfig 表级缓存失效配置
@@ -381,40 +381,40 @@ type TableInvalidationConfig struct {
 
 // FileCacheConfig 文件缓存配置
 type FileCacheConfig struct {
-	Enabled        bool                    `yaml:"enabled"`
-	CacheDir       string                  `yaml:"cache_dir"`
-	MaxCacheSize   int64                   `yaml:"max_cache_size"`
-	MaxFileAge     time.Duration           `yaml:"max_file_age"`
-	CleanupInterval time.Duration          `yaml:"cleanup_interval"`
-	RedisIndex     FileCacheRedisConfig    `yaml:"redis_index"`
-	Metadata       FileCacheMetadataConfig `yaml:"metadata"`
-	EnableStats    bool                    `yaml:"enable_stats"`
-	StatsInterval  time.Duration           `yaml:"stats_interval"`
+	Enabled         bool                    `yaml:"enabled"`
+	CacheDir        string                  `yaml:"cache_dir"`
+	MaxCacheSize    int64                   `yaml:"max_cache_size"`
+	MaxFileAge      time.Duration           `yaml:"max_file_age"`
+	CleanupInterval time.Duration           `yaml:"cleanup_interval"`
+	RedisIndex      FileCacheRedisConfig    `yaml:"redis_index"`
+	Metadata        FileCacheMetadataConfig `yaml:"metadata"`
+	EnableStats     bool                    `yaml:"enable_stats"`
+	StatsInterval   time.Duration           `yaml:"stats_interval"`
 }
 
 // FileCacheRedisConfig 文件缓存Redis索引配置
 type FileCacheRedisConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	KeyPrefix  string        `yaml:"key_prefix"`
-	IndexTTL   time.Duration `yaml:"index_ttl"`
+	Enabled   bool          `yaml:"enabled"`
+	KeyPrefix string        `yaml:"key_prefix"`
+	IndexTTL  time.Duration `yaml:"index_ttl"`
 }
 
 // FileCacheMetadataConfig 文件缓存元数据配置
 type FileCacheMetadataConfig struct {
-	TrackAccessCount      bool `yaml:"track_access_count"`
-	TrackCreationTime     bool `yaml:"track_creation_time"`
+	TrackAccessCount       bool `yaml:"track_access_count"`
+	TrackCreationTime      bool `yaml:"track_creation_time"`
 	EnableHashVerification bool `yaml:"enable_hash_verification"`
 }
 
 // DuckDBConfig DuckDB配置
 type DuckDBConfig struct {
-	Enabled           bool                       `yaml:"enabled"`
-	PoolSize          int                        `yaml:"pool_size"`
-	MaxIdleTime       time.Duration              `yaml:"max_idle_time"`
-	ConnectionTimeout time.Duration              `yaml:"connection_timeout"`
-	Performance       DuckDBPerformanceConfig    `yaml:"performance"`
-	PreparedStatements DuckDBPreparedStmtsConfig `yaml:"prepared_statements"`
-	ConnectionReuse   DuckDBConnectionReuseConfig `yaml:"connection_reuse"`
+	Enabled            bool                        `yaml:"enabled"`
+	PoolSize           int                         `yaml:"pool_size"`
+	MaxIdleTime        time.Duration               `yaml:"max_idle_time"`
+	ConnectionTimeout  time.Duration               `yaml:"connection_timeout"`
+	Performance        DuckDBPerformanceConfig     `yaml:"performance"`
+	PreparedStatements DuckDBPreparedStmtsConfig   `yaml:"prepared_statements"`
+	ConnectionReuse    DuckDBConnectionReuseConfig `yaml:"connection_reuse"`
 }
 
 // DuckDBPerformanceConfig DuckDB性能配置
@@ -434,9 +434,9 @@ type DuckDBPreparedStmtsConfig struct {
 
 // DuckDBConnectionReuseConfig DuckDB连接复用配置
 type DuckDBConnectionReuseConfig struct {
-	Enabled               bool          `yaml:"enabled"`
-	MaxReuseCount         int           `yaml:"max_reuse_count"`
-	HealthCheckInterval   time.Duration `yaml:"health_check_interval"`
+	Enabled             bool          `yaml:"enabled"`
+	MaxReuseCount       int           `yaml:"max_reuse_count"`
+	HealthCheckInterval time.Duration `yaml:"health_check_interval"`
 }
 
 // RateLimitingTier 限流等级配置
@@ -464,25 +464,25 @@ type RateLimitingResponse struct {
 
 // SmartRateLimitConfig 智能限流器配置（重新定义以匹配新的配置结构）
 type SmartRateLimitConfig struct {
-	Enabled     bool                              `yaml:"enabled"`
-	Tiers       map[string]RateLimitingTier       `yaml:"tiers"`
-	PathRules   []RateLimitingPathRule            `yaml:"path_rules"`
-	DefaultTier string                            `yaml:"default_tier"`
-	Response    RateLimitingResponse              `yaml:"response"`
+	Enabled     bool                        `yaml:"enabled"`
+	Tiers       map[string]RateLimitingTier `yaml:"tiers"`
+	PathRules   []RateLimitingPathRule      `yaml:"path_rules"`
+	DefaultTier string                      `yaml:"default_tier"`
+	Response    RateLimitingResponse        `yaml:"response"`
 }
 
 // StorageEngineConfig 存储引擎优化配置
 type StorageEngineConfig struct {
-	Enabled           bool                         `yaml:"enabled"`
-	AutoOptimization  bool                         `yaml:"auto_optimization"`
-	OptimizeInterval  time.Duration                `yaml:"optimize_interval"`
-	PerformanceMode   string                       `yaml:"performance_mode"`
-	EnableMonitoring  bool                         `yaml:"enable_monitoring"`
-	EnableProfiling   bool                         `yaml:"enable_profiling"`
-	Parquet           StorageParquetConfig         `yaml:"parquet"`
-	Sharding          StorageShardingConfig        `yaml:"sharding"`
-	Indexing          StorageIndexingConfig        `yaml:"indexing"`
-	Memory            StorageMemoryConfig          `yaml:"memory"`
+	Enabled          bool                  `yaml:"enabled"`
+	AutoOptimization bool                  `yaml:"auto_optimization"`
+	OptimizeInterval time.Duration         `yaml:"optimize_interval"`
+	PerformanceMode  string                `yaml:"performance_mode"`
+	EnableMonitoring bool                  `yaml:"enable_monitoring"`
+	EnableProfiling  bool                  `yaml:"enable_profiling"`
+	Parquet          StorageParquetConfig  `yaml:"parquet"`
+	Sharding         StorageShardingConfig `yaml:"sharding"`
+	Indexing         StorageIndexingConfig `yaml:"indexing"`
+	Memory           StorageMemoryConfig   `yaml:"memory"`
 }
 
 // StorageParquetConfig Parquet存储优化配置
@@ -497,35 +497,35 @@ type StorageParquetConfig struct {
 
 // StorageShardingConfig 智能分片优化配置
 type StorageShardingConfig struct {
-	DefaultStrategy     string  `yaml:"default_strategy"`
-	AutoRebalance       bool    `yaml:"auto_rebalance"`
-	HotColdSeparation   bool    `yaml:"hot_cold_separation"`
-	LocalityOptimization bool   `yaml:"locality_optimization"`
-	RebalanceThreshold  float64 `yaml:"rebalance_threshold"`
-	MigrationLimit      int     `yaml:"migration_limit"`
+	DefaultStrategy      string  `yaml:"default_strategy"`
+	AutoRebalance        bool    `yaml:"auto_rebalance"`
+	HotColdSeparation    bool    `yaml:"hot_cold_separation"`
+	LocalityOptimization bool    `yaml:"locality_optimization"`
+	RebalanceThreshold   float64 `yaml:"rebalance_threshold"`
+	MigrationLimit       int     `yaml:"migration_limit"`
 }
 
 // StorageIndexingConfig 索引系统优化配置
 type StorageIndexingConfig struct {
-	AutoIndexCreation    bool                   `yaml:"auto_index_creation"`
-	IndexTypes           []string               `yaml:"index_types"`
-	BloomFilterEnabled   bool                   `yaml:"bloom_filter_enabled"`
-	MinMaxEnabled        bool                   `yaml:"minmax_enabled"`
-	InvertedEnabled      bool                   `yaml:"inverted_enabled"`
-	CompositeEnabled     bool                   `yaml:"composite_enabled"`
-	MaintenanceInterval  time.Duration          `yaml:"maintenance_interval"`
-	CustomConfig         map[string]interface{} `yaml:"custom_config"`
+	AutoIndexCreation   bool                   `yaml:"auto_index_creation"`
+	IndexTypes          []string               `yaml:"index_types"`
+	BloomFilterEnabled  bool                   `yaml:"bloom_filter_enabled"`
+	MinMaxEnabled       bool                   `yaml:"minmax_enabled"`
+	InvertedEnabled     bool                   `yaml:"inverted_enabled"`
+	CompositeEnabled    bool                   `yaml:"composite_enabled"`
+	MaintenanceInterval time.Duration          `yaml:"maintenance_interval"`
+	CustomConfig        map[string]interface{} `yaml:"custom_config"`
 }
 
 // StorageMemoryConfig 内存优化配置
 type StorageMemoryConfig struct {
-	EnablePooling      bool              `yaml:"enable_pooling"`
-	EnableZeroCopy     bool              `yaml:"enable_zero_copy"`
-	BufferOptimization bool              `yaml:"buffer_optimization"`
-	GCOptimization     bool              `yaml:"gc_optimization"`
-	MaxMemoryUsage     int64             `yaml:"max_memory_usage"`
-	MemoryPoolSizes    map[string]int    `yaml:"memory_pool_sizes"`
-	GCInterval         time.Duration     `yaml:"gc_interval"`
+	EnablePooling      bool           `yaml:"enable_pooling"`
+	EnableZeroCopy     bool           `yaml:"enable_zero_copy"`
+	BufferOptimization bool           `yaml:"buffer_optimization"`
+	GCOptimization     bool           `yaml:"gc_optimization"`
+	MaxMemoryUsage     int64          `yaml:"max_memory_usage"`
+	MemoryPoolSizes    map[string]int `yaml:"memory_pool_sizes"`
+	GCInterval         time.Duration  `yaml:"gc_interval"`
 }
 
 // GetTableConfig 获取指定表的配置，如果不存在则返回默认配置
@@ -626,8 +626,8 @@ func (c *Config) setDefaults() {
 	c.Network = NetworkConfig{
 		Server: ServerNetworkConfig{
 			GRPC: GRPCNetworkConfig{
-				MaxConnections:         1000,
-				ConnectionTimeout:      30 * time.Second,
+				MaxConnections:        1000,
+				ConnectionTimeout:     30 * time.Second,
 				StreamTimeout:         60 * time.Second,
 				KeepAliveTime:         30 * time.Second,
 				KeepAliveTimeout:      5 * time.Second,
@@ -742,7 +742,7 @@ func (c *Config) setDefaults() {
 		EnableTLS: false,
 		RateLimit: RateLimitConfig{
 			Enabled:           false, // 默认禁用传统限流器，优先使用智能限流器
-			RequestsPerMinute: 60, // 默认每分钟60个请求
+			RequestsPerMinute: 60,    // 默认每分钟60个请求
 		},
 		SmartRateLimit: SmartRateLimitConfigOld{
 			Enabled:         true, // 默认启用智能限流器
@@ -939,12 +939,12 @@ func (c *Config) setDefaults() {
 
 	// 存储引擎优化配置默认值
 	c.StorageEngine = StorageEngineConfig{
-		Enabled:           true,
-		AutoOptimization:  true,
-		OptimizeInterval:  30 * time.Minute,
-		PerformanceMode:   "balanced",
-		EnableMonitoring:  true,
-		EnableProfiling:   false,
+		Enabled:          true,
+		AutoOptimization: true,
+		OptimizeInterval: 30 * time.Minute,
+		PerformanceMode:  "balanced",
+		EnableMonitoring: true,
+		EnableProfiling:  false,
 		Parquet: StorageParquetConfig{
 			DefaultCompression:  "zstd",
 			DefaultPartition:    "analytical",
@@ -998,38 +998,48 @@ func (c *Config) setDefaults() {
 
 // overrideWithEnv 使用环境变量覆盖配置
 func (c *Config) overrideWithEnv() {
-	// Redis配置环境变量覆盖
+	// Redis配置环境变量覆盖 (同时更新新旧配置以确保兼容性)
 	if redisHost := os.Getenv("REDIS_HOST"); redisHost != "" {
 		redisPort := os.Getenv("REDIS_PORT")
 		if redisPort == "" {
 			redisPort = "6379"
 		}
-		c.Redis.Addr = redisHost + ":" + redisPort
+		redisAddr := redisHost + ":" + redisPort
+		c.Redis.Addr = redisAddr               // 保持向后兼容
+		c.Network.Pools.Redis.Addr = redisAddr // 更新新的配置
 	}
 	if redisPassword := os.Getenv("REDIS_PASSWORD"); redisPassword != "" {
-		c.Redis.Password = redisPassword
+		c.Redis.Password = redisPassword               // 保持向后兼容
+		c.Network.Pools.Redis.Password = redisPassword // 更新新的配置
 	}
 	if redisDB := os.Getenv("REDIS_DB"); redisDB != "" {
 		if db, err := fmt.Sscanf(redisDB, "%d", &c.Redis.DB); err == nil && db == 1 {
 			// DB值已设置
 		}
+		// 同时更新新配置
+		c.Network.Pools.Redis.DB = c.Redis.DB
 	}
 
-	// MinIO配置环境变量覆盖
+	// MinIO配置环境变量覆盖 (同时更新新旧配置以确保兼容性)
 	if minioEndpoint := os.Getenv("MINIO_ENDPOINT"); minioEndpoint != "" {
-		c.MinIO.Endpoint = minioEndpoint
+		c.MinIO.Endpoint = minioEndpoint               // 保持向后兼容
+		c.Network.Pools.MinIO.Endpoint = minioEndpoint // 更新新的配置
 	}
 	if minioAccessKey := os.Getenv("MINIO_ACCESS_KEY"); minioAccessKey != "" {
-		c.MinIO.AccessKeyID = minioAccessKey
+		c.MinIO.AccessKeyID = minioAccessKey               // 保持向后兼容
+		c.Network.Pools.MinIO.AccessKeyID = minioAccessKey // 更新新的配置
 	}
 	if minioSecretKey := os.Getenv("MINIO_SECRET_KEY"); minioSecretKey != "" {
-		c.MinIO.SecretAccessKey = minioSecretKey
+		c.MinIO.SecretAccessKey = minioSecretKey               // 保持向后兼容
+		c.Network.Pools.MinIO.SecretAccessKey = minioSecretKey // 更新新的配置
 	}
 	if minioBucket := os.Getenv("MINIO_BUCKET"); minioBucket != "" {
-		c.MinIO.Bucket = minioBucket
+		c.MinIO.Bucket = minioBucket               // 保持向后兼容
+		c.Network.Pools.MinIO.Bucket = minioBucket // 更新新的配置
 	}
 	if minioUseSSL := os.Getenv("MINIO_USE_SSL"); minioUseSSL == "true" {
-		c.MinIO.UseSSL = true
+		c.MinIO.UseSSL = true               // 保持向后兼容
+		c.Network.Pools.MinIO.UseSSL = true // 更新新的配置
 	}
 
 	// 服务器配置环境变量覆盖

@@ -279,7 +279,12 @@ func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *que
 	// 启动REST服务器
 	go func() {
 		log.Printf("Starting REST server on port %s", cfg.Server.RestPort)
-		if err := restServer.Start(fmt.Sprintf(":%s", cfg.Server.RestPort)); err != nil {
+		// 检查端口是否已经包含冒号
+		port := cfg.Server.RestPort
+		if port[0] != ':' {
+			port = ":" + port
+		}
+		if err := restServer.Start(port); err != nil {
 			log.Fatalf("Failed to start REST server: %v", err)
 		}
 	}()
