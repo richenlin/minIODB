@@ -461,8 +461,8 @@ func (s *Server) setupRoutes() {
 	securedRoutes.GET("/metadata/status", s.getMetadataStatus)
 
 	// 系统状态与监控
-	securedRoutes.GET("/status", s.getStatus)
-	securedRoutes.GET("/metrics", s.getMetrics)
+	securedRoutes.GET("/status", s.getStatus)   // 主状态接口（包含统计和节点信息）
+	securedRoutes.GET("/metrics", s.getMetrics) // 性能指标接口
 }
 
 // healthCheck 处理健康检查请求
