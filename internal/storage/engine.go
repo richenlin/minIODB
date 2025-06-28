@@ -340,7 +340,7 @@ func (seo *StorageEngine) StartAutoOptimization() error {
 }
 
 // StopAutoOptimization 停止自动优化
-func (seo *StorageEngineoOptimization() error {
+func (seo *StorageEngine) StopAutoOptimization() error {
 	seo.mutex.Lock()
 	defer seo.mutex.Unlock()
 
@@ -356,7 +356,7 @@ func (seo *StorageEngineoOptimization() error {
 }
 
 // OptimizeStorage 执行存储优化
-func (seo *StorageEnginectx context.Context, options *OptimizationOptions) (*OptimizationResult, error) {
+func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *OptimizationOptions) (*OptimizationResult, error) {
 	log.Println("Starting comprehensive storage optimization...")
 	
 	startTime := time.Now()
@@ -432,7 +432,7 @@ type OptimizationOptions struct {
 }
 
 // optimizeParquetStorage 优化Parquet存储
-func (seo *StorageEnginex context.Context, result *OptimizationResult) error {
+func (seo *StorageEngine) optimizeParquetStorage(ctx context.Context, result *OptimizationResult) error {
 	// 分析压缩性能
 	sampleData := make([]byte, 1024*1024) // 1MB样本数据
 	compressionResults := seo.parquetOptimizer.AnalyzeCompressionPerformance(sampleData)
@@ -455,7 +455,7 @@ func (seo *StorageEnginex context.Context, result *OptimizationResult) error {
 }
 
 // optimizeSharding 优化分片
-func (seo *StorageEngineeSharding(ctx context.Context, result *OptimizationResult) error {
+func (seo *StorageEngine) optimizeSharding(ctx context.Context, result *OptimizationResult) error {
 	// 触发数据重平衡
 	seo.shardOptimizer.rebalancer.TriggerRebalance("performance optimization")
 

@@ -498,7 +498,7 @@ func (po *Parquet) GetStats() *ParquetStats {
 }
 
 // UpdateStats 更新统计信息
-func (po *Parquettats(fileSize int64, rowCount int64, compressionRatio float64, queryTime time.Duration) {
+func (po *Parquet) UpdateStats(fileSize int64, rowCount int64, compressionRatio float64, queryTime time.Duration) {
 	po.stats.mutex.Lock()
 	defer po.stats.mutex.Unlock()
 
