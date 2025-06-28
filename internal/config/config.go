@@ -472,17 +472,20 @@ type SmartRateLimitConfig struct {
 }
 
 // StorageEngineConfig 存储引擎优化配置
+// 注意：这些高级存储优化功能当前已禁用以保持系统简单性
+// 相关实现文件保留在 internal/storage/ 目录下供未来使用
+// 包括: engine.go, index_system.go, memory.go, shard.go 等
 type StorageEngineConfig struct {
-	Enabled          bool                  `yaml:"enabled"`
-	AutoOptimization bool                  `yaml:"auto_optimization"`
-	OptimizeInterval time.Duration         `yaml:"optimize_interval"`
-	PerformanceMode  string                `yaml:"performance_mode"`
-	EnableMonitoring bool                  `yaml:"enable_monitoring"`
-	EnableProfiling  bool                  `yaml:"enable_profiling"`
-	Parquet          StorageParquetConfig  `yaml:"parquet"`
-	Sharding         StorageShardingConfig `yaml:"sharding"`
-	Indexing         StorageIndexingConfig `yaml:"indexing"`
-	Memory           StorageMemoryConfig   `yaml:"memory"`
+	Enabled          bool                  `yaml:"enabled"`           // 当前固定为false
+	AutoOptimization bool                  `yaml:"auto_optimization"` // 当前未使用
+	OptimizeInterval time.Duration         `yaml:"optimize_interval"` // 当前未使用
+	PerformanceMode  string                `yaml:"performance_mode"`  // 当前未使用
+	EnableMonitoring bool                  `yaml:"enable_monitoring"` // 当前未使用
+	EnableProfiling  bool                  `yaml:"enable_profiling"`  // 当前未使用
+	Parquet          StorageParquetConfig  `yaml:"parquet"`           // 高级Parquet优化（未使用）
+	Sharding         StorageShardingConfig `yaml:"sharding"`          // 智能分片优化（未使用）
+	Indexing         StorageIndexingConfig `yaml:"indexing"`          // 高级索引系统（未使用）
+	Memory           StorageMemoryConfig   `yaml:"memory"`            // 内存优化器（未使用）
 }
 
 // StorageParquetConfig Parquet存储优化配置
@@ -937,13 +940,13 @@ func (c *Config) setDefaults() {
 		Compress:   true,
 	}
 
-	// 存储引擎优化配置默认值
+	// 存储引擎优化配置默认值 - 当前禁用以保持系统简单性
 	c.StorageEngine = StorageEngineConfig{
-		Enabled:          true,
-		AutoOptimization: true,
+		Enabled:          false, // 禁用高级存储引擎功能
+		AutoOptimization: false, // 禁用自动优化
 		OptimizeInterval: 30 * time.Minute,
 		PerformanceMode:  "balanced",
-		EnableMonitoring: true,
+		EnableMonitoring: false, // 禁用监控
 		EnableProfiling:  false,
 		Parquet: StorageParquetConfig{
 			DefaultCompression:  "zstd",

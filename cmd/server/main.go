@@ -77,26 +77,9 @@ func main() {
 		log.Fatalf("Failed to get Redis pool from storage")
 	}
 
-	// 初始化存储引擎优化器（第四阶段集成）
-	var storageEngine *storage.StorageEngine
-	if cfg.StorageEngine.Enabled {
-		log.Println("Initializing storage engine optimizer...")
-		storageEngine = storage.NewStorageEngine(cfg, redisPool.GetRedisClient())
-
-		// 启动自动优化
-		if cfg.StorageEngine.AutoOptimization {
-			if err := storageEngine.StartAutoOptimization(); err != nil {
-				log.Printf("Failed to start auto optimization: %v", err)
-			} else {
-				log.Println("Storage engine auto optimization started")
-			}
-		}
-
-		// 启动性能监控
-		if cfg.StorageEngine.EnableMonitoring {
-			log.Println("Storage engine performance monitoring enabled")
-		}
-	}
+	// 注意：高级存储引擎优化功能已实现但当前保持禁用以维持系统简单性
+	// 相关文件保留在 internal/storage/ 目录下供未来使用
+	// 包括: engine.go, index_system.go, memory.go, shard.go 等
 
 	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO)
 	if err != nil {
@@ -212,7 +195,7 @@ func main() {
 	log.Println("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, metadataManager, storageEngine)
+	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, metadataManager, nil)
 
 	log.Println("MinIODB server stopped")
 }
@@ -310,7 +293,7 @@ func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.C
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	grpcServer *grpc.Server, restServer *http.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
-	metadataManager *metadata.Manager, storageEngine *storage.StorageEngine) {
+	metadataManager *metadata.Manager, _ interface{}) {
 
 	// 捕获中断信号
 	sigCh := make(chan os.Signal, 1)
@@ -332,11 +315,7 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 		}
 	}
 
-	// 关闭存储引擎
-	if storageEngine != nil {
-		log.Println("Closing storage engine...")
-		// TODO: 实现存储引擎关闭逻辑
-	}
+	// 注意：存储引擎优化功能已禁用，无需关闭处理
 
 	// 停止gRPC服务器
 	if grpcServer != nil {
