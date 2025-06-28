@@ -123,6 +123,24 @@ type SmartRateLimiter struct {
 
 // NewSmartRateLimiter 创建智能限流器
 func NewSmartRateLimiter(config SmartRateLimiterConfig) *SmartRateLimiter {
+	// 如果配置为空或不完整，使用默认配置
+	if len(config.Tiers) == 0 || len(config.PathLimits) == 0 {
+		defaultConfig := GetDefaultSmartRateLimiterConfig()
+		// 保留用户设置的enabled和其他基本配置
+		if config.Enabled {
+			defaultConfig.Enabled = config.Enabled
+		}
+		if config.DefaultTier != "" {
+			defaultConfig.DefaultTier = config.DefaultTier
+		}
+		if config.CleanupInterval > 0 {
+			defaultConfig.CleanupInterval = config.CleanupInterval
+		}
+		config = defaultConfig
+		fmt.Printf("Smart rate limiter using default configuration with %d tiers and %d path rules\n", 
+			len(config.Tiers), len(config.PathLimits))
+	}
+	
 	limiter := &SmartRateLimiter{
 		config:  config,
 		clients: make(map[string]*ClientRateLimit),

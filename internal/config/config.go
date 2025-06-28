@@ -122,6 +122,47 @@ type RateLimitTier struct {
 	BackoffDuration time.Duration `yaml:"backoff_duration"`
 }
 
+// UnmarshalYAML 自定义YAML解析以处理time.Duration字段
+func (r *RateLimitTier) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// 定义一个临时结构体，使用字符串类型来接收duration字段
+	type RateLimitTierRaw struct {
+		Name            string  `yaml:"name"`
+		RequestsPerSec  float64 `yaml:"requests_per_sec"`
+		BurstSize       int     `yaml:"burst_size"`
+		Window          string  `yaml:"window"`
+		BackoffDuration string  `yaml:"backoff_duration"`
+	}
+	
+	var raw RateLimitTierRaw
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	
+	// 设置非duration字段
+	r.Name = raw.Name
+	r.RequestsPerSec = raw.RequestsPerSec
+	r.BurstSize = raw.BurstSize
+	
+	// 解析duration字段
+	if raw.Window != "" {
+		if window, err := time.ParseDuration(raw.Window); err != nil {
+			return fmt.Errorf("invalid window duration '%s': %w", raw.Window, err)
+		} else {
+			r.Window = window
+		}
+	}
+	
+	if raw.BackoffDuration != "" {
+		if backoff, err := time.ParseDuration(raw.BackoffDuration); err != nil {
+			return fmt.Errorf("invalid backoff_duration '%s': %w", raw.BackoffDuration, err)
+		} else {
+			r.BackoffDuration = backoff
+		}
+	}
+	
+	return nil
+}
+
 // PathRateLimit 路径限流配置
 type PathRateLimit struct {
 	Pattern string `yaml:"pattern"`
@@ -301,11 +342,11 @@ func (c *Config) setDefaults() {
 		JWTSecret: "",
 		EnableTLS: false,
 		RateLimit: RateLimitConfig{
-			Enabled:           true,
+			Enabled:           false, // 默认禁用传统限流器，优先使用智能限流器
 			RequestsPerMinute: 60, // 默认每分钟60个请求
 		},
 		SmartRateLimit: SmartRateLimitConfig{
-			Enabled:         false, // 默认禁用智能限流器
+			Enabled:         true, // 默认启用智能限流器
 			DefaultTier:     "standard",
 			CleanupInterval: 5 * time.Minute,
 			Tiers:           []RateLimitTier{},
