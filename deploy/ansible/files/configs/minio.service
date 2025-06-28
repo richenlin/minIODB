@@ -1,0 +1,33 @@
+[Unit]
+Description=MinIO Object Storage Server
+Documentation=https://docs.min.io
+Wants=network-online.target
+After=network-online.target
+AssertFileIsExecutable=/opt/miniodb/bin/minio
+
+[Service]
+WorkingDirectory=/opt/miniodb/data
+User=minio
+Group=minio
+
+PermissionsStartOnly=true
+
+EnvironmentFile=-/etc/default/minio
+ExecStartPre=/bin/bash -c "if [ -z \"${MINIO_VOLUMES}\" ]; then echo \"Variable MINIO_VOLUMES not set in /etc/default/minio\"; exit 1; fi"
+ExecStart=/opt/miniodb/bin/minio server $MINIO_OPTS $MINIO_VOLUMES
+
+# Let systemd restart this service always
+Restart=always
+
+# Specifies the maximum file descriptor number that can be opened by this process
+LimitNOFILE=1048576
+
+# Specifies the maximum number of threads this process can create
+TasksMax=infinity
+
+# Disable timeout logic and wait until process is stopped
+TimeoutStopSec=infinity
+SendSIGKILL=no
+
+[Install]
+WantedBy=multi-user.target 
