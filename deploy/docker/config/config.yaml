@@ -107,10 +107,12 @@ monitoring:
   prometheus: true
 
 security:
-  mode: "disabled"
-  jwt_secret: ""
+  mode: "jwt"
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
   enable_tls: false
-  valid_tokens: []
+  valid_tokens: 
+    - "test-token-123456"
+    - "admin-token-abcdef"
   cert_file: "certs/server.crt"  # 证书文件路径
   key_file: "certs/server.key"   # 私钥文件路径
   

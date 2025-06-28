@@ -304,6 +304,13 @@ func (c *Config) setDefaults() {
 			Enabled:           true,
 			RequestsPerMinute: 60, // 默认每分钟60个请求
 		},
+		SmartRateLimit: SmartRateLimitConfig{
+			Enabled:         false, // 默认禁用智能限流器
+			DefaultTier:     "standard",
+			CleanupInterval: 5 * time.Minute,
+			Tiers:           []RateLimitTier{},
+			PathLimits:      []PathRateLimit{},
+		},
 	}
 
 	// 指标默认配置
