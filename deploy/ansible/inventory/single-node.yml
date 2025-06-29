@@ -1,0 +1,151 @@
+---
+# MinIODB单机部署清单
+# 适用于离线二进制部署模式
+
+all:
+  vars:
+    # 部署模式配置
+    deployment_mode: "offline"  # offline: 离线部署, online: 在线部署
+    deployment_type: "single"   # single: 单机, cluster: 集群
+    
+    # 基础配置
+    miniodb:
+      install_dir: "/opt/miniodb"
+      data_dir: "/opt/miniodb/data"
+      config_dir: "/opt/miniodb/config"
+      log_dir: "/var/log/miniodb"
+      
+    # 架构自动检测（由detect-arch.sh脚本检测）
+    target_architecture: "{{ ansible_architecture }}"
+    
+    # MinIO配置
+    minio:
+      # 基础配置
+      root_user: "minioadmin"
+      root_password: "minioadmin123"
+      
+      # 服务配置
+      api_port: 9000
+      console_port: 9001
+      data_dir: "{{ miniodb.data_dir }}/minio"
+      
+      # 存储桶配置
+      primary_bucket: "miniodb-data"
+      metadata_bucket: "miniodb-metadata"
+      
+      # 备份配置
+      backup_enabled: true
+      backup_user: "minioadmin"
+      backup_password: "minioadmin123"
+      backup_api_port: 9002
+      backup_console_port: 9003
+      backup_bucket: "miniodb-backup"
+      backup_data_dir: "{{ miniodb.data_dir }}/minio-backup"
+      
+      # 安全配置
+      bucket_policy: "download"
+      backup_bucket_policy: "download"
+      versioning_enabled: true
+      
+    # Redis配置
+    redis:
+      port: 6379
+      password: "redis123"
+      data_dir: "{{ miniodb.data_dir }}/redis"
+      max_memory: "2gb"
+      
+    # MinIODB应用配置
+    miniodb_app:
+      grpc_port: 8080
+      rest_port: 8081
+      metrics_port: 9090
+      node_id: "node-1"
+      
+    # 二进制路径配置
+    binary_paths:
+      minio: "{{ miniodb.install_dir }}/bin/minio"
+      mc: "{{ miniodb.install_dir }}/bin/mc"
+      redis_server: "{{ miniodb.install_dir }}/bin/redis-server"
+      redis_cli: "{{ miniodb.install_dir }}/bin/redis-cli"
+      miniodb: "{{ miniodb.install_dir }}/bin/miniodb"
+      
+    # 存储初始化配置（用于init-storage role）
+    mc_binary_path: "{{ binary_paths.mc }}"
+    minio_primary_url: "http://{{ ansible_default_ipv4.address }}:{{ minio.api_port }}"
+    minio_backup_url: "http://{{ ansible_default_ipv4.address }}:{{ minio.backup_api_port }}"
+    minio_root_user: "{{ minio.root_user }}"
+    minio_root_password: "{{ minio.root_password }}"
+    minio_backup_user: "{{ minio.backup_user }}"
+    minio_backup_password: "{{ minio.backup_password }}"
+    minio_primary_bucket: "{{ minio.primary_bucket }}"
+    minio_metadata_bucket: "{{ minio.metadata_bucket }}"
+    minio_backup_bucket: "{{ minio.backup_bucket }}"
+    minio_backup_enabled: "{{ minio.backup_enabled }}"
+    minio_versioning_enabled: "{{ minio.versioning_enabled }}"
+    minio_bucket_policy: "{{ minio.bucket_policy }}"
+    minio_backup_bucket_policy: "{{ minio.backup_bucket_policy }}"
+    
+    # 系统配置
+    system:
+      timezone: "Asia/Shanghai"
+      ntp_service: "chronyd"
+      configure_firewall: true
+      
+    # 网络配置  
+    network:
+      interface: "{{ ansible_default_ipv4.interface }}"
+      ip_address: "{{ ansible_default_ipv4.address }}"
+      
+    # 服务配置
+    services:
+      start_on_boot: true
+      restart_policy: "always"
+      
+  children:
+    miniodb_nodes:
+      hosts:
+        # 单机部署 - 替换为实际的主机IP或主机名
+        miniodb-single:
+          ansible_host: 127.0.0.1  # 替换为实际IP
+          ansible_user: root        # 或具有sudo权限的用户
+          ansible_ssh_private_key_file: ~/.ssh/id_rsa  # SSH密钥路径
+          
+          # 主机特定配置
+          host_config:
+            # MinIO特定配置
+            minio_volumes: "{{ minio.data_dir }}"
+            minio_backup_volumes: "{{ minio.backup_data_dir }}"
+            
+            # Redis特定配置
+            redis_bind: "127.0.0.1"
+            redis_maxmemory: "{{ redis.max_memory }}"
+            
+            # 应用特定配置
+            miniodb_node_id: "{{ miniodb_app.node_id }}"
+            
+            # 资源配置
+            resources:
+              memory_limit: "8G"
+              cpu_limit: "4"
+              disk_space: "100G"
+
+# 角色映射 - 单机部署时所有角色在同一台机器
+miniodb_all_in_one:
+  hosts:
+    miniodb-single:
+  vars:
+    # 单机模式下的特殊配置
+    single_node_mode: true
+    
+# 组别名（与多机部署保持一致的接口）
+miniodb_storage:
+  hosts:
+    miniodb-single:
+    
+miniodb_compute:
+  hosts:
+    miniodb-single:
+    
+miniodb_cache:
+  hosts:
+    miniodb-single: 

@@ -102,11 +102,30 @@ cleanup_environment() {
     log_success "环境清理完成"
 }
 
+# 修复Go环境
+fix_go_environment() {
+    log_info "修复Go环境..."
+    
+    # 修复GOROOT
+    export GOROOT="/opt/homebrew/Cellar/go/1.24.4/libexec"
+    export GOPROXY="https://goproxy.cn,direct"
+    
+    log_info "Go环境设置："
+    log_info "  GOROOT: $GOROOT"
+    log_info "  GOPATH: $GOPATH"
+    log_info "  GOPROXY: $GOPROXY"
+    
+    log_success "Go环境修复完成"
+}
+
 # 构建应用
 build_application() {
     log_info "构建MinIODB应用..."
     
     cd "$PROJECT_ROOT"
+    
+    # 修复Go环境
+    fix_go_environment
     
     # 构建Go应用
     log_info "编译Go应用..."
@@ -120,78 +139,66 @@ build_application() {
     log_success "应用构建完成"
 }
 
+# 编译性能测试工具
+build_test_tools() {
+    log_info "编译性能测试工具..."
+    
+    cd "$TEST_DIR/tools"
+    
+    # 修复Go环境
+    fix_go_environment
+    
+    # 编译数据生成器
+    log_info "编译数据生成器..."
+    if go build -o data_generator data_generator.go; then
+        log_success "数据生成器编译成功"
+    else
+        log_warning "数据生成器编译失败，测试将使用默认数据"
+    fi
+    
+    # 编译JWT生成器
+    log_info "编译JWT生成器..."
+    if go build -o jwt_generator jwt_generator.go; then
+        log_success "JWT生成器编译成功"
+    else
+        log_warning "JWT生成器编译失败，测试将使用默认token"
+    fi
+    
+    log_success "测试工具编译完成"
+}
+
 # 部署服务
 deploy_services() {
     log_info "部署MinIODB服务..."
     
     cd "$DEPLOY_DIR"
     
-    # 创建数据目录
-    log_info "创建数据目录..."
-    mkdir -p ./data/{redis,minio,minio-backup,logs}
-    
-    # 构建并启动服务
-    log_info "启动Docker Compose服务..."
-    docker-compose up --build -d
+    # 使用start.sh脚本启动服务
+    log_info "使用start.sh启动服务..."
+    ./start.sh
     
     log_success "服务部署完成"
 }
 
 # 等待服务就绪
 wait_for_services() {
-    log_info "等待服务启动..."
+    log_info "验证服务状态..."
     
-    local max_attempts=60
-    local attempt=0
+    # start.sh已经等待了服务启动，这里只需要简单验证
+    sleep 5
     
-    # 等待Redis
-    log_info "等待Redis启动..."
-    while [ $attempt -lt $max_attempts ]; do
-        if docker-compose exec -T redis redis-cli ping &>/dev/null; then
-            log_success "Redis已就绪"
-            break
-        fi
-        attempt=$((attempt + 1))
-        sleep 5
-    done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        log_error "Redis启动超时"
-        exit 1
-    fi
-    
-    # 等待MinIO
-    log_info "等待MinIO启动..."
-    attempt=0
-    while [ $attempt -lt $max_attempts ]; do
-        if curl -f http://localhost:9000/minio/health/live &>/dev/null; then
-            log_success "MinIO已就绪"
-            break
-        fi
-        attempt=$((attempt + 1))
-        sleep 5
-    done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        log_error "MinIO启动超时"
-        exit 1
-    fi
-    
-    # 等待MinIODB应用
-    log_info "等待MinIODB应用启动..."
-    attempt=0
-    while [ $attempt -lt $max_attempts ]; do
+    # 验证MinIODB健康状态
+    if curl -f http://localhost:8081/v1/health &>/dev/null; then
+        log_success "MinIODB服务验证成功"
+    else
+        log_warning "MinIODB服务可能需要更多时间启动，继续等待..."
+        sleep 10
         if curl -f http://localhost:8081/v1/health &>/dev/null; then
-            log_success "MinIODB应用已就绪"
-            break
+            log_success "MinIODB服务验证成功"
+        else
+            log_error "MinIODB服务启动失败"
+            exit 1
         fi
-        attempt=$((attempt + 1))
-        sleep 5
-    done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        log_error "MinIODB应用启动超时"
-        exit 1
     fi
     
     log_success "所有服务已就绪"
@@ -202,6 +209,9 @@ run_performance_tests() {
     log_header "开始性能测试"
     
     cd "$TEST_DIR"
+    
+    # 修复Go环境
+    fix_go_environment
     
     # 设置Go模块
     if [ ! -f "go.mod" ]; then
@@ -377,11 +387,24 @@ collect_system_info() {
         echo ""
         
         echo "=== CPU信息 ==="
-        lscpu
+        if command -v lscpu &> /dev/null; then
+            lscpu
+        else
+            # macOS使用sysctl获取CPU信息
+            echo "CPU型号: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'Unknown')"
+            echo "CPU核心数: $(sysctl -n hw.ncpu 2>/dev/null || echo 'Unknown')"
+            echo "CPU架构: $(uname -m)"
+        fi
         echo ""
         
         echo "=== 内存信息 ==="
-        free -h
+        if command -v free &> /dev/null; then
+            free -h
+        else
+            # macOS使用不同的命令获取内存信息
+            echo "总内存: $(echo "$(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024" | bc 2>/dev/null || echo 'Unknown') GB"
+            echo "可用内存: $(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//' | awk '{print $1 * 4096 / 1024 / 1024}' 2>/dev/null || echo 'Unknown') MB"
+        fi
         echo ""
         
         echo "=== 磁盘信息 ==="
@@ -476,6 +499,7 @@ main() {
         
         if [ "$SKIP_BUILD" != "true" ]; then
             build_application
+            build_test_tools
         fi
         
         if [ "$SKIP_DEPLOY" != "true" ]; then

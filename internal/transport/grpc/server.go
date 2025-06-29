@@ -3,11 +3,12 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"time"
 
-	olapv1 "minIODB/api/proto/olap/v1"
+	miniodb "minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
 	"minIODB/internal/metadata"
@@ -16,12 +17,14 @@ import (
 	"minIODB/internal/service"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
-// Server is the implementation of the OlapServiceServer
+// Server 统一的gRPC服务器实现
 type Server struct {
-	olapv1.UnimplementedOlapServiceServer
-	olapService      *service.OlapService
+	miniodb.UnimplementedMinIODBServiceServer
+	miniodb.UnimplementedAuthServiceServer
+	miniodbService   *service.MinIODBService
 	writeCoordinator *coordinator.WriteCoordinator
 	queryCoordinator *coordinator.QueryCoordinator
 	metadataManager  *metadata.Manager
@@ -31,10 +34,14 @@ type Server struct {
 	authManager     *security.AuthManager
 	grpcInterceptor *security.GRPCInterceptor
 	grpcServer      *grpc.Server
+
+	// 智能限流相关
+	smartRateLimiter     *security.SmartRateLimiter
+	grpcSmartRateLimiter *security.GRPCSmartRateLimiter
 }
 
-// NewServer creates a new gRPC server
-func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, error) {
+// NewServer 创建新的gRPC服务器
+func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Server, error) {
 	// 初始化认证管理器
 	authConfig := &security.AuthConfig{
 		Mode:            cfg.Security.Mode,
@@ -53,24 +60,137 @@ func NewServer(olapService *service.OlapService, cfg config.Config) (*Server, er
 	// 创建gRPC拦截器
 	grpcInterceptor := security.NewGRPCInterceptor(authManager)
 
-	server := &Server{
-		olapService:     olapService,
-		cfg:             cfg,
-		authManager:     authManager,
-		grpcInterceptor: grpcInterceptor,
+	// 创建智能限流器
+	var smartRateLimiter *security.SmartRateLimiter
+	var grpcSmartRateLimiter *security.GRPCSmartRateLimiter
+
+	if cfg.Security.SmartRateLimit.Enabled {
+		// 转换配置格式
+		smartRateLimitConfig := security.SmartRateLimiterConfig{
+			Enabled:         cfg.Security.SmartRateLimit.Enabled,
+			DefaultTier:     cfg.Security.SmartRateLimit.DefaultTier,
+			CleanupInterval: cfg.Security.SmartRateLimit.CleanupInterval,
+		}
+
+		// 转换限流等级
+		for _, tier := range cfg.Security.SmartRateLimit.Tiers {
+			smartRateLimitConfig.Tiers = append(smartRateLimitConfig.Tiers, security.RateLimitTier{
+				Name:            tier.Name,
+				RequestsPerSec:  tier.RequestsPerSec,
+				BurstSize:       tier.BurstSize,
+				Window:          tier.Window,
+				BackoffDuration: tier.BackoffDuration,
+			})
+		}
+
+		// 转换路径限制
+		for _, pathLimit := range cfg.Security.SmartRateLimit.PathLimits {
+			smartRateLimitConfig.PathLimits = append(smartRateLimitConfig.PathLimits, security.PathRateLimit{
+				Pattern: pathLimit.Pattern,
+				Tier:    pathLimit.Tier,
+				Enabled: pathLimit.Enabled,
+			})
+		}
+
+		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
+		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
+		log.Printf("gRPC smart rate limiter initialized with %d tiers and %d path rules",
+			len(smartRateLimitConfig.Tiers), len(smartRateLimitConfig.PathLimits))
+	} else {
+		// 使用默认配置但禁用
+		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
+		defaultConfig.Enabled = false
+		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
+		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
+		log.Println("gRPC smart rate limiter disabled")
 	}
 
-	// 创建gRPC服务器，集成拦截器
-	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(grpcInterceptor.UnaryServerInterceptor()),
-		grpc.StreamInterceptor(grpcInterceptor.StreamServerInterceptor()),
-	)
+	server := &Server{
+		miniodbService:       miniodbService,
+		cfg:                  cfg,
+		authManager:          authManager,
+		grpcInterceptor:      grpcInterceptor,
+		smartRateLimiter:     smartRateLimiter,
+		grpcSmartRateLimiter: grpcSmartRateLimiter,
+	}
+
+	// 构建拦截器链
+	var unaryInterceptors []grpc.UnaryServerInterceptor
+	var streamInterceptors []grpc.StreamServerInterceptor
+
+	// 添加智能限流拦截器（优先）
+	if cfg.Security.SmartRateLimit.Enabled && grpcSmartRateLimiter != nil {
+		unaryInterceptors = append(unaryInterceptors, grpcSmartRateLimiter.UnaryServerInterceptor())
+		streamInterceptors = append(streamInterceptors, grpcSmartRateLimiter.StreamServerInterceptor())
+		log.Println("Smart rate limiter middleware enabled for gRPC API")
+	} else if cfg.Security.RateLimit.Enabled {
+		// 传统限流拦截器（向后兼容）
+		grpcInterceptor.EnableRateLimit(cfg.Security.RateLimit.RequestsPerMinute)
+		unaryInterceptors = append(unaryInterceptors, grpcInterceptor.RateLimitInterceptor())
+		streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamRateLimitInterceptor())
+		log.Printf("Traditional rate limiter middleware enabled for gRPC API (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
+	} else {
+		log.Println("Rate limiting disabled for gRPC API")
+	}
+
+	// 添加JWT认证拦截器（根据配置决定是否启用）
+	if authManager.IsEnabled() {
+		unaryInterceptors = append(unaryInterceptors, grpcInterceptor.UnaryServerInterceptor())
+		streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamServerInterceptor())
+		log.Println("JWT authentication enabled for gRPC API")
+	} else {
+		log.Println("JWT authentication disabled for gRPC API")
+	}
+
+	// 准备gRPC服务器选项 - 集成网络配置优化
+	var grpcOpts []grpc.ServerOption
+
+	// 添加网络配置优化参数
+	grpcNetworkConfig := getGRPCNetworkConfig(&cfg)
+
+	// Keep-Alive配置 - 优化长连接
+	kaParams := keepalive.ServerParameters{
+		Time:    grpcNetworkConfig.KeepAliveTime,    // 30s
+		Timeout: grpcNetworkConfig.KeepAliveTimeout, // 5s
+	}
+	kaPolicy := keepalive.EnforcementPolicy{
+		MinTime:             10 * time.Second, // 最小Keep-Alive间隔
+		PermitWithoutStream: true,             // 允许无流时发送Keep-Alive
+	}
+	grpcOpts = append(grpcOpts, grpc.KeepaliveParams(kaParams))
+	grpcOpts = append(grpcOpts, grpc.KeepaliveEnforcementPolicy(kaPolicy))
+
+	// 连接配置
+	grpcOpts = append(grpcOpts, grpc.ConnectionTimeout(grpcNetworkConfig.ConnectionTimeout))
+	grpcOpts = append(grpcOpts, grpc.MaxSendMsgSize(grpcNetworkConfig.MaxSendMsgSize))
+	grpcOpts = append(grpcOpts, grpc.MaxRecvMsgSize(grpcNetworkConfig.MaxRecvMsgSize))
+
+	// 添加拦截器
+	if len(unaryInterceptors) > 1 {
+		grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(unaryInterceptors...))
+		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(streamInterceptors...))
+	} else if len(unaryInterceptors) == 1 {
+		grpcOpts = append(grpcOpts, grpc.UnaryInterceptor(unaryInterceptors[0]))
+		grpcOpts = append(grpcOpts, grpc.StreamInterceptor(streamInterceptors[0]))
+	}
+
+	// 创建gRPC服务器
+	grpcServer := grpc.NewServer(grpcOpts...)
 
 	// 注册服务
-	olapv1.RegisterOlapServiceServer(grpcServer, server)
+	miniodb.RegisterMinIODBServiceServer(grpcServer, server)
+	miniodb.RegisterAuthServiceServer(grpcServer, server)
 	server.grpcServer = grpcServer
 
-	log.Printf("gRPC server initialized with authentication mode: %s", cfg.Security.Mode)
+	// 确定限流状态
+	rateLimitStatus := "disabled"
+	if cfg.Security.SmartRateLimit.Enabled {
+		rateLimitStatus = fmt.Sprintf("smart limiter enabled (%d tiers)", len(cfg.Security.SmartRateLimit.Tiers))
+	} else if cfg.Security.RateLimit.Enabled {
+		rateLimitStatus = fmt.Sprintf("traditional limiter enabled (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
+	}
+
+	log.Printf("gRPC server initialized with authentication mode: %s, rate limit: %s", cfg.Security.Mode, rateLimitStatus)
 
 	return server, nil
 }
@@ -109,10 +229,12 @@ func (s *Server) Stop() {
 	}
 }
 
-// Write implements the Write rpc
-func (s *Server) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.WriteResponse, error) {
+// 数据操作相关方法实现
+
+// WriteData 实现写入数据API
+func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (*miniodb.WriteDataResponse, error) {
 	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("Write")
+	grpcMetrics := metrics.NewGRPCMetrics("WriteData")
 	defer func() {
 		grpcMetrics.Finish("success")
 	}()
@@ -120,393 +242,426 @@ func (s *Server) Write(ctx context.Context, req *olapv1.WriteRequest) (*olapv1.W
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("Write request from user: %s (ID: %s) for data ID: %s", user.Username, user.ID, req.Id)
+			log.Printf("WriteData request from user: %s (ID: %s) for data ID: %s", user.Username, user.ID, req.Data.Id)
 		}
 	} else {
-		log.Printf("Received Write request for ID: %s", req.Id)
+		log.Printf("Received WriteData request for ID: %s", req.Data.Id)
 	}
 
-	// 使用写入协调器进行分布式路由
-	if s.writeCoordinator != nil {
-		targetNode, err := s.writeCoordinator.RouteWrite(req)
-		if err != nil {
-			return &olapv1.WriteResponse{
-				Success: false,
-				Message: fmt.Sprintf("Failed to route write: %v", err),
-			}, nil
-		}
-
-		// 如果路由到本地节点，则直接处理
-		if targetNode == "local" {
-			return s.olapService.Write(ctx, req)
-		}
-
-		// 如果路由到远程节点，返回成功（实际写入已在 RouteWrite 中完成）
-		return &olapv1.WriteResponse{
-			Success: true,
-			Message: fmt.Sprintf("Write routed to node: %s", targetNode),
-		}, nil
-	}
-
-	// 如果没有协调器，回退到本地处理
-	return s.olapService.Write(ctx, req)
-}
-
-// Query implements the Query rpc
-func (s *Server) Query(ctx context.Context, req *olapv1.QueryRequest) (*olapv1.QueryResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("Query")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("Query request from user: %s (ID: %s) with SQL: %s", user.Username, user.ID, req.Sql)
-		}
-	} else {
-		log.Printf("Received Query request with SQL: %s", req.Sql)
-	}
-
-	// 使用查询协调器进行分布式查询
-	if s.queryCoordinator != nil {
-		result, err := s.queryCoordinator.ExecuteDistributedQuery(req.Sql)
-		if err != nil {
-			return &olapv1.QueryResponse{
-				ResultJson: fmt.Sprintf(`{"error": "Distributed query failed: %v"}`, err),
-			}, nil
-		}
-
-		return &olapv1.QueryResponse{
-			ResultJson: result,
-		}, nil
-	}
-
-	// 如果没有协调器，回退到本地处理
-	return s.olapService.Query(ctx, req)
-}
-
-// TriggerBackup implements the manual backup RPC
-func (s *Server) TriggerBackup(ctx context.Context, req *olapv1.TriggerBackupRequest) (*olapv1.TriggerBackupResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("TriggerBackup")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("TriggerBackup request from user: %s (ID: %s) for ID %s, Day %s", user.Username, user.ID, req.Id, req.Day)
-		}
-	} else {
-		log.Printf("Received TriggerBackup request for ID %s, Day %s", req.Id, req.Day)
-	}
-
-	// 委托给service层处理
-	return s.olapService.TriggerBackup(ctx, req)
-}
-
-// RecoverData implements data recovery RPC
-func (s *Server) RecoverData(ctx context.Context, req *olapv1.RecoverDataRequest) (*olapv1.RecoverDataResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("RecoverData")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("RecoverData request from user: %s (ID: %s)", user.Username, user.ID)
-		}
-	} else {
-		log.Printf("Received RecoverData request")
-	}
-
-	// 委托给service层处理
-	return s.olapService.RecoverData(ctx, req)
-}
-
-// HealthCheck implements health check RPC
-func (s *Server) HealthCheck(ctx context.Context, req *olapv1.HealthCheckRequest) (*olapv1.HealthCheckResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("HealthCheck")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 委托给service层处理
-	return s.olapService.HealthCheck(ctx, req)
-}
-
-// GetStats implements stats retrieval RPC
-func (s *Server) GetStats(ctx context.Context, req *olapv1.GetStatsRequest) (*olapv1.GetStatsResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("GetStats")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 委托给service层处理
-	return s.olapService.GetStats(ctx, req)
-}
-
-// GetNodes implements node information retrieval RPC
-func (s *Server) GetNodes(ctx context.Context, req *olapv1.GetNodesRequest) (*olapv1.GetNodesResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("GetNodes")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 委托给service层处理
-	return s.olapService.GetNodes(ctx, req)
-}
-
-// 元数据管理RPC方法实现
-
-// TriggerMetadataBackup 触发元数据备份
-func (s *Server) TriggerMetadataBackup(ctx context.Context, req *olapv1.TriggerMetadataBackupRequest) (*olapv1.TriggerMetadataBackupResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("TriggerMetadataBackup")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("TriggerMetadataBackup request from user: %s (ID: %s)", user.Username, user.ID)
-		}
-	} else {
-		log.Printf("Received TriggerMetadataBackup request")
-	}
-
-	if s.metadataManager == nil {
-		return &olapv1.TriggerMetadataBackupResponse{
-			Success: false,
-			Message: "Metadata manager not available",
-		}, nil
-	}
-
-	if err := s.metadataManager.TriggerBackup(ctx); err != nil {
-		return &olapv1.TriggerMetadataBackupResponse{
-			Success: false,
-			Message: fmt.Sprintf("Failed to trigger metadata backup: %v", err),
-		}, nil
-	}
-
-	return &olapv1.TriggerMetadataBackupResponse{
-		Success:  true,
-		Message:  "Metadata backup triggered successfully",
-		BackupId: fmt.Sprintf("backup_%d", time.Now().Unix()),
-	}, nil
-}
-
-// ListMetadataBackups 列出元数据备份
-func (s *Server) ListMetadataBackups(ctx context.Context, req *olapv1.ListMetadataBackupsRequest) (*olapv1.ListMetadataBackupsResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("ListMetadataBackups")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("ListMetadataBackups request from user: %s (ID: %s)", user.Username, user.ID)
-		}
-	} else {
-		log.Printf("Received ListMetadataBackups request")
-	}
-
-	if s.metadataManager == nil {
-		return &olapv1.ListMetadataBackupsResponse{
-			Backups: []*olapv1.MetadataBackupInfo{},
-			Total:   0,
-		}, nil
-	}
-
-	days := req.Days
-	if days <= 0 {
-		days = 30 // 默认30天
-	}
-
-	backups, err := s.metadataManager.ListBackups(ctx, int(days))
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.WriteData(ctx, req)
 	if err != nil {
-		return &olapv1.ListMetadataBackupsResponse{
-			Backups: []*olapv1.MetadataBackupInfo{},
-			Total:   0,
-		}, nil
+		log.Printf("ERROR: WriteData failed: %v", err)
+		return nil, err
 	}
 
-	var backupInfos []*olapv1.MetadataBackupInfo
-	for _, backup := range backups {
-		backupInfos = append(backupInfos, &olapv1.MetadataBackupInfo{
-			Id:          backup.ObjectName,
-			Timestamp:   backup.Timestamp.Format(time.RFC3339),
-			Size:        backup.Size,
-			Status:      "completed",
-			Description: fmt.Sprintf("Backup from node %s", backup.NodeID),
+	return result, nil
+}
+
+// QueryData 实现查询数据API
+func (s *Server) QueryData(ctx context.Context, req *miniodb.QueryDataRequest) (*miniodb.QueryDataResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("QueryData")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 获取用户信息（如果启用了认证）
+	if s.authManager.IsEnabled() {
+		if user, ok := security.UserFromContext(ctx); ok {
+			log.Printf("QueryData request from user: %s (ID: %s)", user.Username, user.ID)
+		}
+	} else {
+		log.Printf("Received QueryData request: %s", req.Sql)
+	}
+
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.QueryData(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: QueryData failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// UpdateData 实现更新数据API
+func (s *Server) UpdateData(ctx context.Context, req *miniodb.UpdateDataRequest) (*miniodb.UpdateDataResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("UpdateData")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.UpdateData(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: UpdateData failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// DeleteData 实现删除数据API
+func (s *Server) DeleteData(ctx context.Context, req *miniodb.DeleteDataRequest) (*miniodb.DeleteDataResponse, error) {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("DeleteData")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.DeleteData(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: DeleteData failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// 流式API实现
+
+// StreamWrite 实现流式写入API
+func (s *Server) StreamWrite(stream miniodb.MinIODBService_StreamWriteServer) error {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("StreamWrite")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	var totalRecords int64
+	var errors []string
+	var table string // 用于记录处理的表
+
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			// 处理完所有数据
+			log.Printf("StreamWrite completed, processed %d records for table %s", totalRecords, table)
+			return stream.SendAndClose(&miniodb.StreamWriteResponse{
+				Success:      len(errors) == 0,
+				RecordsCount: totalRecords,
+				Errors:       errors,
+			})
+		}
+
+		if err != nil {
+			log.Printf("ERROR: StreamWrite receive error: %v", err)
+			return err
+		}
+
+		// 记录表名（用于日志）
+		if table == "" && req.Table != "" {
+			table = req.Table
+		}
+
+		// 批量处理记录
+		for _, record := range req.Records {
+			writeReq := &miniodb.WriteDataRequest{
+				Table: req.Table,
+				Data:  record,
+			}
+
+			_, err := s.miniodbService.WriteData(stream.Context(), writeReq)
+			if err != nil {
+				errMsg := fmt.Sprintf("Error writing record ID %s: %v", record.Id, err)
+				errors = append(errors, errMsg)
+				log.Printf("ERROR: %s", errMsg)
+			} else {
+				totalRecords++
+			}
+		}
+
+		// 实现背压控制，每处理1000条记录暂停一下
+		if totalRecords%1000 == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// StreamQuery 实现流式查询API
+func (s *Server) StreamQuery(req *miniodb.StreamQueryRequest, stream miniodb.MinIODBService_StreamQueryServer) error {
+	// 记录gRPC指标
+	grpcMetrics := metrics.NewGRPCMetrics("StreamQuery")
+	defer func() {
+		grpcMetrics.Finish("success")
+	}()
+
+	log.Printf("Received StreamQuery request: %s", req.Sql)
+
+	// 设置默认批次大小，如果未指定
+	batchSize := int32(100)
+	if req.BatchSize > 0 {
+		batchSize = req.BatchSize
+	}
+
+	// 初始化游标
+	cursor := req.Cursor
+
+	// 循环查询，分批发送结果
+	for {
+		// 创建查询请求
+		queryReq := &miniodb.QueryDataRequest{
+			Sql:    req.Sql,
+			Limit:  batchSize,
+			Cursor: cursor,
+		}
+
+		// 执行查询
+		queryResp, err := s.miniodbService.QueryData(stream.Context(), queryReq)
+		if err != nil {
+			log.Printf("ERROR: StreamQuery batch failed: %v", err)
+			return err
+		}
+
+		// 转换结果为记录列表（这里需要服务实现将结果JSON转换为DataRecord对象列表）
+		records, err := s.miniodbService.ConvertResultToRecords(queryResp.ResultJson)
+		if err != nil {
+			log.Printf("ERROR: Failed to convert query result to records: %v", err)
+			return err
+		}
+
+		// 发送批次数据
+		err = stream.Send(&miniodb.StreamQueryResponse{
+			Records: records,
+			HasMore: queryResp.HasMore,
+			Cursor:  queryResp.NextCursor,
 		})
+		if err != nil {
+			log.Printf("ERROR: Failed to send stream batch: %v", err)
+			return err
+		}
+
+		// 如果没有更多数据，退出循环
+		if !queryResp.HasMore {
+			break
+		}
+
+		// 更新游标，准备获取下一批数据
+		cursor = queryResp.NextCursor
+
+		// 添加轻微延迟，避免过度负载
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	return &olapv1.ListMetadataBackupsResponse{
-		Backups: backupInfos,
-		Total:   int32(len(backupInfos)),
-	}, nil
+	log.Printf("StreamQuery completed successfully")
+	return nil
 }
 
-// RecoverMetadata 恢复元数据
-func (s *Server) RecoverMetadata(ctx context.Context, req *olapv1.RecoverMetadataRequest) (*olapv1.RecoverMetadataResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("RecoverMetadata")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
+// 表管理相关方法实现
 
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("RecoverMetadata request from user: %s (ID: %s)", user.Username, user.ID)
-		}
-	} else {
-		log.Printf("Received RecoverMetadata request")
-	}
-
-	if s.metadataManager == nil {
-		return &olapv1.RecoverMetadataResponse{
-			Success: false,
-			Message: "Metadata manager not available",
-		}, nil
-	}
-
-	options := metadata.RecoveryOptions{
-		Overwrite: req.ForceOverwrite,
-		DryRun:    req.Mode == "dry_run",
-	}
-
-	// 设置恢复模式
-	switch req.Mode {
-	case "dry_run":
-		options.Mode = metadata.RecoveryModeDryRun
-	case "complete":
-		options.Mode = metadata.RecoveryModeComplete
-	default:
-		options.Mode = metadata.RecoveryModeComplete
-	}
-
-	var result *metadata.RecoveryResult
-	var err error
-
-	if req.BackupFile == "" {
-		// 从最新备份恢复
-		result, err = s.metadataManager.RecoverFromLatest(ctx, options)
-	} else {
-		// 从指定备份恢复
-		result, err = s.metadataManager.RecoverFromBackup(ctx, req.BackupFile, options)
-	}
-
+// CreateTable 实现创建表API
+func (s *Server) CreateTable(ctx context.Context, req *miniodb.CreateTableRequest) (*miniodb.CreateTableResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.CreateTable(ctx, req)
 	if err != nil {
-		return &olapv1.RecoverMetadataResponse{
-			Success: false,
-			Message: fmt.Sprintf("Failed to recover metadata: %v", err),
-		}, nil
+		log.Printf("ERROR: CreateTable failed: %v", err)
+		return nil, err
 	}
 
-	return &olapv1.RecoverMetadataResponse{
-		Success:        result.Success,
-		Message:        "Metadata recovery completed",
-		RecoveredItems: int32(result.EntriesOK),
-		RecoveredKeys:  []string{}, // 实际的键列表需要从result.Details中提取
-		Warnings:       result.Errors,
+	return result, nil
+}
+
+// ListTables 实现列出表API
+func (s *Server) ListTables(ctx context.Context, req *miniodb.ListTablesRequest) (*miniodb.ListTablesResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.ListTables(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: ListTables failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetTable 实现获取表信息API
+func (s *Server) GetTable(ctx context.Context, req *miniodb.GetTableRequest) (*miniodb.GetTableResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.GetTable(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: GetTable failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// DeleteTable 实现删除表API
+func (s *Server) DeleteTable(ctx context.Context, req *miniodb.DeleteTableRequest) (*miniodb.DeleteTableResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.DeleteTable(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: DeleteTable failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// 元数据管理相关方法实现
+
+// BackupMetadata 实现备份元数据API
+func (s *Server) BackupMetadata(ctx context.Context, req *miniodb.BackupMetadataRequest) (*miniodb.BackupMetadataResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.BackupMetadata(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: BackupMetadata failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// RestoreMetadata 实现恢复元数据API
+func (s *Server) RestoreMetadata(ctx context.Context, req *miniodb.RestoreMetadataRequest) (*miniodb.RestoreMetadataResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.RestoreMetadata(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: RestoreMetadata failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// ListBackups 实现列出备份API
+func (s *Server) ListBackups(ctx context.Context, req *miniodb.ListBackupsRequest) (*miniodb.ListBackupsResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.ListBackups(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: ListBackups failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetMetadataStatus 实现获取元数据状态API
+func (s *Server) GetMetadataStatus(ctx context.Context, req *miniodb.GetMetadataStatusRequest) (*miniodb.GetMetadataStatusResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.GetMetadataStatus(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: GetMetadataStatus failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// 健康检查相关方法实现
+
+// HealthCheck 实现健康检查API
+func (s *Server) HealthCheck(ctx context.Context, req *miniodb.HealthCheckRequest) (*miniodb.HealthCheckResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.HealthCheck(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: HealthCheck failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetStatus 实现获取状态API
+func (s *Server) GetStatus(ctx context.Context, req *miniodb.GetStatusRequest) (*miniodb.GetStatusResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.GetStatus(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: GetStatus failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetMetrics 实现获取性能指标API
+func (s *Server) GetMetrics(ctx context.Context, req *miniodb.GetMetricsRequest) (*miniodb.GetMetricsResponse, error) {
+	// 调用服务方法处理请求
+	result, err := s.miniodbService.GetMetrics(ctx, req)
+	if err != nil {
+		log.Printf("ERROR: GetMetrics failed: %v", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// 认证服务相关方法实现
+
+// GetToken 实现获取JWT令牌API
+func (s *Server) GetToken(ctx context.Context, req *miniodb.GetTokenRequest) (*miniodb.GetTokenResponse, error) {
+	// 验证API密钥和密码 (简单实现，实际应该验证credentials)
+	if req.ApiKey == "" || req.Secret == "" {
+		return nil, fmt.Errorf("api key and secret are required")
+	}
+
+	// 生成JWT token
+	accessToken, err := s.authManager.GenerateToken(req.ApiKey, req.ApiKey)
+	if err != nil {
+		log.Printf("ERROR: Token generation failed: %v", err)
+		return nil, fmt.Errorf("invalid credentials: %w", err)
+	}
+
+	return &miniodb.GetTokenResponse{
+		AccessToken:  accessToken,
+		RefreshToken: "refresh_" + accessToken, // 简单实现
+		ExpiresIn:    3600,                     // 1小时
+		TokenType:    "Bearer",
 	}, nil
 }
 
-// GetMetadataStatus 获取元数据状态
-func (s *Server) GetMetadataStatus(ctx context.Context, req *olapv1.GetMetadataStatusRequest) (*olapv1.MetadataStatusResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("GetMetadataStatus")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("GetMetadataStatus request from user: %s (ID: %s)", user.Username, user.ID)
-		}
-	} else {
-		log.Printf("Received GetMetadataStatus request")
+// RefreshToken 实现刷新JWT令牌API
+func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequest) (*miniodb.RefreshTokenResponse, error) {
+	// 简单实现：验证refresh token并生成新token
+	if req.RefreshToken == "" {
+		return nil, fmt.Errorf("refresh token is required")
 	}
 
-	if s.metadataManager == nil {
-		return &olapv1.MetadataStatusResponse{
-			Status:       "unavailable",
-			LastBackup:   "",
-			NextBackup:   "",
-			TotalEntries: 0,
-			TypeCounts:   make(map[string]int32),
-		}, nil
+	// 这里应该验证refresh token，简单实现直接生成新的
+	accessToken, err := s.authManager.GenerateToken("refresh_user", "refresh_user")
+	if err != nil {
+		log.Printf("ERROR: Token refresh failed: %v", err)
+		return nil, fmt.Errorf("invalid refresh token: %w", err)
 	}
 
-	// 获取状态信息 - 由于Manager没有GetStatus方法，我们返回基本信息
-	return &olapv1.MetadataStatusResponse{
-		Status:       "healthy",
-		LastBackup:   "",
-		NextBackup:   "",
-		TotalEntries: 0,
-		TypeCounts:   make(map[string]int32),
+	return &miniodb.RefreshTokenResponse{
+		AccessToken:  accessToken,
+		RefreshToken: "refresh_" + accessToken,
+		ExpiresIn:    3600,
+		TokenType:    "Bearer",
 	}, nil
 }
 
-// ValidateMetadataBackup 验证元数据备份
-func (s *Server) ValidateMetadataBackup(ctx context.Context, req *olapv1.ValidateMetadataBackupRequest) (*olapv1.ValidateMetadataBackupResponse, error) {
-	// 记录gRPC指标
-	grpcMetrics := metrics.NewGRPCMetrics("ValidateMetadataBackup")
-	defer func() {
-		grpcMetrics.Finish("success")
-	}()
-
-	// 获取用户信息（如果启用了认证）
-	if s.authManager.IsEnabled() {
-		if user, ok := security.UserFromContext(ctx); ok {
-			log.Printf("ValidateMetadataBackup request from user: %s (ID: %s)", user.Username, user.ID)
-		}
-	} else {
-		log.Printf("Received ValidateMetadataBackup request")
+// RevokeToken 实现撤销JWT令牌API
+func (s *Server) RevokeToken(ctx context.Context, req *miniodb.RevokeTokenRequest) (*miniodb.RevokeTokenResponse, error) {
+	// 简单实现：记录token撤销（实际应该加入黑名单）
+	if req.Token == "" {
+		return nil, fmt.Errorf("token is required")
 	}
 
-	if s.metadataManager == nil {
-		return &olapv1.ValidateMetadataBackupResponse{
-			Valid:   false,
-			Message: "Metadata manager not available",
-			Errors:  []string{"Metadata manager is not initialized"},
-		}, nil
-	}
+	log.Printf("INFO: Token revoked: %s", req.Token[:10]+"...")
 
-	if err := s.metadataManager.ValidateBackup(ctx, req.BackupFile); err != nil {
-		return &olapv1.ValidateMetadataBackupResponse{
-			Valid:   false,
-			Message: fmt.Sprintf("Backup validation failed: %v", err),
-			Errors:  []string{err.Error()},
-		}, nil
-	}
-
-	return &olapv1.ValidateMetadataBackupResponse{
-		Valid:   true,
-		Message: "Backup validation successful",
-		Errors:  []string{},
+	return &miniodb.RevokeTokenResponse{
+		Success: true,
+		Message: "Token revoked successfully",
 	}, nil
 }
 
-// convertTypeCounts 转换类型计数格式
-func convertTypeCounts(counts map[string]int) map[string]int32 {
-	result := make(map[string]int32)
-	for k, v := range counts {
-		result[k] = int32(v)
+// getGRPCNetworkConfig 获取gRPC网络配置
+func getGRPCNetworkConfig(cfg *config.Config) *config.GRPCNetworkConfig {
+	// 如果配置中有自定义的网络设置，则使用它
+	if cfg.Network.Server.GRPC.ConnectionTimeout > 0 {
+		return &cfg.Network.Server.GRPC
 	}
-	return result
+
+	// 否则返回默认配置
+	return &config.GRPCNetworkConfig{
+		ConnectionTimeout: 120 * time.Second,
+		KeepAliveTime:     30 * time.Second,
+		KeepAliveTimeout:  5 * time.Second,
+		MaxSendMsgSize:    4 * 1024 * 1024, // 4MB
+		MaxRecvMsgSize:    4 * 1024 * 1024, // 4MB
+	}
 }

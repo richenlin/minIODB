@@ -3,3 +3,8 @@ test/performance/tools/data_generator
 bin
 miniodb
 test/performance/tools/jwt_generator
+minIODB
+test/performance/results/
+miniodb-test
+minIODB
+test/performance/test_results/

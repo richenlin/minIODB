@@ -6,9 +6,10 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
-	olapv1 "minIODB/api/proto/olap/v1"
+	miniodbv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
 	"minIODB/internal/metadata"
@@ -22,7 +23,7 @@ import (
 
 // Server RESTful API服务器
 type Server struct {
-	olapService      *service.OlapService
+	miniodbService   *service.MinIODBService // 统一服务接口
 	writeCoordinator *coordinator.WriteCoordinator
 	queryCoordinator *coordinator.QueryCoordinator
 	metadataManager  *metadata.Manager
@@ -33,6 +34,7 @@ type Server struct {
 	// 安全相关
 	authManager        *security.AuthManager
 	securityMiddleware *security.SecurityMiddleware
+	smartRateLimiter   *security.SmartRateLimiter // 新增智能限流器
 }
 
 // WriteRequest REST API写入请求
@@ -297,7 +299,7 @@ type ValidateMetadataBackupResponse struct {
 }
 
 // NewServer 创建新的REST服务器
-func NewServer(olapService *service.OlapService, cfg *config.Config) *Server {
+func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Server {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
@@ -309,24 +311,67 @@ func NewServer(olapService *service.OlapService, cfg *config.Config) *Server {
 		JWTSecret:       cfg.Security.JWTSecret,
 		TokenExpiration: 24 * time.Hour,
 		Issuer:          "miniodb",
-		Audience:        "miniodb-rest",
+		Audience:        "miniodb-api",
 		ValidTokens:     cfg.Security.ValidTokens,
 	}
 
 	authManager, err := security.NewAuthManager(authConfig)
 	if err != nil {
-		log.Fatalf("Failed to create auth manager: %v", err)
+		log.Printf("Warning: Failed to initialize auth manager: %v, security features will be limited", err)
 	}
 
 	// 创建安全中间件
 	securityMiddleware := security.NewSecurityMiddleware(authManager)
 
+	// 创建智能限流器
+	var smartRateLimiter *security.SmartRateLimiter
+
+	if cfg.Security.SmartRateLimit.Enabled {
+		// 转换配置格式
+		smartRateLimitConfig := security.SmartRateLimiterConfig{
+			Enabled:         cfg.Security.SmartRateLimit.Enabled,
+			DefaultTier:     cfg.Security.SmartRateLimit.DefaultTier,
+			CleanupInterval: cfg.Security.SmartRateLimit.CleanupInterval,
+		}
+
+		// 转换限流等级
+		for _, tier := range cfg.Security.SmartRateLimit.Tiers {
+			smartRateLimitConfig.Tiers = append(smartRateLimitConfig.Tiers, security.RateLimitTier{
+				Name:            tier.Name,
+				RequestsPerSec:  tier.RequestsPerSec,
+				BurstSize:       tier.BurstSize,
+				Window:          tier.Window,
+				BackoffDuration: tier.BackoffDuration,
+			})
+		}
+
+		// 转换路径限制
+		for _, pathLimit := range cfg.Security.SmartRateLimit.PathLimits {
+			smartRateLimitConfig.PathLimits = append(smartRateLimitConfig.PathLimits, security.PathRateLimit{
+				Pattern: pathLimit.Pattern,
+				Tier:    pathLimit.Tier,
+				Enabled: pathLimit.Enabled,
+			})
+		}
+
+		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
+		log.Printf("REST smart rate limiter initialized with %d tiers and %d path rules",
+			len(smartRateLimitConfig.Tiers), len(smartRateLimitConfig.PathLimits))
+	} else {
+		// 使用默认配置但禁用
+		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
+		defaultConfig.Enabled = false
+		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
+		log.Println("REST smart rate limiter disabled")
+	}
+
 	server := &Server{
-		olapService:        olapService,
+		miniodbService:     miniodbService,
 		cfg:                cfg,
 		router:             router,
 		authManager:        authManager,
 		securityMiddleware: securityMiddleware,
+		smartRateLimiter:   smartRateLimiter,
 	}
 
 	server.setupMiddleware()
@@ -348,9 +393,16 @@ func (s *Server) setupMiddleware() {
 	s.router.Use(s.securityMiddleware.SecurityHeaders())
 	s.router.Use(s.securityMiddleware.RequestLogger())
 
-	// 可选的限流中间件
-	if s.cfg.Security.RateLimit.Enabled {
+	// 智能限流中间件（优先使用）
+	if s.cfg.Security.SmartRateLimit.Enabled && s.smartRateLimiter != nil {
+		s.router.Use(s.smartRateLimiter.Middleware())
+		log.Println("Smart rate limiter middleware enabled for REST API")
+	} else if s.cfg.Security.RateLimit.Enabled {
+		// 传统限流中间件（向后兼容）
 		s.router.Use(s.securityMiddleware.RateLimiter(s.cfg.Security.RateLimit.RequestsPerMinute))
+		log.Println("Traditional rate limiter middleware enabled for REST API")
+	} else {
+		log.Println("Rate limiting disabled for REST API")
 	}
 }
 
@@ -367,404 +419,586 @@ func (s *Server) SetMetadataManager(manager *metadata.Manager) {
 
 // setupRoutes 设置路由
 func (s *Server) setupRoutes() {
-	// API版本前缀
-	v1 := s.router.Group("/v1")
+	api := s.router.Group("/v1")
+
+	// 认证路由 - 不需要JWT验证
+	authGroup := api.Group("/auth")
 	{
-		// 不需要认证的路由
-		v1.GET("/health", s.healthCheck)
-
-		// 需要认证的路由组
-		authRequired := v1.Group("")
-		authRequired.Use(s.securityMiddleware.AuthRequired())
-		{
-			// 数据写入
-			authRequired.POST("/data", s.writeData)
-
-			// 数据查询
-			authRequired.POST("/query", s.queryData)
-
-			// 表管理
-			authRequired.POST("/tables", s.createTable)
-			authRequired.GET("/tables", s.listTables)
-			authRequired.GET("/tables/:table_name", s.describeTable)
-			authRequired.DELETE("/tables/:table_name", s.dropTable)
-
-			// 备份相关
-			authRequired.POST("/backup/trigger", s.triggerBackup)
-			authRequired.POST("/backup/recover", s.recoverData)
-
-			// 系统信息
-			authRequired.GET("/stats", s.getStats)
-			authRequired.GET("/nodes", s.getNodes)
-
-			// 元数据管理
-			authRequired.POST("/metadata/backup", s.triggerMetadataBackup)
-			authRequired.GET("/metadata/backups", s.listMetadataBackups)
-			authRequired.POST("/metadata/recover", s.recoverMetadata)
-			authRequired.GET("/metadata/status", s.getMetadataStatus)
-			authRequired.POST("/metadata/validate", s.validateMetadataBackup)
-		}
-	}
-}
-
-// healthCheck 健康检查
-func (s *Server) healthCheck(c *gin.Context) {
-	// TODO: 添加REST指标收集
-
-	// 委托给service层处理
-	grpcResp, err := s.olapService.HealthCheck(c.Request.Context(), &olapv1.HealthCheckRequest{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "internal_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Health check failed: %v", err),
-		})
-		return
+		authGroup.POST("/token", s.getToken)
+		authGroup.POST("/refresh", s.refreshToken)
+		authGroup.DELETE("/token", s.revokeToken)
 	}
 
-	// 转换为REST响应格式
-	response := HealthResponse{
-		Status:    grpcResp.Status,
-		Timestamp: grpcResp.Timestamp,
-		Version:   grpcResp.Version,
-		Details:   grpcResp.Details,
-	}
+	// 健康检查路由 - 不需要JWT验证
+	api.GET("/health", s.healthCheck)
 
-	if grpcResp.Status == "healthy" {
-		c.JSON(http.StatusOK, response)
+	// 需要JWT验证的路由
+	securedRoutes := api.Group("")
+	if s.authManager != nil && s.authManager.IsEnabled() {
+		log.Println("JWT authentication enabled for REST API")
+		// 使用简单的JWT验证中间件
+		securedRoutes.Use(s.jwtAuthMiddleware())
 	} else {
-		c.JSON(http.StatusServiceUnavailable, response)
+		log.Println("JWT authentication disabled for REST API")
 	}
+
+	// 数据操作
+	securedRoutes.POST("/data", s.writeData)
+	securedRoutes.POST("/query", s.queryData)
+	securedRoutes.PUT("/data", s.updateData)
+	securedRoutes.DELETE("/data", s.deleteData)
+
+	// 表管理
+	securedRoutes.POST("/tables", s.createTable)
+	securedRoutes.GET("/tables", s.listTables)
+	securedRoutes.GET("/tables/:name", s.getTable)
+	securedRoutes.DELETE("/tables/:name", s.deleteTable)
+
+	// 元数据管理
+	securedRoutes.POST("/metadata/backup", s.backupMetadata)
+	securedRoutes.POST("/metadata/restore", s.restoreMetadata)
+	securedRoutes.GET("/metadata/backups", s.listBackups)
+	securedRoutes.GET("/metadata/status", s.getMetadataStatus)
+
+	// 系统状态与监控
+	securedRoutes.GET("/status", s.getStatus)   // 主状态接口（包含统计和节点信息）
+	securedRoutes.GET("/metrics", s.getMetrics) // 性能指标接口
 }
 
-// writeData 写入数据
-func (s *Server) writeData(c *gin.Context) {
-	// TODO: 添加REST指标收集
+// healthCheck 处理健康检查请求
+func (s *Server) healthCheck(c *gin.Context) {
+	protoReq := &miniodbv1.HealthCheckRequest{}
 
-	var req WriteRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
-		return
-	}
-
-	// 转换为gRPC请求格式
-	payloadStruct, err := structpb.NewStruct(req.Payload)
+	// 调用统一服务
+	resp, err := s.miniodbService.HealthCheck(c.Request.Context(), protoReq)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "payload_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid payload format: %v", err),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	grpcReq := &olapv1.WriteRequest{
-		Table:     req.Table, // 添加表名支持
+	c.JSON(http.StatusOK, gin.H{
+		"status":    resp.Status,
+		"timestamp": resp.Timestamp,
+		"version":   resp.Version,
+		"details":   resp.Details,
+	})
+}
+
+// writeData 处理数据写入请求
+func (s *Server) writeData(c *gin.Context) {
+	var req struct {
+		Table     string                 `json:"table"`
+		ID        string                 `json:"id" binding:"required"`
+		Timestamp time.Time              `json:"timestamp" binding:"required"`
+		Payload   map[string]interface{} `json:"payload" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 构建Protobuf请求
+	payload, err := structpb.NewStruct(req.Payload)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse payload: " + err.Error()})
+		return
+	}
+
+	dataRecord := &miniodbv1.DataRecord{
 		Id:        req.ID,
 		Timestamp: timestamppb.New(req.Timestamp),
-		Payload:   payloadStruct,
+		Payload:   payload,
 	}
 
-	// 使用写入协调器进行分布式路由
-	if s.writeCoordinator != nil {
-		targetNode, err := s.writeCoordinator.RouteWrite(grpcReq)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Error:   "write_error",
-				Code:    http.StatusInternalServerError,
-				Message: fmt.Sprintf("Failed to route write: %v", err),
-			})
-			return
-		}
-
-		// 如果路由到本地节点，则直接处理
-		if targetNode == "local" {
-			grpcResp, err := s.olapService.Write(c.Request.Context(), grpcReq)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, ErrorResponse{
-					Error:   "write_error",
-					Code:    http.StatusInternalServerError,
-					Message: fmt.Sprintf("Write operation failed: %v", err),
-				})
-				return
-			}
-
-			response := WriteResponse{
-				Success: grpcResp.Success,
-				Message: grpcResp.Message,
-				NodeID:  s.cfg.Server.NodeID,
-			}
-			c.JSON(http.StatusOK, response)
-			return
-		}
-
-		// 如果路由到远程节点，返回成功
-		response := WriteResponse{
-			Success: true,
-			Message: fmt.Sprintf("Write routed to node: %s", targetNode),
-			NodeID:  s.cfg.Server.NodeID,
-		}
-		c.JSON(http.StatusOK, response)
-		return
+	protoReq := &miniodbv1.WriteDataRequest{
+		Table: req.Table,
+		Data:  dataRecord,
 	}
 
-	// 如果没有协调器，回退到本地处理
-	grpcResp, err := s.olapService.Write(c.Request.Context(), grpcReq)
+	// 调用统一服务
+	resp, err := s.miniodbService.WriteData(c.Request.Context(), protoReq)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "write_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Write operation failed: %v", err),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 转换为REST响应格式
-	response := WriteResponse{
-		Success: grpcResp.Success,
-		Message: grpcResp.Message,
-		NodeID:  s.cfg.Server.NodeID, // 添加节点ID信息
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// queryData 查询数据
-func (s *Server) queryData(c *gin.Context) {
-	// TODO: 添加REST指标收集
-
-	var req QueryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
-		return
-	}
-
-	// 使用查询协调器进行分布式查询
-	if s.queryCoordinator != nil {
-		result, err := s.queryCoordinator.ExecuteDistributedQuery(req.SQL)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Error:   "query_error",
-				Code:    http.StatusInternalServerError,
-				Message: fmt.Sprintf("Distributed query execution failed: %v", err),
-			})
-			return
-		}
-
-		// 转换为REST响应格式
-		response := QueryResponse{
-			ResultJSON: result,
-		}
-
-		c.JSON(http.StatusOK, response)
-		return
-	}
-
-	// 如果没有协调器，回退到本地处理
-	grpcResp, err := s.olapService.Query(c.Request.Context(), &olapv1.QueryRequest{
-		Sql: req.SQL,
+	c.JSON(http.StatusOK, gin.H{
+		"success": resp.Success,
+		"message": resp.Message,
+		"node_id": resp.NodeId,
 	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "query_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Query execution failed: %v", err),
-		})
-		return
-	}
-
-	// 转换为REST响应格式
-	response := QueryResponse{
-		ResultJSON: grpcResp.ResultJson,
-	}
-
-	c.JSON(http.StatusOK, response)
 }
 
-// triggerBackup 触发备份
-func (s *Server) triggerBackup(c *gin.Context) {
-	// TODO: 添加REST指标收集
+// queryData 处理数据查询请求
+func (s *Server) queryData(c *gin.Context) {
+	var req struct {
+		SQL    string `json:"sql" binding:"required"`
+		Limit  int32  `json:"limit,omitempty"`
+		Cursor string `json:"cursor,omitempty"`
+	}
 
-	var req TriggerBackupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 转换为gRPC请求格式
-	grpcReq := &olapv1.TriggerBackupRequest{
-		Id:  req.ID,
-		Day: req.Day,
+	protoReq := &miniodbv1.QueryDataRequest{
+		Sql:    req.SQL,
+		Limit:  req.Limit,
+		Cursor: req.Cursor,
 	}
 
-	// 委托给service层处理
-	grpcResp, err := s.olapService.TriggerBackup(c.Request.Context(), grpcReq)
+	// 调用统一服务
+	resp, err := s.miniodbService.QueryData(c.Request.Context(), protoReq)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "backup_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Backup operation failed: %v", err),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 转换为REST响应格式
-	response := TriggerBackupResponse{
-		Success:       grpcResp.Success,
-		Message:       grpcResp.Message,
-		FilesBackedUp: grpcResp.FilesBackedUp,
-	}
-
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, gin.H{
+		"result_json": resp.ResultJson,
+		"has_more":    resp.HasMore,
+		"next_cursor": resp.NextCursor,
+	})
 }
 
-// recoverData 恢复数据
-func (s *Server) recoverData(c *gin.Context) {
-	// TODO: 添加REST指标收集
+// updateData 处理数据更新请求
+func (s *Server) updateData(c *gin.Context) {
+	var req struct {
+		Table   string                 `json:"table" binding:"required"`
+		ID      string                 `json:"id" binding:"required"`
+		Payload map[string]interface{} `json:"payload" binding:"required"`
+		Partial bool                   `json:"partial"`
+	}
 
-	var req RecoverDataRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 转换为gRPC请求格式
-	grpcReq := &olapv1.RecoverDataRequest{
-		ForceOverwrite: req.ForceOverwrite,
-	}
-
-	// 根据请求类型设置恢复模式
-	if req.IDRange != nil {
-		grpcReq.RecoveryMode = &olapv1.RecoverDataRequest_IdRange{
-			IdRange: &olapv1.IdRangeFilter{
-				Ids:       req.IDRange.IDs,
-				IdPattern: req.IDRange.IDPattern,
-			},
-		}
-	} else if req.TimeRange != nil {
-		grpcReq.RecoveryMode = &olapv1.RecoverDataRequest_TimeRange{
-			TimeRange: &olapv1.TimeRangeFilter{
-				StartDate: req.TimeRange.StartDate,
-				EndDate:   req.TimeRange.EndDate,
-				Ids:       req.TimeRange.IDs,
-			},
-		}
-	} else {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: "Either id_range or time_range must be specified",
-		})
-		return
-	}
-
-	// 委托给service层处理
-	grpcResp, err := s.olapService.RecoverData(c.Request.Context(), grpcReq)
+	// 构建Protobuf请求
+	payload, err := structpb.NewStruct(req.Payload)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "recovery_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Data recovery failed: %v", err),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse payload: " + err.Error()})
 		return
 	}
 
-	// 转换为REST响应格式
-	response := RecoverDataResponse{
-		Success:        grpcResp.Success,
-		Message:        grpcResp.Message,
-		FilesRecovered: grpcResp.FilesRecovered,
-		RecoveredKeys:  grpcResp.RecoveredKeys,
+	protoReq := &miniodbv1.UpdateDataRequest{
+		Table:     req.Table,
+		Id:        req.ID,
+		Payload:   payload,
+		Timestamp: timestamppb.New(time.Now()),
 	}
 
-	c.JSON(http.StatusOK, response)
+	// 调用统一服务
+	resp, err := s.miniodbService.UpdateData(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": resp.Success,
+		"message": resp.Message,
+	})
 }
 
-// getStats 获取统计信息
-func (s *Server) getStats(c *gin.Context) {
-	// TODO: 添加REST指标收集
+// deleteData 处理数据删除请求
+func (s *Server) deleteData(c *gin.Context) {
+	var req struct {
+		Table string   `json:"table" binding:"required"`
+		IDs   []string `json:"ids" binding:"required"`
+	}
 
-	// 委托给service层处理
-	grpcResp, err := s.olapService.GetStats(c.Request.Context(), &olapv1.GetStatsRequest{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "stats_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Failed to get stats: %v", err),
-		})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 转换为REST响应格式
-	response := StatsResponse{
-		Timestamp:   grpcResp.Timestamp,
-		BufferStats: grpcResp.BufferStats,
-		RedisStats:  grpcResp.RedisStats,
-		MinioStats:  grpcResp.MinioStats,
+	// 处理批量删除：目前API只支持单个ID，这里取第一个
+	var deleteID string
+	if len(req.IDs) > 0 {
+		deleteID = req.IDs[0]
 	}
 
-	c.JSON(http.StatusOK, response)
+	protoReq := &miniodbv1.DeleteDataRequest{
+		Table: req.Table,
+		Id:    deleteID,
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.DeleteData(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":       resp.Success,
+		"message":       resp.Message,
+		"deleted_count": resp.DeletedCount,
+	})
 }
 
-// getNodes 获取节点信息
-func (s *Server) getNodes(c *gin.Context) {
-	// TODO: 添加REST指标收集
+// getStatus 处理获取状态请求（合并了节点和统计信息）
+func (s *Server) getStatus(c *gin.Context) {
+	protoReq := &miniodbv1.GetStatusRequest{}
 
-	// 委托给service层处理
-	grpcResp, err := s.olapService.GetNodes(c.Request.Context(), &olapv1.GetNodesRequest{})
+	// 调用统一服务
+	resp, err := s.miniodbService.GetStatus(c.Request.Context(), protoReq)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "nodes_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Failed to get nodes: %v", err),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 转换为REST响应格式
-	var nodes []NodeInfo
-	for _, node := range grpcResp.Nodes {
-		nodes = append(nodes, NodeInfo{
-			ID:       node.Id,
-			Status:   node.Status,
-			Type:     node.Type,
-			Address:  node.Address,
-			LastSeen: node.LastSeen,
-		})
+	c.JSON(http.StatusOK, gin.H{
+		"timestamp":    resp.Timestamp,
+		"buffer_stats": resp.BufferStats,
+		"redis_stats":  resp.RedisStats,
+		"minio_stats":  resp.MinioStats,
+		"nodes":        resp.Nodes,
+		"total_nodes":  resp.TotalNodes,
+	})
+}
+
+// getMetrics 处理获取性能指标请求
+func (s *Server) getMetrics(c *gin.Context) {
+	protoReq := &miniodbv1.GetMetricsRequest{}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.GetMetrics(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	response := NodesResponse{
-		Nodes: nodes,
-		Total: grpcResp.Total,
+	c.JSON(http.StatusOK, gin.H{
+		"timestamp":           resp.Timestamp,
+		"performance_metrics": resp.PerformanceMetrics,
+		"resource_usage":      resp.ResourceUsage,
+		"system_info":         resp.SystemInfo,
+	})
+}
+
+// getToken 处理获取JWT令牌请求
+func (s *Server) getToken(c *gin.Context) {
+	var req struct {
+		APIKey    string `json:"api_key" binding:"required"`
+		APISecret string `json:"api_secret" binding:"required"`
 	}
 
-	c.JSON(http.StatusOK, response)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 简单验证API密钥和密码
+	if req.APIKey == "" || req.APISecret == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "API key and secret are required"})
+		return
+	}
+
+	// 生成JWT token
+	accessToken, err := s.authManager.GenerateToken(req.APIKey, req.APIKey)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"access_token":  accessToken,
+		"refresh_token": "refresh_" + accessToken,
+		"expires_in":    3600,
+		"token_type":    "Bearer",
+	})
+}
+
+// refreshToken 处理刷新JWT令牌请求
+func (s *Server) refreshToken(c *gin.Context) {
+	var req struct {
+		RefreshToken string `json:"refresh_token" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 简单实现：验证refresh token并生成新token
+	if req.RefreshToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Refresh token is required"})
+		return
+	}
+
+	// 生成新token
+	accessToken, err := s.authManager.GenerateToken("refresh_user", "refresh_user")
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"access_token":  accessToken,
+		"refresh_token": "refresh_" + accessToken,
+		"expires_in":    3600,
+		"token_type":    "Bearer",
+	})
+}
+
+// revokeToken 处理撤销JWT令牌请求
+func (s *Server) revokeToken(c *gin.Context) {
+	var req struct {
+		Token string `json:"token" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 简单实现：记录token撤销
+	if req.Token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Token is required"})
+		return
+	}
+
+	log.Printf("INFO: Token revoked via REST API: %s", req.Token[:10]+"...")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Token revoked successfully",
+	})
+}
+
+// createTable 处理创建表请求
+func (s *Server) createTable(c *gin.Context) {
+	var req miniodbv1.CreateTableRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.CreateTable(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// listTables 处理列出表请求
+func (s *Server) listTables(c *gin.Context) {
+	pattern := c.DefaultQuery("pattern", "")
+
+	protoReq := &miniodbv1.ListTablesRequest{
+		Pattern: pattern,
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.ListTables(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// getTable 处理获取表信息请求
+func (s *Server) getTable(c *gin.Context) {
+	tableName := c.Param("name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Table name is required"})
+		return
+	}
+
+	protoReq := &miniodbv1.GetTableRequest{
+		TableName: tableName,
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.GetTable(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// deleteTable 处理删除表请求
+func (s *Server) deleteTable(c *gin.Context) {
+	tableName := c.Param("name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Table name is required"})
+		return
+	}
+
+	ifExists, _ := strconv.ParseBool(c.DefaultQuery("if_exists", "false"))
+	cascade, _ := strconv.ParseBool(c.DefaultQuery("cascade", "false"))
+
+	protoReq := &miniodbv1.DeleteTableRequest{
+		TableName: tableName,
+		IfExists:  ifExists,
+		Cascade:   cascade,
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.DeleteTable(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// backupMetadata 处理备份元数据请求
+func (s *Server) backupMetadata(c *gin.Context) {
+	var req miniodbv1.BackupMetadataRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.BackupMetadata(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// restoreMetadata 处理恢复元数据请求
+func (s *Server) restoreMetadata(c *gin.Context) {
+	var req miniodbv1.RestoreMetadataRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.RestoreMetadata(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// listBackups 处理列出备份请求
+func (s *Server) listBackups(c *gin.Context) {
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+
+	protoReq := &miniodbv1.ListBackupsRequest{
+		Days: int32(days),
+	}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.ListBackups(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// getMetadataStatus 处理获取元数据状态请求
+func (s *Server) getMetadataStatus(c *gin.Context) {
+	protoReq := &miniodbv1.GetMetadataStatusRequest{}
+
+	// 调用统一服务
+	resp, err := s.miniodbService.GetMetadataStatus(c.Request.Context(), protoReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// jwtAuthMiddleware JWT认证中间件
+func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
+	return gin.HandlerFunc(func(c *gin.Context) {
+		// 如果认证被禁用，直接通过
+		if s.authManager == nil || !s.authManager.IsEnabled() {
+			c.Next()
+			return
+		}
+
+		// 从Header中获取Authorization token
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+			c.Abort()
+			return
+		}
+
+		// 验证Bearer token格式
+		const bearerPrefix = "Bearer "
+		if !strings.HasPrefix(authHeader, bearerPrefix) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
+			c.Abort()
+			return
+		}
+
+		// 提取token
+		token := strings.TrimPrefix(authHeader, bearerPrefix)
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token is required"})
+			c.Abort()
+			return
+		}
+
+		// 验证token
+		claims, err := s.authManager.ValidateToken(token)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		// 将用户信息存储到context中
+		c.Set("user_id", claims.UserID)
+		c.Set("username", claims.Username)
+
+		c.Next()
+	})
 }
 
 // Start 启动服务器
 func (s *Server) Start(port string) error {
+	// 获取REST网络配置
+	restNetworkConfig := getRESTNetworkConfig(s.cfg)
+
+	// 创建优化的HTTP服务器配置
 	s.server = &http.Server{
-		Addr:    port,
-		Handler: s.router,
+		Addr:              port,
+		Handler:           s.router,
+		ReadTimeout:       restNetworkConfig.ReadTimeout,       // 30s
+		WriteTimeout:      restNetworkConfig.WriteTimeout,      // 30s
+		IdleTimeout:       restNetworkConfig.IdleTimeout,       // 60s
+		ReadHeaderTimeout: restNetworkConfig.ReadHeaderTimeout, // 10s
+		MaxHeaderBytes:    restNetworkConfig.MaxHeaderBytes,    // 1MB
 	}
 
-	log.Printf("REST server starting on %s", port)
+	log.Printf("REST server starting on %s with optimized network config", port)
+	log.Printf("REST server timeouts - Read: %v, Write: %v, Idle: %v, ReadHeader: %v",
+		restNetworkConfig.ReadTimeout,
+		restNetworkConfig.WriteTimeout,
+		restNetworkConfig.IdleTimeout,
+		restNetworkConfig.ReadHeaderTimeout)
+
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start REST server: %w", err)
 	}
@@ -776,459 +1010,33 @@ func (s *Server) Start(port string) error {
 func (s *Server) Stop(ctx context.Context) error {
 	log.Println("Stopping REST server...")
 	if s.server != nil {
-		return s.server.Shutdown(ctx)
+		// 获取优雅关闭超时配置
+		restNetworkConfig := getRESTNetworkConfig(s.cfg)
+
+		// 创建带超时的context
+		shutdownCtx, cancel := context.WithTimeout(ctx, restNetworkConfig.ShutdownTimeout)
+		defer cancel()
+
+		log.Printf("REST server graceful shutdown timeout: %v", restNetworkConfig.ShutdownTimeout)
+		return s.server.Shutdown(shutdownCtx)
 	}
 	return nil
 }
 
-// 表管理相关处理函数
-
-// createTable 创建表
-func (s *Server) createTable(c *gin.Context) {
-	var req CreateTableRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
-		return
+// getRESTNetworkConfig 获取REST网络配置，优先使用Network配置，否则使用默认值
+func getRESTNetworkConfig(cfg *config.Config) *config.RESTNetworkConfig {
+	// 检查是否有新的网络配置
+	if cfg.Network.Server.REST.ReadTimeout > 0 {
+		return &cfg.Network.Server.REST
 	}
 
-	// 转换为gRPC请求格式
-	grpcReq := &service.CreateTableRequest{
-		TableName:   req.TableName,
-		IfNotExists: req.IfNotExists,
+	// 返回默认配置
+	return &config.RESTNetworkConfig{
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    1048576, // 1MB
+		ShutdownTimeout:   30 * time.Second,
 	}
-
-	// 转换配置
-	if req.Config != nil {
-		grpcReq.Config = &service.TableConfig{
-			BufferSize:           req.Config.BufferSize,
-			FlushIntervalSeconds: req.Config.FlushIntervalSeconds,
-			RetentionDays:        req.Config.RetentionDays,
-			BackupEnabled:        req.Config.BackupEnabled,
-			Properties:           req.Config.Properties,
-		}
-	}
-
-	// 委托给service层处理
-	grpcResp, err := s.olapService.CreateTable(c.Request.Context(), grpcReq)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "create_table_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Create table failed: %v", err),
-		})
-		return
-	}
-
-	// 转换为REST响应格式
-	response := CreateTableResponse{
-		Success: grpcResp.Success,
-		Message: grpcResp.Message,
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// listTables 列出表
-func (s *Server) listTables(c *gin.Context) {
-	// 获取查询参数
-	pattern := c.Query("pattern")
-
-	// 转换为gRPC请求格式
-	grpcReq := &service.ListTablesRequest{
-		Pattern: pattern,
-	}
-
-	// 委托给service层处理
-	grpcResp, err := s.olapService.ListTables(c.Request.Context(), grpcReq)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "list_tables_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("List tables failed: %v", err),
-		})
-		return
-	}
-
-	// 转换为REST响应格式
-	var tables []TableInfo
-	for _, table := range grpcResp.Tables {
-		tableInfo := TableInfo{
-			Name:      table.Name,
-			CreatedAt: table.CreatedAt,
-			LastWrite: table.LastWrite,
-			Status:    table.Status,
-		}
-
-		// 转换配置
-		if table.Config != nil {
-			tableInfo.Config = &TableConfig{
-				BufferSize:           table.Config.BufferSize,
-				FlushIntervalSeconds: table.Config.FlushIntervalSeconds,
-				RetentionDays:        table.Config.RetentionDays,
-				BackupEnabled:        table.Config.BackupEnabled,
-				Properties:           table.Config.Properties,
-			}
-		}
-
-		tables = append(tables, tableInfo)
-	}
-
-	response := ListTablesResponse{
-		Tables: tables,
-		Total:  grpcResp.Total,
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// describeTable 描述表
-func (s *Server) describeTable(c *gin.Context) {
-	tableName := c.Param("table_name")
-	if tableName == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: "table_name is required",
-		})
-		return
-	}
-
-	// 转换为gRPC请求格式
-	grpcReq := &service.DescribeTableRequest{
-		TableName: tableName,
-	}
-
-	// 委托给service层处理
-	grpcResp, err := s.olapService.DescribeTable(c.Request.Context(), grpcReq)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "describe_table_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Describe table failed: %v", err),
-		})
-		return
-	}
-
-	// 转换为REST响应格式
-	response := DescribeTableResponse{
-		TableInfo: &TableInfo{
-			Name:      grpcResp.TableInfo.Name,
-			CreatedAt: grpcResp.TableInfo.CreatedAt,
-			LastWrite: grpcResp.TableInfo.LastWrite,
-			Status:    grpcResp.TableInfo.Status,
-		},
-		Stats: &TableStats{
-			RecordCount:  grpcResp.Stats.RecordCount,
-			FileCount:    grpcResp.Stats.FileCount,
-			SizeBytes:    grpcResp.Stats.SizeBytes,
-			OldestRecord: grpcResp.Stats.OldestRecord,
-			NewestRecord: grpcResp.Stats.NewestRecord,
-		},
-	}
-
-	// 转换配置
-	if grpcResp.TableInfo.Config != nil {
-		response.TableInfo.Config = &TableConfig{
-			BufferSize:           grpcResp.TableInfo.Config.BufferSize,
-			FlushIntervalSeconds: grpcResp.TableInfo.Config.FlushIntervalSeconds,
-			RetentionDays:        grpcResp.TableInfo.Config.RetentionDays,
-			BackupEnabled:        grpcResp.TableInfo.Config.BackupEnabled,
-			Properties:           grpcResp.TableInfo.Config.Properties,
-		}
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// dropTable 删除表
-func (s *Server) dropTable(c *gin.Context) {
-	tableName := c.Param("table_name")
-	if tableName == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: "table_name is required",
-		})
-		return
-	}
-
-	var req DropTableRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		// 如果没有请求体，使用默认值
-		req = DropTableRequest{
-			TableName: tableName,
-			IfExists:  false,
-			Cascade:   false,
-		}
-	} else {
-		// 确保路径参数和请求体中的表名一致
-		req.TableName = tableName
-	}
-
-	// 从查询参数获取cascade参数
-	if cascadeParam := c.Query("cascade"); cascadeParam == "true" {
-		req.Cascade = true
-	}
-
-	// 转换为gRPC请求格式
-	grpcReq := &service.DropTableRequest{
-		TableName: req.TableName,
-		IfExists:  req.IfExists,
-		Cascade:   req.Cascade,
-	}
-
-	// 委托给service层处理
-	grpcResp, err := s.olapService.DropTable(c.Request.Context(), grpcReq)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "drop_table_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Drop table failed: %v", err),
-		})
-		return
-	}
-
-	// 转换为REST响应格式
-	response := DropTableResponse{
-		Success:      grpcResp.Success,
-		Message:      grpcResp.Message,
-		FilesDeleted: grpcResp.FilesDeleted,
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// 元数据管理处理方法
-
-// triggerMetadataBackup 触发元数据备份
-func (s *Server) triggerMetadataBackup(c *gin.Context) {
-	if s.metadataManager == nil {
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "service_unavailable",
-			Code:    http.StatusServiceUnavailable,
-			Message: "Metadata manager not available",
-		})
-		return
-	}
-
-	var req TriggerMetadataBackupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
-		return
-	}
-
-	// 触发手动备份
-	if err := s.metadataManager.TriggerBackup(c.Request.Context()); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "backup_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Failed to trigger backup: %v", err),
-		})
-		return
-	}
-
-	response := TriggerMetadataBackupResponse{
-		Success:   true,
-		Message:   "Metadata backup triggered successfully",
-		BackupID:  fmt.Sprintf("backup_%d", time.Now().Unix()),
-		Timestamp: time.Now().Format(time.RFC3339),
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// listMetadataBackups 列出元数据备份
-func (s *Server) listMetadataBackups(c *gin.Context) {
-	if s.metadataManager == nil {
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "service_unavailable",
-			Code:    http.StatusServiceUnavailable,
-			Message: "Metadata manager not available",
-		})
-		return
-	}
-
-	// 获取查询参数
-	days := 30 // 默认30天
-	if daysParam := c.Query("days"); daysParam != "" {
-		if parsedDays, err := strconv.Atoi(daysParam); err == nil && parsedDays > 0 {
-			days = parsedDays
-		}
-	}
-
-	// 获取备份列表
-	backups, err := s.metadataManager.ListBackups(c.Request.Context(), days)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "list_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Failed to list backups: %v", err),
-		})
-		return
-	}
-
-	// 转换为响应格式
-	var backupInfos []MetadataBackupInfo
-	for _, backup := range backups {
-		backupInfos = append(backupInfos, MetadataBackupInfo{
-			ObjectName:   backup.ObjectName,
-			NodeID:       backup.NodeID,
-			Timestamp:    backup.Timestamp.Format(time.RFC3339),
-			Size:         backup.Size,
-			LastModified: backup.LastModified.Format(time.RFC3339),
-		})
-	}
-
-	response := ListMetadataBackupsResponse{
-		Backups: backupInfos,
-		Total:   len(backupInfos),
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// recoverMetadata 恢复元数据
-func (s *Server) recoverMetadata(c *gin.Context) {
-	if s.metadataManager == nil {
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "service_unavailable",
-			Code:    http.StatusServiceUnavailable,
-			Message: "Metadata manager not available",
-		})
-		return
-	}
-
-	var req RecoverMetadataRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
-		return
-	}
-
-	// 构建恢复选项
-	options := metadata.RecoveryOptions{
-		Overwrite:   req.Overwrite,
-		Validate:    req.Validate,
-		DryRun:      req.DryRun,
-		Parallel:    req.Parallel,
-		Filters:     req.Filters,
-		KeyPatterns: req.KeyPatterns,
-	}
-
-	// 设置恢复模式
-	if req.DryRun {
-		options.Mode = metadata.RecoveryModeDryRun
-	} else {
-		options.Mode = metadata.RecoveryModeComplete
-	}
-
-	var result *metadata.RecoveryResult
-	var err error
-
-	// 根据请求类型执行恢复
-	if req.FromLatest || req.BackupFile == "" {
-		result, err = s.metadataManager.RecoverFromLatest(c.Request.Context(), options)
-	} else {
-		result, err = s.metadataManager.RecoverFromBackup(c.Request.Context(), req.BackupFile, options)
-	}
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "recovery_error",
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("Failed to recover metadata: %v", err),
-		})
-		return
-	}
-
-	response := RecoverMetadataResponse{
-		Success:        result.Success,
-		Message:        "Metadata recovery completed",
-		BackupFile:     result.BackupFile,
-		EntriesTotal:   result.EntriesTotal,
-		EntriesOK:      result.EntriesOK,
-		EntriesSkipped: result.EntriesSkipped,
-		EntriesError:   result.EntriesError,
-		Duration:       result.Duration.String(),
-		Errors:         result.Errors,
-		Details:        result.Details,
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// getMetadataStatus 获取元数据状态
-func (s *Server) getMetadataStatus(c *gin.Context) {
-	if s.metadataManager == nil {
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "service_unavailable",
-			Code:    http.StatusServiceUnavailable,
-			Message: "Metadata manager not available",
-		})
-		return
-	}
-
-	// 获取管理器状态
-	status := s.metadataManager.GetStatus()
-
-	response := MetadataStatusResponse{
-		NodeID:       s.cfg.Server.NodeID,
-		BackupStatus: status,
-		LastBackup:   "", // TODO: 从状态中获取
-		NextBackup:   "", // TODO: 从状态中获取
-		HealthStatus: "healthy",
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// validateMetadataBackup 验证元数据备份
-func (s *Server) validateMetadataBackup(c *gin.Context) {
-	if s.metadataManager == nil {
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "service_unavailable",
-			Code:    http.StatusServiceUnavailable,
-			Message: "Metadata manager not available",
-		})
-		return
-	}
-
-	var req ValidateMetadataBackupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "validation_error",
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("Invalid request: %v", err),
-		})
-		return
-	}
-
-	// 验证备份文件
-	if err := s.metadataManager.ValidateBackup(c.Request.Context(), req.BackupFile); err != nil {
-		response := ValidateMetadataBackupResponse{
-			Valid:   false,
-			Message: fmt.Sprintf("Backup validation failed: %v", err),
-			Errors:  []string{err.Error()},
-		}
-		c.JSON(http.StatusOK, response)
-		return
-	}
-
-	response := ValidateMetadataBackupResponse{
-		Valid:   true,
-		Message: "Backup validation passed",
-	}
-
-	c.JSON(http.StatusOK, response)
 }

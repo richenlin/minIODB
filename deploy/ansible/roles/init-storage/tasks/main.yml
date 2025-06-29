@@ -1,0 +1,232 @@
+---
+# 存储初始化role - 使用mc二进制初始化MinIO存储桶（替代Docker容器方式）
+
+- name: 检查MinIO服务状态
+  uri:
+    url: "{{ minio_primary_url }}/minio/health/live"
+    method: GET
+    timeout: 10
+  register: minio_health_check
+  retries: 30
+  delay: 10
+  until: minio_health_check.status == 200
+  tags: [init-storage, health-check]
+
+- name: 检查备份MinIO服务状态（如果启用）
+  uri:
+    url: "{{ minio_backup_url }}/minio/health/live"
+    method: GET
+    timeout: 10
+  register: minio_backup_health_check
+  retries: 30
+  delay: 10
+  until: minio_backup_health_check.status == 200
+  when: minio_backup_enabled | default(true)
+  tags: [init-storage, health-check]
+
+- name: 验证mc客户端存在
+  stat:
+    path: "{{ mc_binary_path | default('/opt/miniodb/bin/mc') }}"
+  register: mc_binary_stat
+  tags: [init-storage, verification]
+
+- name: 检查mc客户端是否可执行
+  fail:
+    msg: "MinIO Client (mc) binary not found at {{ mc_binary_path | default('/opt/miniodb/bin/mc') }}"
+  when: not mc_binary_stat.stat.exists or not mc_binary_stat.stat.executable
+  tags: [init-storage, verification]
+
+- name: 配置主MinIO别名
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} alias set minio {{ minio_primary_url }} {{ minio_root_user }} {{ minio_root_password }}
+  register: minio_alias_result
+  failed_when: minio_alias_result.rc != 0
+  no_log: true  # 避免密码泄露到日志
+  tags: [init-storage, configure]
+
+- name: 配置备份MinIO别名（如果启用）
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} alias set minio-backup {{ minio_backup_url }} {{ minio_backup_user }} {{ minio_backup_password }}
+  register: minio_backup_alias_result
+  failed_when: minio_backup_alias_result.rc != 0
+  no_log: true  # 避免密码泄露到日志
+  when: minio_backup_enabled | default(true)
+  tags: [init-storage, configure]
+
+- name: 验证主MinIO连接
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} admin info minio
+  register: minio_connection_test
+  failed_when: minio_connection_test.rc != 0
+  tags: [init-storage, verification]
+
+- name: 验证备份MinIO连接（如果启用）
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} admin info minio-backup
+  register: minio_backup_connection_test
+  failed_when: minio_backup_connection_test.rc != 0
+  when: minio_backup_enabled | default(true)
+  tags: [init-storage, verification]
+
+- name: 创建主存储桶
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} mb minio/{{ minio_primary_bucket }} --ignore-existing
+  register: primary_bucket_result
+  tags: [init-storage, buckets]
+
+- name: 验证主存储桶创建
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} ls minio/{{ minio_primary_bucket }}
+  register: primary_bucket_verify
+  failed_when: primary_bucket_verify.rc != 0
+  tags: [init-storage, buckets]
+
+- name: 创建元数据存储桶
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} mb minio/{{ minio_metadata_bucket }} --ignore-existing
+  register: metadata_bucket_result
+  tags: [init-storage, buckets]
+
+- name: 验证元数据存储桶创建
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} ls minio/{{ minio_metadata_bucket }}
+  register: metadata_bucket_verify
+  failed_when: metadata_bucket_verify.rc != 0
+  tags: [init-storage, buckets]
+
+- name: 创建备份存储桶（如果启用）
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} mb minio-backup/{{ minio_backup_bucket }} --ignore-existing
+  register: backup_bucket_result
+  when: minio_backup_enabled | default(true)
+  tags: [init-storage, buckets]
+
+- name: 验证备份存储桶创建（如果启用）
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} ls minio-backup/{{ minio_backup_bucket }}
+  register: backup_bucket_verify
+  failed_when: backup_bucket_verify.rc != 0
+  when: minio_backup_enabled | default(true)
+  tags: [init-storage, buckets]
+
+- name: 设置主存储桶策略
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} policy set {{ minio_bucket_policy | default('download') }} minio/{{ minio_primary_bucket }}
+  register: primary_policy_result
+  ignore_errors: true  # 策略设置失败不影响主要功能
+  tags: [init-storage, policies]
+
+- name: 设置元数据存储桶策略
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} policy set {{ minio_bucket_policy | default('download') }} minio/{{ minio_metadata_bucket }}
+  register: metadata_policy_result
+  ignore_errors: true  # 策略设置失败不影响主要功能
+  tags: [init-storage, policies]
+
+- name: 设置备份存储桶策略（如果启用）
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} policy set {{ minio_backup_bucket_policy | default('download') }} minio-backup/{{ minio_backup_bucket }}
+  register: backup_policy_result
+  ignore_errors: true  # 策略设置失败不影响主要功能
+  when: minio_backup_enabled | default(true)
+  tags: [init-storage, policies]
+
+- name: 启用主存储桶版本控制
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} version enable minio/{{ minio_primary_bucket }}
+  register: primary_versioning_result
+  ignore_errors: true  # 版本控制失败不影响主要功能
+  when: minio_versioning_enabled | default(true)
+  tags: [init-storage, versioning]
+
+- name: 启用元数据存储桶版本控制
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} version enable minio/{{ minio_metadata_bucket }}
+  register: metadata_versioning_result
+  ignore_errors: true  # 版本控制失败不影响主要功能
+  when: minio_versioning_enabled | default(true)
+  tags: [init-storage, versioning]
+
+- name: 启用备份存储桶版本控制（如果启用）
+  shell: |
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} version enable minio-backup/{{ minio_backup_bucket }}
+  register: backup_versioning_result
+  ignore_errors: true  # 版本控制失败不影响主要功能
+  when: 
+    - minio_backup_enabled | default(true)
+    - minio_versioning_enabled | default(true)
+  tags: [init-storage, versioning]
+
+- name: 列出所有创建的存储桶
+  shell: |
+    echo "=== 主MinIO存储桶 ==="
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} ls minio/
+    {% if minio_backup_enabled | default(true) %}
+    echo "=== 备份MinIO存储桶 ==="
+    {{ mc_binary_path | default('/opt/miniodb/bin/mc') }} ls minio-backup/
+    {% endif %}
+  register: bucket_list_result
+  tags: [init-storage, verification]
+
+- name: 显示存储桶创建结果
+  debug:
+    msg: |
+      ✅ MinIO存储桶初始化完成！
+      
+      创建的存储桶:
+      {% if primary_bucket_result.rc == 0 %}
+      ✅ 主存储桶: {{ minio_primary_bucket }}
+      {% else %}
+      ❌ 主存储桶创建失败: {{ minio_primary_bucket }}
+      {% endif %}
+      
+      {% if metadata_bucket_result.rc == 0 %}
+      ✅ 元数据存储桶: {{ minio_metadata_bucket }}
+      {% else %}
+      ❌ 元数据存储桶创建失败: {{ minio_metadata_bucket }}
+      {% endif %}
+      
+      {% if minio_backup_enabled | default(true) %}
+      {% if backup_bucket_result.rc == 0 %}
+      ✅ 备份存储桶: {{ minio_backup_bucket }}
+      {% else %}
+      ❌ 备份存储桶创建失败: {{ minio_backup_bucket }}
+      {% endif %}
+      {% endif %}
+      
+      配置信息:
+      - 主MinIO: {{ minio_primary_url }}
+      {% if minio_backup_enabled | default(true) %}
+      - 备份MinIO: {{ minio_backup_url }}
+      {% endif %}
+      - 版本控制: {{ minio_versioning_enabled | default(true) | ternary('启用', '禁用') }}
+      
+      存储桶列表:
+      {{ bucket_list_result.stdout }}
+  tags: [init-storage, summary]
+
+- name: 保存初始化结果
+  set_fact:
+    storage_init_results:
+      primary_bucket_created: "{{ primary_bucket_result.rc == 0 }}"
+      metadata_bucket_created: "{{ metadata_bucket_result.rc == 0 }}"
+      backup_bucket_created: "{{ (minio_backup_enabled | default(true)) and (backup_bucket_result.rc == 0 if backup_bucket_result is defined else false) }}"
+      versioning_enabled: "{{ minio_versioning_enabled | default(true) }}"
+      primary_url: "{{ minio_primary_url }}"
+      backup_url: "{{ minio_backup_url if minio_backup_enabled | default(true) else 'N/A' }}"
+  tags: [init-storage, results]
+
+- name: 验证所有必需存储桶已创建
+  fail:
+    msg: |
+      存储桶初始化未完全成功！
+      - 主存储桶: {{ storage_init_results.primary_bucket_created | ternary('✅', '❌') }}
+      - 元数据存储桶: {{ storage_init_results.metadata_bucket_created | ternary('✅', '❌') }}
+      {% if minio_backup_enabled | default(true) %}
+      - 备份存储桶: {{ storage_init_results.backup_bucket_created | ternary('✅', '❌') }}
+      {% endif %}
+  when: >
+    not storage_init_results.primary_bucket_created or
+    not storage_init_results.metadata_bucket_created or
+    (minio_backup_enabled | default(true) and not storage_init_results.backup_bucket_created)
+  tags: [init-storage, validation] 

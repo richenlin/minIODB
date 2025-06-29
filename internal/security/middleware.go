@@ -2,8 +2,10 @@ package security
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -161,38 +163,99 @@ func (sm *SecurityMiddleware) RequestLogger() gin.HandlerFunc {
 	})
 }
 
-// RateLimiter 简单的内存限流器
+// RateLimiter 改进的内存限流器
 func (sm *SecurityMiddleware) RateLimiter(requestsPerMinute int) gin.HandlerFunc {
-	// 简单的内存限流实现
-	clients := make(map[string][]time.Time)
+	// 使用线程安全的实现
+	type clientData struct {
+		requests []time.Time
+		mutex    sync.RWMutex
+	}
+	
+	clients := make(map[string]*clientData)
+	var globalMutex sync.RWMutex
+	
+	// 清理goroutine，每30秒清理一次过期数据
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				globalMutex.Lock()
+				now := time.Now()
+				for ip, data := range clients {
+					data.mutex.Lock()
+					var validRequests []time.Time
+					for _, reqTime := range data.requests {
+						if now.Sub(reqTime) < time.Minute {
+							validRequests = append(validRequests, reqTime)
+						}
+					}
+					if len(validRequests) == 0 {
+						delete(clients, ip)
+					} else {
+						data.requests = validRequests
+					}
+					data.mutex.Unlock()
+				}
+				globalMutex.Unlock()
+			}
+		}
+	}()
 	
 	return func(c *gin.Context) {
+		// 如果requestsPerMinute <= 0，则不限流
+		if requestsPerMinute <= 0 {
+			c.Next()
+			return
+		}
+		
 		clientIP := c.ClientIP()
 		now := time.Now()
 		
-		// 清理过期的请求记录
-		if requests, exists := clients[clientIP]; exists {
-			var validRequests []time.Time
-			for _, reqTime := range requests {
-				if now.Sub(reqTime) < time.Minute {
-					validRequests = append(validRequests, reqTime)
+		// 获取或创建客户端数据
+		globalMutex.RLock()
+		data, exists := clients[clientIP]
+		globalMutex.RUnlock()
+		
+		if !exists {
+			globalMutex.Lock()
+			// 双重检查
+			if data, exists = clients[clientIP]; !exists {
+				data = &clientData{
+					requests: make([]time.Time, 0, requestsPerMinute+10),
 				}
+				clients[clientIP] = data
 			}
-			clients[clientIP] = validRequests
+			globalMutex.Unlock()
 		}
 		
+		data.mutex.Lock()
+		defer data.mutex.Unlock()
+		
+		// 清理过期的请求记录
+		var validRequests []time.Time
+		for _, reqTime := range data.requests {
+			if now.Sub(reqTime) < time.Minute {
+				validRequests = append(validRequests, reqTime)
+			}
+		}
+		data.requests = validRequests
+		
 		// 检查请求频率
-		if len(clients[clientIP]) >= requestsPerMinute {
+		if len(data.requests) >= requestsPerMinute {
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error":   "rate_limit_exceeded",
-				"message": "Too many requests",
+				"message": fmt.Sprintf("Too many requests. Limit: %d requests per minute", requestsPerMinute),
+				"limit":   requestsPerMinute,
+				"window":  "1 minute",
 			})
 			c.Abort()
 			return
 		}
 		
 		// 记录当前请求
-		clients[clientIP] = append(clients[clientIP], now)
+		data.requests = append(data.requests, now)
 		
 		c.Next()
 	}

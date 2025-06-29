@@ -1,0 +1,26 @@
+[Unit]
+Description=MinIODB OLAP System
+Documentation=https://github.com/your-org/miniodb
+Wants=network-online.target
+After=network-online.target minio.service redis.service
+Requires=minio.service redis.service
+
+[Service]
+Type=simple
+User=miniodb
+Group=miniodb
+WorkingDirectory=/opt/miniodb
+EnvironmentFile=-/etc/default/miniodb
+ExecStart=/opt/miniodb/bin/miniodb /opt/miniodb/config/config.yaml
+Restart=always
+RestartSec=5
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/miniodb/data /opt/miniodb/logs
+
+[Install]
+WantedBy=multi-user.target 

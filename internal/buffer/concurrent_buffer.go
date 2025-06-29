@@ -361,20 +361,15 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 
 	client := redisPool.GetClient()
 
-	// 从bufferKey解析ID和日期 (格式: ID/YYYY-MM-DD)
+	// 从bufferKey解析表名、ID和日期 (新格式: 表名/ID/YYYY-MM-DD)
 	parts := strings.Split(bufferKey, "/")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid buffer key format: %s", bufferKey)
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid buffer key format: %s, expected format: table/id/date", bufferKey)
 	}
 
-	id := parts[0]
-	day := parts[1]
-
-	// 获取默认表名
-	tableName := "default_table"
-	if w.buffer.appConfig != nil {
-		tableName = w.buffer.appConfig.GetDefaultTableName()
-	}
+	tableName := parts[0]
+	id := parts[1]
+	day := parts[2]
 
 	// 使用表级索引格式
 	redisKey := fmt.Sprintf("index:table:%s:id:%s:%s", tableName, id, day)
@@ -401,7 +396,18 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 
 	t := time.Unix(0, row.Timestamp)
 	dayStr := t.Format("2006-01-02")
-	bufferKey := fmt.Sprintf("%s/%s", row.ID, dayStr)
+
+	// 修复：使用表名/ID/日期格式，确保查询能正确找到缓冲区数据
+	tableName := row.Table
+	if tableName == "" {
+		// 如果DataRow中没有表名，使用默认表名
+		if cb.appConfig != nil {
+			tableName = cb.appConfig.GetDefaultTableName()
+		} else {
+			tableName = "default_table"
+		}
+	}
+	bufferKey := fmt.Sprintf("%s/%s/%s", tableName, row.ID, dayStr)
 
 	cb.buffer[bufferKey] = append(cb.buffer[bufferKey], row)
 

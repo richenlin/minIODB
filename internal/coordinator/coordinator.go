@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	pb "minIODB/api/proto/olap/v1"
+	pb "minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/discovery"
 	"minIODB/internal/query"
 	"minIODB/internal/utils"
@@ -80,7 +80,7 @@ func NewQueryCoordinator(redisClient *redis.Client, registry *discovery.ServiceR
 }
 
 // RouteWrite 路由写入请求到对应的节点
-func (wc *WriteCoordinator) RouteWrite(req *pb.WriteRequest) (string, error) {
+func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -103,9 +103,9 @@ func (wc *WriteCoordinator) RouteWrite(req *pb.WriteRequest) (string, error) {
 		wc.updateHashRing(nodes)
 
 		// 根据数据ID选择节点
-		targetNode = wc.hashRing.Get(req.Id)
+		targetNode = wc.hashRing.Get(req.Data.Id)
 		if targetNode == "" {
-			return fmt.Errorf("failed to select target node for ID: %s", req.Id)
+			return fmt.Errorf("failed to select target node for ID: %s", req.Data.Id)
 		}
 
 		return nil
@@ -137,15 +137,15 @@ func (wc *WriteCoordinator) RouteWrite(req *pb.WriteRequest) (string, error) {
 }
 
 // sendWriteToNode 发送写入请求到指定节点
-func (wc *WriteCoordinator) sendWriteToNode(ctx context.Context, nodeAddr string, req *pb.WriteRequest) error {
+func (wc *WriteCoordinator) sendWriteToNode(ctx context.Context, nodeAddr string, req *pb.WriteDataRequest) error {
 	conn, err := grpc.DialContext(ctx, nodeAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return utils.NewRetryableError(fmt.Errorf("failed to connect to node %s: %w", nodeAddr, err))
 	}
 	defer conn.Close()
 
-	client := pb.NewOlapServiceClient(conn)
-	_, err = client.Write(ctx, req)
+	client := pb.NewMinIODBServiceClient(conn)
+	_, err = client.WriteData(ctx, req)
 	if err != nil {
 		return utils.NewRetryableError(fmt.Errorf("failed to write to node %s: %w", nodeAddr, err))
 	}
@@ -318,10 +318,10 @@ func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, er
 	}
 	defer conn.Close()
 
-	client := pb.NewOlapServiceClient(conn)
-	req := &pb.QueryRequest{Sql: sql}
+	client := pb.NewMinIODBServiceClient(conn)
+	req := &pb.QueryDataRequest{Sql: sql}
 
-	resp, err := client.Query(ctx, req)
+	resp, err := client.QueryData(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("failed to query node %s: %w", nodeAddr, err)
 	}
@@ -331,8 +331,8 @@ func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, er
 
 // extractTablesFromSQL 从SQL中提取表名
 func (qc *QueryCoordinator) extractTablesFromSQL(sql string) ([]string, error) {
-	// 使用现有的SimpleTableExtractor
-	extractor := query.NewSimpleTableExtractor()
+	// 使用增强的TableExtractor
+	extractor := query.NewTableExtractor()
 	tables := extractor.ExtractTableNames(sql)
 	return tables, nil
 }

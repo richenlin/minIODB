@@ -96,7 +96,7 @@ func (c *RESTClient) doRequest(method, endpoint string, body interface{}) ([]byt
 
 // WriteRequest 数据写入请求结构
 type WriteRequest struct {
-	Table     string                 `json:"table"`     // 新增：表名
+	Table     string                 `json:"table"` // 新增：表名
 	ID        string                 `json:"id"`
 	Timestamp string                 `json:"timestamp"`
 	Payload   map[string]interface{} `json:"payload"`
@@ -136,11 +136,11 @@ type CreateTableResponse struct {
 
 // TableConfig 表配置
 type TableConfig struct {
-	BufferSize            int32             `json:"buffer_size"`
-	FlushIntervalSeconds  int32             `json:"flush_interval_seconds"`
-	RetentionDays         int32             `json:"retention_days"`
-	BackupEnabled         bool              `json:"backup_enabled"`
-	Properties            map[string]string `json:"properties"`
+	BufferSize           int32             `json:"buffer_size"`
+	FlushIntervalSeconds int32             `json:"flush_interval_seconds"`
+	RetentionDays        int32             `json:"retention_days"`
+	BackupEnabled        bool              `json:"backup_enabled"`
+	Properties           map[string]string `json:"properties"`
 }
 
 // ListTablesRequest 列出表请求
@@ -243,10 +243,10 @@ type HealthResponse struct {
 
 // StatsResponse 统计响应
 type StatsResponse struct {
-	Timestamp   string            `json:"timestamp"`
-	BufferStats map[string]int64  `json:"buffer_stats"`
-	RedisStats  map[string]int64  `json:"redis_stats"`
-	MinioStats  map[string]int64  `json:"minio_stats"`
+	Timestamp   string           `json:"timestamp"`
+	BufferStats map[string]int64 `json:"buffer_stats"`
+	RedisStats  map[string]int64 `json:"redis_stats"`
+	MinioStats  map[string]int64 `json:"minio_stats"`
 }
 
 // NodeInfo 节点信息
@@ -294,10 +294,10 @@ func (c *RESTClient) CreateTable() error {
 	request := CreateTableRequest{
 		TableName: "users",
 		Config: TableConfig{
-			BufferSize:            1000,
-			FlushIntervalSeconds:  30,
-			RetentionDays:         365,
-			BackupEnabled:         true,
+			BufferSize:           1000,
+			FlushIntervalSeconds: 30,
+			RetentionDays:        365,
+			BackupEnabled:        true,
 			Properties: map[string]string{
 				"description": "用户数据表",
 				"owner":       "user-service",
@@ -340,7 +340,7 @@ func (c *RESTClient) ListTables() error {
 	c.logger.Infof("表列表:")
 	c.logger.Infof("  总数: %d", response.Total)
 	for _, table := range response.Tables {
-		c.logger.Infof("  - 表名: %s, 状态: %s, 创建时间: %s", 
+		c.logger.Infof("  - 表名: %s, 状态: %s, 创建时间: %s",
 			table.Name, table.Status, table.CreatedAt)
 	}
 
@@ -366,11 +366,11 @@ func (c *RESTClient) DescribeTable() error {
 	c.logger.Infof("  状态: %s", response.TableInfo.Status)
 	c.logger.Infof("  创建时间: %s", response.TableInfo.CreatedAt)
 	c.logger.Infof("  最后写入: %s", response.TableInfo.LastWrite)
-	c.logger.Infof("  配置: 缓冲区大小=%d, 刷新间隔=%ds, 保留天数=%d", 
+	c.logger.Infof("  配置: 缓冲区大小=%d, 刷新间隔=%ds, 保留天数=%d",
 		response.TableInfo.Config.BufferSize,
 		response.TableInfo.Config.FlushIntervalSeconds,
 		response.TableInfo.Config.RetentionDays)
-	c.logger.Infof("  统计: 记录数=%d, 文件数=%d, 大小=%d字节", 
+	c.logger.Infof("  统计: 记录数=%d, 文件数=%d, 大小=%d字节",
 		response.Stats.RecordCount,
 		response.Stats.FileCount,
 		response.Stats.SizeBytes)
@@ -458,10 +458,10 @@ func (c *RESTClient) CrossTableQuery() error {
 	orderTableRequest := CreateTableRequest{
 		TableName: "orders",
 		Config: TableConfig{
-			BufferSize:            2000,
-			FlushIntervalSeconds:  15,
-			RetentionDays:         2555,
-			BackupEnabled:         true,
+			BufferSize:           2000,
+			FlushIntervalSeconds: 15,
+			RetentionDays:        2555,
+			BackupEnabled:        true,
 			Properties: map[string]string{
 				"description": "订单数据表",
 				"owner":       "order-service",
@@ -582,22 +582,32 @@ func (c *RESTClient) RecoverData() error {
 	return nil
 }
 
-// GetStats 获取统计信息
+// StatusResponse 统一状态响应
+type StatusResponse struct {
+	Timestamp   interface{}      `json:"timestamp"`
+	BufferStats map[string]int64 `json:"buffer_stats"`
+	RedisStats  map[string]int64 `json:"redis_stats"`
+	MinioStats  map[string]int64 `json:"minio_stats"`
+	Nodes       []NodeInfo       `json:"nodes"`
+	TotalNodes  int32            `json:"total_nodes"`
+}
+
+// GetStats 获取统计信息（从统一状态接口获取）
 func (c *RESTClient) GetStats() error {
 	c.logger.Info("=== 系统统计 ===")
 
-	respBody, err := c.doRequest("GET", "/v1/stats", nil)
+	respBody, err := c.doRequest("GET", "/v1/status", nil)
 	if err != nil {
 		return fmt.Errorf("获取统计信息失败: %v", err)
 	}
 
-	var response StatsResponse
+	var response StatusResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
 		return fmt.Errorf("解析统计响应失败: %v", err)
 	}
 
 	c.logger.Infof("系统统计:")
-	c.logger.Infof("  时间戳: %s", response.Timestamp)
+	c.logger.Infof("  时间戳: %v", response.Timestamp)
 	c.logger.Infof("  缓冲区统计: %v", response.BufferStats)
 	c.logger.Infof("  Redis统计: %v", response.RedisStats)
 	c.logger.Infof("  MinIO统计: %v", response.MinioStats)
@@ -605,22 +615,22 @@ func (c *RESTClient) GetStats() error {
 	return nil
 }
 
-// GetNodes 获取节点信息
+// GetNodes 获取节点信息（从统一状态接口获取）
 func (c *RESTClient) GetNodes() error {
 	c.logger.Info("=== 节点信息 ===")
 
-	respBody, err := c.doRequest("GET", "/v1/nodes", nil)
+	respBody, err := c.doRequest("GET", "/v1/status", nil)
 	if err != nil {
 		return fmt.Errorf("获取节点信息失败: %v", err)
 	}
 
-	var response NodesResponse
+	var response StatusResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
 		return fmt.Errorf("解析节点响应失败: %v", err)
 	}
 
 	c.logger.Infof("节点信息:")
-	c.logger.Infof("  总数: %d", response.Total)
+	c.logger.Infof("  总数: %d", response.TotalNodes)
 	c.logger.Infof("  节点列表:")
 
 	for _, node := range response.Nodes {
@@ -695,4 +705,4 @@ func (c *RESTClient) RunAllExamples() {
 func main() {
 	client := NewRESTClient()
 	client.RunAllExamples()
-} 
+}

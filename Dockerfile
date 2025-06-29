@@ -1,4 +1,5 @@
-# 使用官方Go镜像作为构建环境
+# AMD64架构专用Dockerfile
+# 使用官方Go镜像作为构建环境 (AMD64)
 FROM golang:1.24 AS builder
 
 # 设置工作目录
@@ -20,6 +21,7 @@ RUN apt-get update && apt-get install -y \
 ENV CGO_ENABLED=1
 ENV GOOS=linux
 ENV GOARCH=amd64
+ENV GOPROXY='https://goproxy.cn,direct'
 
 # 复制go.mod和go.sum文件
 COPY go.mod go.sum ./
