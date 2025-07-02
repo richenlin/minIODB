@@ -1,0 +1,199 @@
+---
+# MinIODB 多节点部署主 Playbook
+# 支持两种模式：现有服务模式和自动部署模式
+
+- name: "MinIODB Multi-Node Deployment"
+  hosts: all
+  gather_facts: true
+  become: true
+  
+  pre_tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          Starting MinIODB deployment on {{ inventory_hostname }}
+          Mode: {{ 'Auto Deploy' if auto_deploy_services | default(false) else 'Existing Services' }}
+          Role: {{ miniodb_role | default('worker') }}
+          Services: {{ services | default(['miniodb']) | join(', ') }}
+      tags: always
+
+    - name: Validate deployment mode
+      fail:
+        msg: "Invalid deployment configuration"
+      when: 
+        - auto_deploy_services is not defined
+        - redis_host is not defined
+      tags: always
+
+    - name: Create miniodb system group
+      group:
+        name: "{{ system.group | default('miniodb') }}"
+        gid: "{{ system.gid | default(1000) }}"
+        system: true
+      tags: user
+
+    - name: Create miniodb user
+      user:
+        name: "{{ system.user | default('miniodb') }}"
+        uid: "{{ system.uid | default(1000) }}"
+        group: "{{ system.group | default('miniodb') }}"
+        shell: /bin/bash
+        home: "/opt/miniodb"
+        create_home: true
+        system: true
+      tags: user
+
+    - name: Create base directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ system.user | default('miniodb') }}"
+        group: "{{ system.group | default('miniodb') }}"
+        mode: '0755'
+      loop:
+        - "/opt/miniodb"
+        - "/opt/miniodb/data"
+        - "/opt/miniodb/config"
+        - "/opt/miniodb/logs"
+        - "/opt/miniodb/scripts"
+        - "/opt/miniodb/backups"
+      tags: directories
+
+  roles:
+    # 安装和配置Docker
+    - role: docker
+      tags: docker
+      
+    # 根据配置部署Redis（仅自动部署模式）
+    - role: redis
+      when: 
+        - auto_deploy_services | default(false)
+        - "'redis' in services | default(['redis', 'minio', 'miniodb'])"
+      tags: redis
+      
+    # 根据配置部署MinIO（仅自动部署模式）
+    - role: minio
+      when: 
+        - auto_deploy_services | default(false)
+        - "'minio' in services | default(['redis', 'minio', 'miniodb'])"
+      tags: minio
+      
+    # 部署MinIODB应用
+    - role: miniodb
+      tags: miniodb
+      
+    # 配置监控（可选）
+    - role: monitoring
+      when: monitoring.enabled | default(true)
+      tags: monitoring
+
+  post_tasks:
+    - name: Wait for MinIODB service to be ready
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ miniodb.rest_port | default(8081) }}/v1/health"
+        method: GET
+        timeout: 10
+      register: health_check
+      until: health_check.status == 200
+      retries: 30
+      delay: 10
+      tags: health-check
+
+    - name: Display service information
+      debug:
+        msg: |
+          MinIODB deployment completed successfully on {{ inventory_hostname }}
+          
+          Service endpoints:
+          - gRPC API: {{ ansible_default_ipv4.address }}:{{ miniodb.grpc_port | default(8080) }}
+          - REST API: http://{{ ansible_default_ipv4.address }}:{{ miniodb.rest_port | default(8081) }}
+          - Health Check: http://{{ ansible_default_ipv4.address }}:{{ miniodb.rest_port | default(8081) }}/v1/health
+          
+          {% if auto_deploy_services | default(false) and 'redis' in services | default([]) %}
+          - Redis: {{ ansible_default_ipv4.address }}:{{ redis.port | default(6379) }}
+          {% endif %}
+          
+          {% if auto_deploy_services | default(false) and 'minio' in services | default([]) %}
+          - MinIO API: http://{{ ansible_default_ipv4.address }}:{{ minio.api_port | default(9000) }}
+          - MinIO Console: http://{{ ansible_default_ipv4.address }}:{{ minio.console_port | default(9001) }}
+          {% if minio.backup_enabled | default(true) %}
+          - MinIO Backup API: http://{{ ansible_default_ipv4.address }}:{{ minio.backup_api_port | default(9002) }}
+          - MinIO Backup Console: http://{{ ansible_default_ipv4.address }}:{{ minio.backup_console_port | default(9003) }}
+          {% endif %}
+          {% endif %}
+          
+          Configuration:
+          - Data Path: /opt/miniodb/data
+          - Config Path: /opt/miniodb/config
+          - Log Path: /opt/miniodb/logs
+          - Backup Path: /opt/miniodb/backups
+      tags: always
+
+# 集群健康检查
+- name: "Cluster Health Check"
+  hosts: miniodb_nodes
+  gather_facts: false
+  tasks:
+    - name: Check MinIODB service health
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ miniodb.rest_port | default(8081) }}/v1/health"
+        method: GET
+      register: miniodb_health
+      
+    - name: Verify cluster connectivity
+      uri:
+        url: "http://{{ hostvars[item]['ansible_default_ipv4']['address'] }}:{{ miniodb.rest_port | default(8081) }}/v1/health"
+        method: GET
+      loop: "{{ groups['miniodb_nodes'] }}"
+      when: item != inventory_hostname
+      
+    - name: Display cluster status
+      debug:
+        msg: "Cluster node {{ inventory_hostname }} is healthy and accessible"
+      when: miniodb_health.status == 200
+      
+  tags: cluster-check
+
+# 服务管理任务
+- name: "Service Management"
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Start all services
+      include_role:
+        name: "{{ item }}"
+        tasks_from: start
+      loop:
+        - redis
+        - minio
+        - miniodb
+      when: 
+        - auto_deploy_services | default(false)
+        - service_action | default('') == 'start'
+      tags: [never, start-services]
+      
+    - name: Stop all services
+      include_role:
+        name: "{{ item }}"
+        tasks_from: stop
+      loop:
+        - miniodb
+        - minio
+        - redis
+      when: 
+        - auto_deploy_services | default(false)
+        - service_action | default('') == 'stop'
+      tags: [never, stop-services]
+      
+    - name: Restart all services
+      include_role:
+        name: "{{ item }}"
+        tasks_from: restart
+      loop:
+        - redis
+        - minio
+        - miniodb
+      when: 
+        - auto_deploy_services | default(false)
+        - service_action | default('') == 'restart'
+      tags: [never, restart-services] 

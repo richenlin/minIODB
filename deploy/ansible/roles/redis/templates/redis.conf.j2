@@ -1,0 +1,152 @@
+# Redis 配置文件
+# 由 Ansible 自动生成
+
+# 基本配置
+bind {{ redis.bind_address | default('0.0.0.0') }}
+port {{ redis.port | default(6379) }}
+timeout {{ redis.timeout | default(300) }}
+tcp-keepalive {{ redis.tcp_keepalive | default(60) }}
+
+# 守护进程配置
+daemonize no
+supervised no
+pidfile /var/run/redis_6379.pid
+
+# 日志配置
+loglevel {{ redis.log_level | default('notice') }}
+logfile {{ redis.log_path | default('/opt/miniodb/logs/redis') }}/redis-server.log
+syslog-enabled {{ redis.syslog_enabled | default('no') }}
+
+# 数据库配置
+databases {{ redis.databases | default(16) }}
+
+# 持久化配置 - RDB
+{% if redis.rdb_enabled | default(true) %}
+save {{ redis.rdb_save_rules | default('900 1 300 10 60 10000') }}
+stop-writes-on-bgsave-error {{ redis.stop_writes_on_bgsave_error | default('yes') }}
+rdbcompression {{ redis.rdb_compression | default('yes') }}
+rdbchecksum {{ redis.rdb_checksum | default('yes') }}
+dbfilename {{ redis.rdb_filename | default('dump.rdb') }}
+{% else %}
+save ""
+{% endif %}
+
+# 持久化配置 - AOF
+{% if redis.aof_enabled | default(false) %}
+appendonly yes
+appendfilename "{{ redis.aof_filename | default('appendonly.aof') }}"
+appendfsync {{ redis.aof_fsync | default('everysec') }}
+no-appendfsync-on-rewrite {{ redis.aof_no_fsync_on_rewrite | default('no') }}
+auto-aof-rewrite-percentage {{ redis.aof_rewrite_percentage | default(100) }}
+auto-aof-rewrite-min-size {{ redis.aof_rewrite_min_size | default('64mb') }}
+aof-load-truncated {{ redis.aof_load_truncated | default('yes') }}
+{% else %}
+appendonly no
+{% endif %}
+
+# 工作目录
+dir {{ redis.data_path | default('/opt/miniodb/data/redis') }}
+
+# 内存配置
+{% if redis.maxmemory is defined %}
+maxmemory {{ redis.maxmemory }}
+maxmemory-policy {{ redis.maxmemory_policy | default('allkeys-lru') }}
+maxmemory-samples {{ redis.maxmemory_samples | default(5) }}
+{% endif %}
+
+# 安全配置
+{% if redis.password is defined and redis.password != '' %}
+requirepass {{ redis.password }}
+{% endif %}
+
+{% if redis.rename_commands is defined %}
+# 重命名危险命令
+{% for old_cmd, new_cmd in redis.rename_commands.items() %}
+rename-command {{ old_cmd }} {{ new_cmd }}
+{% endfor %}
+{% endif %}
+
+# 网络配置
+tcp-backlog {{ redis.tcp_backlog | default(511) }}
+{% if redis.unixsocket is defined %}
+unixsocket {{ redis.unixsocket }}
+unixsocketperm {{ redis.unixsocketperm | default(700) }}
+{% endif %}
+
+# 客户端配置
+maxclients {{ redis.maxclients | default(10000) }}
+
+# 慢查询日志
+slowlog-log-slower-than {{ redis.slowlog_log_slower_than | default(10000) }}
+slowlog-max-len {{ redis.slowlog_max_len | default(128) }}
+
+# 延迟监控
+latency-monitor-threshold {{ redis.latency_monitor_threshold | default(0) }}
+
+# 事件通知
+{% if redis.notify_keyspace_events is defined %}
+notify-keyspace-events {{ redis.notify_keyspace_events }}
+{% endif %}
+
+# 哈希配置
+hash-max-ziplist-entries {{ redis.hash_max_ziplist_entries | default(512) }}
+hash-max-ziplist-value {{ redis.hash_max_ziplist_value | default(64) }}
+
+# 列表配置
+list-max-ziplist-size {{ redis.list_max_ziplist_size | default(-2) }}
+list-compress-depth {{ redis.list_compress_depth | default(0) }}
+
+# 集合配置
+set-max-intset-entries {{ redis.set_max_intset_entries | default(512) }}
+
+# 有序集合配置
+zset-max-ziplist-entries {{ redis.zset_max_ziplist_entries | default(128) }}
+zset-max-ziplist-value {{ redis.zset_max_ziplist_value | default(64) }}
+
+# HyperLogLog配置
+hll-sparse-max-bytes {{ redis.hll_sparse_max_bytes | default(3000) }}
+
+# 流配置
+stream-node-max-bytes {{ redis.stream_node_max_bytes | default(4096) }}
+stream-node-max-entries {{ redis.stream_node_max_entries | default(100) }}
+
+# 活跃重新散列
+activerehashing {{ redis.activerehashing | default('yes') }}
+
+# 客户端输出缓冲区限制
+client-output-buffer-limit normal {{ redis.client_output_buffer_limit_normal | default('0 0 0') }}
+client-output-buffer-limit replica {{ redis.client_output_buffer_limit_replica | default('256mb 64mb 60') }}
+client-output-buffer-limit pubsub {{ redis.client_output_buffer_limit_pubsub | default('32mb 8mb 60') }}
+
+# 客户端查询缓冲区限制
+client-query-buffer-limit {{ redis.client_query_buffer_limit | default('1gb') }}
+
+# 协议最大批量长度
+proto-max-bulk-len {{ redis.proto_max_bulk_len | default('512mb') }}
+
+# 频率
+hz {{ redis.hz | default(10) }}
+
+# 动态频率
+dynamic-hz {{ redis.dynamic_hz | default('yes') }}
+
+# 后台任务
+aof-rewrite-incremental-fsync {{ redis.aof_rewrite_incremental_fsync | default('yes') }}
+rdb-save-incremental-fsync {{ redis.rdb_save_incremental_fsync | default('yes') }}
+
+# Jemalloc 背景线程
+jemalloc-bg-thread {{ redis.jemalloc_bg_thread | default('yes') }}
+
+# 模块配置
+{% if redis.modules is defined %}
+{% for module in redis.modules %}
+loadmodule {{ module }}
+{% endfor %}
+{% endif %}
+
+# 自定义配置
+{% if redis.custom_config is defined %}
+{% for config_line in redis.custom_config %}
+{{ config_line }}
+{% endfor %}
+{% endif %} 

@@ -1,0 +1,134 @@
+---
+# Docker 安装和配置任务
+
+- name: Update package cache (Ubuntu/Debian)
+  apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == "Debian"
+  tags: docker
+
+- name: Update package cache (CentOS/RHEL)
+  yum:
+    update_cache: true
+  when: ansible_os_family == "RedHat"
+  tags: docker
+
+- name: Install required packages (Ubuntu/Debian)
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-pip
+    state: present
+  when: ansible_os_family == "Debian"
+  tags: docker
+
+- name: Install required packages (CentOS/RHEL)
+  yum:
+    name:
+      - yum-utils
+      - device-mapper-persistent-data
+      - lvm2
+      - python3-pip
+    state: present
+  when: ansible_os_family == "RedHat"
+  tags: docker
+
+- name: Add Docker GPG key (Ubuntu/Debian)
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+  when: ansible_os_family == "Debian"
+  tags: docker
+
+- name: Add Docker repository (Ubuntu/Debian)
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+  when: ansible_os_family == "Debian"
+  tags: docker
+
+- name: Add Docker repository (CentOS/RHEL)
+  yum_repository:
+    name: docker-ce
+    description: Docker CE Repository
+    baseurl: https://download.docker.com/linux/centos/7/x86_64/stable/
+    gpgcheck: yes
+    gpgkey: https://download.docker.com/linux/centos/gpg
+    state: present
+  when: ansible_os_family == "RedHat"
+  tags: docker
+
+- name: Install Docker CE
+  package:
+    name: docker-ce
+    state: present
+  tags: docker
+
+- name: Install Docker Compose
+  pip:
+    name: docker-compose
+    state: present
+  tags: docker
+
+- name: Install Python Docker library
+  pip:
+    name: 
+      - docker
+      - docker-compose
+    state: present
+  tags: docker
+
+- name: Create Docker daemon configuration directory
+  file:
+    path: /etc/docker
+    state: directory
+    mode: '0755'
+  tags: docker
+
+- name: Configure Docker daemon
+  template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    mode: '0644'
+  notify: restart docker
+  tags: docker
+
+- name: Start and enable Docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  tags: docker
+
+- name: Add miniodb user to docker group
+  user:
+    name: "{{ miniodb_user | default('miniodb') }}"
+    groups: docker
+    append: yes
+  tags: docker
+
+- name: Create Docker network for MinIODB
+  docker_network:
+    name: "{{ docker_network | default('miniodb-network') }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ docker_subnet | default('172.20.0.0/16') }}"
+        gateway: "{{ docker_gateway | default('172.20.0.1') }}"
+  tags: docker
+
+- name: Verify Docker installation
+  command: docker --version
+  register: docker_version
+  changed_when: false
+  tags: docker
+
+- name: Display Docker version
+  debug:
+    msg: "Docker installed successfully: {{ docker_version.stdout }}"
+  tags: docker 

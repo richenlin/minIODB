@@ -1,0 +1,181 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: miniodb-system
+spec:
+  serviceName: minio-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/component: storage
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-access-key
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-secret-key
+        - name: MINIO_BROWSER_REDIRECT_URL
+          value: "http://localhost:9001"
+        command:
+        - /bin/bash
+        - -c
+        args:
+        - minio server /data --console-address ":9001"
+        volumeMounts:
+        - name: minio-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsNonRoot: true
+  volumeClaimTemplates:
+  - metadata:
+      name: minio-data
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/component: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "standard"  # 根据集群情况修改
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# MinIO Backup StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio-backup
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio-backup
+    app.kubernetes.io/component: backup-storage
+    app.kubernetes.io/part-of: miniodb-system
+spec:
+  serviceName: minio-backup-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio-backup
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio-backup
+        app.kubernetes.io/component: backup-storage
+    spec:
+      containers:
+      - name: minio-backup
+        image: minio/minio:latest
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-backup-access-key
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-backup-secret-key
+        - name: MINIO_BROWSER_REDIRECT_URL
+          value: "http://localhost:9003"
+        command:
+        - /bin/bash
+        - -c
+        args:
+        - minio server /data --console-address ":9001"
+        volumeMounts:
+        - name: minio-backup-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsNonRoot: true
+  volumeClaimTemplates:
+  - metadata:
+      name: minio-backup-data
+      labels:
+        app.kubernetes.io/name: minio-backup
+        app.kubernetes.io/component: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "standard"  # 根据集群情况修改
+      resources:
+        requests:
+          storage: 100Gi 

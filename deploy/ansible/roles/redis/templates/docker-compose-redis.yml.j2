@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:{{ redis.version | default('7-alpine') }}
+    container_name: miniodb-redis
+    restart: {{ docker.restart_policy | default('unless-stopped') }}
+    ports:
+      - "{{ redis.port | default(6379) }}:6379"
+    environment:
+      - REDIS_PASSWORD={{ redis.password | default('') }}
+    volumes:
+      - {{ redis.data_path | default('/opt/miniodb/data/redis') }}:/data
+      - {{ redis.config_path | default('/opt/miniodb/config/redis') }}/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - {{ redis.log_path | default('/opt/miniodb/logs/redis') }}:/var/log/redis
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: {{ redis.health_check.interval | default(30) }}s
+      timeout: {{ redis.health_check.timeout | default(10) }}s
+      retries: {{ redis.health_check.retries | default(3) }}
+      start_period: {{ redis.health_check.start_period | default(10) }}s
+    logging:
+      driver: {{ docker.logging.driver | default('json-file') }}
+      options:
+        max-size: "{{ redis.log_max_size | default('10m') }}"
+        max-file: "{{ redis.log_max_file | default('3') }}"
+    networks:
+      - miniodb-network
+{% if docker.resources is defined %}
+    deploy:
+      resources:
+        limits:
+          memory: {{ docker.resources.memory | default('512m') }}
+          cpus: "{{ docker.resources.cpus | default('0.5') }}"
+        reservations:
+          memory: {{ docker.resources.reserved_memory | default('256m') }}
+          cpus: "{{ docker.resources.reserved_cpus | default('0.25') }}"
+{% endif %}
+
+networks:
+  miniodb-network:
+    name: miniodb-network
+    driver: bridge
+{% if redis.network_subnet is defined %}
+    ipam:
+      config:
+        - subnet: {{ redis.network_subnet }}
+{% endif %}
+
+volumes:
+  redis-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: {{ redis.data_path | default('/opt/miniodb/data/redis') }}
+  redis-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: {{ redis.log_path | default('/opt/miniodb/logs/redis') }} 

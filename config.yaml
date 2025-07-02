@@ -1,0 +1,362 @@
+# MinIODB 优化配置文件
+
+# 统一网络配置
+network:
+  # gRPC服务器配置
+  grpc:
+    port: ":8080"
+    keep_alive:
+      time: 30s                    # Keep-Alive时间
+      timeout: 5s                  # Keep-Alive超时
+    max_connections: 1000          # 最大并发连接数
+    max_recv_msg_size: 4194304     # 最大接收消息大小 (4MB)
+    max_send_msg_size: 4194304     # 最大发送消息大小 (4MB)
+    
+  # REST服务器配置
+  rest:
+    port: ":8081"
+    read_timeout: 30s              # 读取超时
+    write_timeout: 30s             # 写入超时
+    idle_timeout: 60s              # 空闲超时
+    read_header_timeout: 10s       # 读取头部超时
+    graceful_shutdown_timeout: 30s # 优雅关闭超时
+    max_header_bytes: 1048576      # 最大头部字节数 (1MB)
+    
+  # 连接池配置
+  pools:
+    # Redis连接池 (第二阶段优化: 增加25%)
+    redis:
+      mode: "standalone"
+      addr: "redis:6379"
+      password: "redis123"
+      db: 0
+      bucket: "miniodb-data"
+      
+      # 连接池优化配置
+      pool_size: 250               # 增加25% (200→250)
+      min_idle_conns: 25           # 增加150% (10→25)
+      max_conn_age: 1800s
+      pool_timeout: 2s             # 减少50% (4s→2s)
+      idle_timeout: 180s           # 减少40% (300s→180s)
+      idle_check_freq: 60s
+      dial_timeout: 2s             # 减少60% (5s→2s)
+      read_timeout: 1s             # 减少67% (3s→1s)
+      write_timeout: 1s            # 减少67% (3s→1s)
+      max_retries: 3
+      min_retry_backoff: 8ms
+      max_retry_backoff: 512ms
+      
+    # MinIO连接池 (第二阶段优化: 增加50%)
+    minio:
+      endpoint: "minio:9000"
+      access_key_id: "minioadmin"
+      secret_access_key: "minioadmin"
+      use_ssl: false
+      region: "us-east-1"
+      bucket: "miniodb-data"
+      
+      # HTTP连接池优化配置
+      max_idle_conns: 300          # 增加50% (200→300)
+      max_idle_conns_per_host: 150 # 增加50% (100→150)
+      max_conns_per_host: 300      # 增加50% (200→300)
+      idle_conn_timeout: 90s
+      
+      # 超时优化配置
+      dial_timeout: 5s             # 减少83% (30s→5s)
+      tls_handshake_timeout: 5s    # 减少50% (10s→5s)
+      response_header_timeout: 15s # 减少50% (30s→15s)
+      expect_continue_timeout: 1s
+      request_timeout: 60s         # 减少50% (120s→60s)
+      
+      # 重试和Keep-Alive配置
+      max_retries: 3
+      retry_delay: 100ms
+      keep_alive: 30s
+      disable_keep_alive: false
+      disable_compression: false
+
+# 智能限流系统 
+rate_limiting:
+  enabled: true
+  
+  # 限流等级定义
+  tiers:
+    health:
+      requests_per_second: 200     # 健康检查专用
+      burst_size: 50
+      window_size: "1s"
+    query:
+      requests_per_second: 100     # 查询操作
+      burst_size: 30
+      window_size: "1s"
+    write:
+      requests_per_second: 80      # 写入操作
+      burst_size: 20
+      window_size: "1s"
+    standard:
+      requests_per_second: 50      # 标准操作
+      burst_size: 15
+      window_size: "1s"
+    strict:
+      requests_per_second: 20      # 严格限制
+      burst_size: 5
+      window_size: "1s"
+  
+  # 路径规则匹配
+  path_rules:
+    - path: "/health"
+      method: "GET"
+      tier: "health"
+    - path: "/v1/health"
+      method: "GET"
+      tier: "health"
+    - path: "/metrics"
+      method: "GET"
+      tier: "health"
+    - path: "/v1/query"
+      method: "POST"
+      tier: "query"
+    - path: "/v1/write"
+      method: "POST"
+      tier: "write"
+    - path: "/v1/backup/trigger"
+      method: "POST"
+      tier: "strict"
+    - path: "/v1/recover"
+      method: "POST"
+      tier: "strict"
+  
+  # 默认限流等级
+  default_tier: "standard"
+  
+  # 限流响应配置
+  response:
+    include_tier: true             # 包含限流等级信息
+    include_limit: true            # 包含限制信息
+    include_burst: true            # 包含突发容量信息
+    include_window: true           # 包含时间窗口信息
+    include_retry_after: true      # 包含重试间隔信息
+
+# 查询性能优化
+query_optimization:
+  # 查询缓存配置
+  query_cache:
+    enabled: true
+    redis_key_prefix: "qcache:"
+    default_ttl: 3600s             # 1小时默认TTL
+    max_cache_size: 209715200      # 200MB最大缓存
+    eviction_policy: "lru"         # LRU淘汰策略
+    
+    # 智能缓存策略
+    cache_strategies:
+      simple_select: 7200s         # 简单查询2小时
+      count_query: 3600s           # COUNT查询1小时
+      aggregation: 1800s           # 聚合查询30分钟
+      join_query: 900s             # JOIN查询15分钟
+      complex_query: 600s          # 复杂查询10分钟
+    
+    # 表级缓存失效
+    table_invalidation:
+      enabled: true
+      invalidation_delay: 5s       # 失效延迟
+    
+    # 统计配置
+    enable_stats: true
+    stats_interval: 60s
+  
+  # 文件缓存配置
+  file_cache:
+    enabled: true
+    cache_dir: "/tmp/miniodb_cache"
+    max_cache_size: 1073741824     # 1GB最大缓存
+    max_file_age: 14400s           # 4小时文件过期
+    cleanup_interval: 900s         # 15分钟清理间隔
+    
+    # Redis索引配置
+    redis_index:
+      enabled: true
+      key_prefix: "fcache:"
+      index_ttl: 86400s            # 24小时索引TTL
+    
+    # 文件元数据管理
+    metadata:
+      track_access_count: true     # 跟踪访问次数
+      track_creation_time: true    # 跟踪创建时间
+      enable_hash_verification: true # 启用哈希校验
+    
+    # 统计配置
+    enable_stats: true
+    stats_interval: 60s
+  
+  # DuckDB连接池配置
+  duckdb:
+    enabled: true
+    pool_size: 5                   # 5个并发连接
+    max_idle_time: 1800s           # 30分钟空闲超时
+    connection_timeout: 30s        # 连接超时
+    
+    # DuckDB性能优化
+    performance:
+      memory_limit: "1GB"          # 内存限制
+      threads: 4                   # 线程数
+      enable_object_cache: true    # 启用对象缓存
+      temp_directory: "/tmp/duckdb" # 临时目录
+    
+    # 预编译语句缓存
+    prepared_statements:
+      enabled: true
+      cache_size: 100              # 缓存大小
+      auto_prepare_aggregations: true # 自动预编译聚合查询
+    
+    # 连接复用
+    connection_reuse:
+      enabled: true
+      max_reuse_count: 1000        # 最大复用次数
+      health_check_interval: 300s  # 健康检查间隔
+
+# 服务器基础配置
+server:
+  node_id: "miniodb-node-1"
+
+# 缓冲区优化配置
+buffer:
+  buffer_size: 5000
+  flush_interval: 15s
+  worker_pool_size: 20
+  task_queue_size: 100
+  batch_flush_size: 5
+  enable_batching: true
+  flush_timeout: 60s
+  max_retries: 3
+  retry_delay: 1s
+  enable_concurrent: true
+  enable_metrics: true
+
+# 备份配置
+backup:
+  enabled: false
+  interval: 3600
+  minio:
+    endpoint: "minio-backup:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    bucket: "miniodb-backup"
+  metadata:
+    enabled: true
+    interval: 30m
+    retention_days: 7
+    bucket: "miniodb-metadata"
+
+# 日志配置
+log:
+  level: "info"
+  format: "json"
+  output: "both"
+  filename: "logs/minIODB.log"
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+  compress: true
+
+# 监控配置
+monitoring:
+  enabled: true
+  port: ":8082"
+  path: "/metrics"
+  prometheus: true
+
+# 认证配置
+auth:
+  enable_jwt: true
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  token_expiry: "24h"
+  enable_api_key: true
+  api_keys:
+    - "api-key-1234567890abcdef"
+    - "api-key-0987654321fedcba"
+  skip_auth_paths:
+    - "/health"
+    - "/metrics"
+    - "/v1/health"
+  require_auth_paths:
+    - "/v1/write"
+    - "/v1/query"
+    - "/v1/backup/trigger"
+    - "/v1/recover"
+
+# 表管理配置
+table_management:
+  auto_create_tables: true
+  default_table: "default"
+  max_tables: 1000
+  table_name_pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,63}$"
+  
+  # 默认表配置
+  default_config:
+    buffer_size: 1000
+    flush_interval: 30s
+    retention_days: 365
+    backup_enabled: true
+    properties: {}
+  
+  tables: {}
+
+# 存储引擎优化配置 
+storage_engine:
+  # 启用存储引擎优化
+  enabled: true
+  auto_optimization: true
+  optimize_interval: 1800s        # 30分钟优化间隔
+  performance_mode: "balanced"    # balanced, throughput, latency, storage
+  enable_monitoring: true
+  enable_profiling: false
+  
+  # Parquet存储优化
+  parquet:
+    default_compression: "zstd"    # gzip, lzo, brotli, lz4, zstd, snappy, uncompressed
+    default_partition: "analytical" # analytical, streaming, compression_optimized, small_files, large_files
+    auto_select_strategy: true
+    compression_analysis: true
+    metadata_indexing: true
+    custom_strategies:
+      analytics_workload: "compression_optimized"
+      streaming_workload: "streaming"
+      mixed_workload: "analytical"
+  
+  # 智能分片优化
+  sharding:
+    default_strategy: "hash_uniform" # hash_uniform, range_temporal, composite_user_time, geo_distributed
+    auto_rebalance: true
+    hot_cold_separation: true
+    locality_optimization: true
+    rebalance_threshold: 0.8       # 80%负载阈值触发重平衡
+    migration_limit: 3             # 最大并发迁移任务数
+  
+  # 索引系统优化
+  indexing:
+    auto_index_creation: true
+    index_types: ["bloom", "minmax", "inverted", "bitmap", "composite"]
+    bloom_filter_enabled: true
+    minmax_enabled: true
+    inverted_enabled: true
+    composite_enabled: true
+    maintenance_interval: 3600s    # 1小时索引维护间隔
+    custom_config:
+      bloom_filter_fpp: 0.01       # 1% 假阳性率
+      inverted_min_term_length: 2  # 最小词项长度
+      bitmap_cardinality_threshold: 1000 # 位图索引基数阈值
+  
+  # 内存优化配置
+  memory:
+    enable_pooling: true
+    enable_zero_copy: true
+    buffer_optimization: true
+    gc_optimization: true
+    max_memory_usage: 2147483648   # 2GB 最大内存使用
+    memory_pool_sizes:
+      small: 1024                  # 1KB 小块内存池
+      medium: 16384                # 16KB 中等内存池
+      large: 262144                # 256KB 大块内存池
+      xlarge: 1048576              # 1MB 超大内存池
+    gc_interval: 300s              # 5分钟GC间隔 

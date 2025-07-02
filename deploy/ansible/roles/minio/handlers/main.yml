@@ -1,0 +1,24 @@
+# MinIO 处理程序
+---
+
+- name: restart minio
+  docker_compose:
+    project_src: "{{ minio.config_path | default('/opt/miniodb/config/minio') }}"
+    state: present
+    restarted: yes
+  become: true
+  become_user: "{{ system.user | default('miniodb') }}"
+
+- name: stop minio
+  docker_compose:
+    project_src: "{{ minio.config_path | default('/opt/miniodb/config/minio') }}"
+    state: absent
+  become: true
+  become_user: "{{ system.user | default('miniodb') }}"
+
+- name: start minio
+  docker_compose:
+    project_src: "{{ minio.config_path | default('/opt/miniodb/config/minio') }}"
+    state: present
+  become: true
+  become_user: "{{ system.user | default('miniodb') }}" 

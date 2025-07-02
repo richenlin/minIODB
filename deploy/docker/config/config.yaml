@@ -1,0 +1,302 @@
+server:
+  grpc_port: ":8080"
+  rest_port: ":8081"
+  node_id: "test-node-1"
+  
+# 网络和连接池配置 - 统一管理所有网络连接
+network:
+  # 服务器网络配置
+  server:
+    # gRPC服务器网络配置
+    grpc:
+      max_connections: 1000           # 最大并发连接数
+      connection_timeout: 30s         # 连接超时
+      stream_timeout: 60s            # 流超时
+      keep_alive_time: 30s           # 保活时间
+      keep_alive_timeout: 5s         # 保活超时
+      max_connection_idle: 15m       # 最大连接空闲时间
+      max_connection_age: 30m        # 最大连接存活时间
+      max_connection_age_grace: 5s   # 连接存活优雅期
+      max_send_msg_size: 4194304     # 最大发送消息大小 (4MB)
+      max_recv_msg_size: 4194304     # 最大接收消息大小 (4MB)
+      
+    # REST服务器网络配置
+    rest:
+      read_timeout: 30s              # 读取超时
+      write_timeout: 30s             # 写入超时
+      idle_timeout: 60s              # 空闲超时
+      read_header_timeout: 10s       # 读取头超时
+      max_header_bytes: 1048576      # 最大头字节数 (1MB)
+      shutdown_timeout: 30s          # 优雅关闭超时
+      
+  # 连接池配置
+  pools:
+    # Redis连接池配置
+    redis:
+      # 基础配置
+      mode: "standalone"              # Redis模式: standalone, sentinel, cluster
+      addr: "redis:6379"              # 单机模式地址
+      password: "redis123"            # 密码
+      db: 0                          # 数据库编号（集群模式不支持）
+      
+      # 哨兵模式配置（当mode为sentinel时使用）
+      # master_name: "mymaster"
+      # sentinel_addrs:
+      #   - "redis-sentinel-1:26379"
+      #   - "redis-sentinel-2:26379"
+      #   - "redis-sentinel-3:26379"
+      # sentinel_password: ""
+      
+      # 集群模式配置（当mode为cluster时使用）
+      # cluster_addrs:
+      #   - "redis-node-1:7000"
+      #   - "redis-node-2:7001"
+      #   - "redis-node-3:7002"
+      
+      # 连接池配置 - 性能优化
+      pool_size: 250                  # 连接池大小，增加25%
+      min_idle_conns: 25              # 最小空闲连接数，增加一倍以上
+      max_conn_age: 1800s             # 连接最大生存时间 (30分钟)
+      pool_timeout: 3s                # 获取连接超时，减少1秒提升响应性
+      idle_timeout: 300s              # 空闲连接超时 (5分钟)
+      idle_check_freq: 60s            # 空闲连接检查频率
+      dial_timeout: 3s                # 连接超时，减少2秒
+      read_timeout: 2s                # 读取超时，减少1秒
+      write_timeout: 2s               # 写入超时，减少1秒
+      max_retries: 3                  # 最大重试次数
+      min_retry_backoff: 8ms          # 最小重试间隔
+      max_retry_backoff: 512ms        # 最大重试间隔
+      
+      # 集群特定配置
+      max_redirects: 8                # 最大重定向次数
+      read_only: false                # 只读模式
+      route_by_latency: true          # 按延迟路由，优化性能
+      route_randomly: false           # 关闭随机路由，使用延迟优化
+    
+    # MinIO连接池配置
+    minio:
+      endpoint: "minio:9000"
+      access_key_id: "minioadmin"
+      secret_access_key: "minioadmin"
+      use_ssl: false
+      region: "us-east-1"
+      bucket: "miniodb-data"
+      
+      # HTTP连接池配置 - 性能优化
+      max_idle_conns: 300             # 增加50%的空闲连接
+      max_idle_conns_per_host: 150    # 每主机增加50%的空闲连接
+      max_conns_per_host: 300         # 每主机增加50%的总连接
+      idle_conn_timeout: 90s          # 空闲连接超时
+      
+      # 超时配置 - 优化网络性能
+      dial_timeout: 5s                # 连接超时，减少到5秒
+      tls_handshake_timeout: 5s       # TLS握手超时，减少到5秒
+      response_header_timeout: 15s    # 响应头超时，减少到15秒
+      expect_continue_timeout: 1s     # Expect Continue超时
+      
+      # 重试和请求配置
+      max_retries: 3                  # 最大重试次数
+      retry_delay: 100ms              # 重试延迟
+      request_timeout: 60s            # 请求超时，减少到60秒
+      
+      # Keep-Alive配置 - 优化连接复用
+      keep_alive: 30s                 # TCP保活间隔
+      disable_keep_alive: false       # 启用保活
+      disable_compression: false      # 启用压缩
+    
+    # 备份MinIO连接池配置
+    backup_minio:
+      endpoint: "minio-backup:9000"
+      access_key_id: "minioadmin"
+      secret_access_key: "minioadmin"
+      use_ssl: false
+      region: "us-east-1"
+      bucket: "miniodb-backup"
+      
+      # 较保守的连接池配置（备份非关键路径）
+      max_idle_conns: 100
+      max_idle_conns_per_host: 50
+      max_conns_per_host: 100
+      idle_conn_timeout: 90s
+      dial_timeout: 10s
+      tls_handshake_timeout: 10s
+      response_header_timeout: 30s
+      expect_continue_timeout: 1s
+      max_retries: 3
+      retry_delay: 100ms
+      request_timeout: 120s
+      keep_alive: 30s
+      disable_keep_alive: false
+      disable_compression: false
+    
+    # 健康检查间隔
+    health_check_interval: 15s        # 减少到15秒，更频繁的健康检查
+
+backup:
+  enabled: false
+  interval: 3600  # 备份间隔（秒）
+  minio:
+    endpoint: "minio-backup:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    use_ssl: false
+    bucket: "miniodb-backup"  # 修改为与docker-compose.yml一致
+  
+  # 元数据备份配置
+  metadata:
+    enabled: true                # 启用元数据备份
+    interval: 30m               # 备份间隔（30分钟）
+    retention_days: 7           # 保留天数
+    bucket: "miniodb-metadata"  # 元数据存储桶
+
+buffer:
+  # 基础配置
+  buffer_size: 5000           # 缓冲区大小，优化后提升5倍
+  flush_interval: 15s         # 刷新间隔，优化后减少一半
+  
+  # 并发配置
+  worker_pool_size: 20        # 工作池大小，优化后增加一倍
+  task_queue_size: 100        # 任务队列大小
+  batch_flush_size: 5         # 批量刷新大小
+  enable_batching: true       # 启用批量处理
+  flush_timeout: 60s          # 刷新超时
+  max_retries: 3              # 最大重试次数
+  retry_delay: 1s             # 重试延迟
+  
+  # 性能优化配置
+  enable_concurrent: true     # 启用并发缓冲区
+  enable_metrics: true        # 启用指标收集
+
+log:
+  level: "info"
+  format: "json"
+  output: "both"
+  filename: "logs/minIODB.log"
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+  compress: true
+
+monitoring:
+  enabled: true
+  port: ":8082"
+  path: "/metrics"
+  prometheus: true
+
+security:
+  mode: "jwt"
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  enable_tls: false
+  valid_tokens: 
+    - "test-token-123456"
+    - "admin-token-abcdef"
+  cert_file: "certs/server.crt"  # 证书文件路径
+  key_file: "certs/server.key"   # 私钥文件路径
+  
+  # 智能限流器配置
+  smart_rate_limit:
+    enabled: true
+    default_tier: "standard"
+    cleanup_interval: "5m"
+    
+    # 限流等级定义
+    tiers:
+      - name: "health"
+        requests_per_sec: 200        # 健康检查API高频率
+        burst_size: 400              # 允许突发
+        window: "1m"
+        backoff_duration: "1s"
+        
+      - name: "query" 
+        requests_per_sec: 100        # 查询API中等频率
+        burst_size: 200
+        window: "1m"
+        backoff_duration: "2s"
+        
+      - name: "write"
+        requests_per_sec: 80         # 写入API适中频率（提升至80 RPS）
+        burst_size: 160              # 更大的突发支持
+        window: "1m"
+        backoff_duration: "3s"
+        
+      - name: "standard"
+        requests_per_sec: 50         # 标准API频率
+        burst_size: 100
+        window: "1m"
+        backoff_duration: "3s"
+        
+      - name: "strict"
+        requests_per_sec: 20         # 严格限制
+        burst_size: 40
+        window: "1m"
+        backoff_duration: "10s"
+    
+    # 路径限流配置
+    path_limits:
+      - pattern: "/v1/health"
+        tier: "health"
+        enabled: true
+      - pattern: "/health"
+        tier: "health" 
+        enabled: true
+      - pattern: "/metrics"
+        tier: "health"
+        enabled: true
+      - pattern: "/v1/query"
+        tier: "query"
+        enabled: true
+      - pattern: "/v1/data"
+        tier: "write"
+        enabled: true
+      - pattern: "/v1/tables"
+        tier: "write"
+        enabled: true
+      - pattern: "/v1/backup"
+        tier: "strict"
+        enabled: true
+        
+  # 传统限流配置（保持向后兼容）
+  rate_limit:
+    enabled: false               # 禁用旧限流器
+    requests_per_minute: 10000   # 保留配置但不使用
+
+# 新增认证配置
+auth:
+  enable_jwt: true
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  token_expiry: "24h"
+  enable_api_key: true
+  api_keys:
+    - "api-key-1234567890abcdef"
+    - "api-key-0987654321fedcba"
+  skip_auth_paths:
+    - "/health"
+    - "/metrics"
+    - "/v1/health"
+  require_auth_paths:
+    - "/v1/write"
+    - "/v1/query"
+    - "/v1/backup/trigger"
+    - "/v1/recover"
+  admin_roles:
+    - "admin"
+    - "superuser"
+  user_roles:
+    - "user"
+    - "api"
+
+
+tables:
+  default_config:
+    buffer_size: 5000             # 提升缓冲区大小
+    flush_interval: 15s           # 缩短刷新间隔
+    retention_days: 365
+    backup_enabled: true
+    properties: {}
+  tables: {}
+
+table_management:
+  auto_create_tables: true
+  default_table: "default"
+  max_tables: 1000
+  table_name_pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" 

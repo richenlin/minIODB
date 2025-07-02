@@ -1,0 +1,9 @@
+---
+# Docker 角色处理器
+
+- name: restart docker
+  systemd:
+    name: docker
+    state: restarted
+    daemon_reload: yes
+  listen: restart docker 

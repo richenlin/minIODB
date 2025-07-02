@@ -1,0 +1,136 @@
+---
+# MinIODB 自动部署模式清单文件
+# 自动部署Redis、MinIO容器服务
+
+all:
+  children:
+    miniodb_nodes:
+      hosts:
+        node1:
+          ansible_host: 192.168.1.10
+          ansible_user: ubuntu
+          miniodb_role: primary
+          services: ["miniodb", "redis"]
+          
+        node2:
+          ansible_host: 192.168.1.11
+          ansible_user: ubuntu
+          miniodb_role: worker
+          services: ["miniodb", "minio"]
+          
+        node3:
+          ansible_host: 192.168.1.12
+          ansible_user: ubuntu
+          miniodb_role: worker
+          services: ["miniodb", "minio-backup"]
+          
+      vars:
+        # 部署模式：自动部署容器服务
+        auto_deploy_services: true
+        
+        # Docker网络配置
+        docker_network: "miniodb-network"
+        docker_subnet: "172.20.0.0/16"
+        
+        # Redis配置（自动部署）
+        redis:
+          image: "redis:7-alpine"
+          port: 6379
+          password: "{{ vault_redis_password }}"
+          memory_limit: "2g"
+          data_path: "{{ data_path }}/redis"
+          
+        # MinIO配置（自动部署）
+        minio:
+          image: "minio/minio:latest"
+          api_port: 9000
+          console_port: 9001
+          access_key: "{{ vault_minio_access_key }}"
+          secret_key: "{{ vault_minio_secret_key }}"
+          bucket: "miniodb-data"
+          data_path: "{{ data_path }}/minio"
+          
+        # MinIO备份配置（自动部署）
+        minio_backup:
+          image: "minio/minio:latest"
+          api_port: 9002
+          console_port: 9003
+          access_key: "{{ vault_minio_backup_access_key }}"
+          secret_key: "{{ vault_minio_backup_secret_key }}"
+          bucket: "miniodb-backup"
+          data_path: "{{ data_path }}/minio-backup"
+          
+        # MinIODB应用配置
+        miniodb:
+          version: "latest"
+          log_level: "info"
+          grpc_port: 8080
+          rest_port: 8081
+          metrics_port: 9090
+          build_from_source: false
+          config_path: "/opt/miniodb/config"
+          log_path: "/opt/miniodb/logs"
+          data_path: "{{ data_path }}/miniodb"
+          
+        # 认证配置
+        auth:
+          mode: "jwt"
+          jwt_secret: "{{ vault_jwt_secret }}"
+          jwt_expiration: "24h"
+          
+        # 缓冲区配置
+        buffer:
+          size: 1000
+          timeout: "30s"
+          batch_size: 100
+          
+        # DuckDB配置
+        duckdb:
+          memory_limit: "4GB"
+          threads: 4
+          
+        # 监控配置
+        monitoring:
+          enabled: true
+          prometheus_port: 9090
+          
+        # 网络配置
+        network:
+          docker_network: "miniodb-network"
+          subnet: "172.20.0.0/16"
+          
+        # 防火墙配置
+        firewall:
+          enabled: true
+          allowed_ports:
+            - 8080  # gRPC
+            - 8081  # REST
+            - 9090  # Metrics
+            - 6379  # Redis (内部)
+            - 9000  # MinIO API (内部)
+            - 9001  # MinIO Console (内部)
+            - 9002  # MinIO Backup API (内部)
+            - 9003  # MinIO Backup Console (内部)
+            
+        # 安全配置
+        security:
+          ssl_enabled: false
+          ssl_cert_path: "/opt/miniodb/certs"
+          
+        # 数据路径
+        data_path: "/opt/miniodb/data"
+        
+        # 用户配置
+        miniodb_user: "miniodb"
+        miniodb_group: "miniodb"
+        miniodb_uid: 1001
+        miniodb_gid: 1001
+        
+        # Docker配置
+        docker:
+          version: "20.10"
+          data_root: "/var/lib/docker"
+          log_driver: "json-file"
+          log_opts:
+            max-size: "10m"
+            max-file: "3" 

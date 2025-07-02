@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-service
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: miniodb-system
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9000
+    targetPort: 9000
+    protocol: TCP
+    name: api
+  - port: 9001
+    targetPort: 9001
+    protocol: TCP
+    name: console
+  selector:
+    app.kubernetes.io/name: minio
+
+---
+# MinIO External Service (用于外部访问)
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-external
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: miniodb-system
+spec:
+  type: NodePort  # 或 LoadBalancer，根据集群情况选择
+  ports:
+  - port: 9000
+    targetPort: 9000
+    nodePort: 30900  # 外部访问端口
+    protocol: TCP
+    name: api
+  - port: 9001
+    targetPort: 9001
+    nodePort: 30901  # 外部访问端口
+    protocol: TCP
+    name: console
+  selector:
+    app.kubernetes.io/name: minio
+
+---
+# MinIO Backup Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-backup-service
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio-backup
+    app.kubernetes.io/component: backup-storage
+    app.kubernetes.io/part-of: miniodb-system
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9000
+    targetPort: 9000
+    protocol: TCP
+    name: api
+  - port: 9001
+    targetPort: 9001
+    protocol: TCP
+    name: console
+  selector:
+    app.kubernetes.io/name: minio-backup
+
+---
+# MinIO Backup External Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-backup-external
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio-backup
+    app.kubernetes.io/component: backup-storage
+    app.kubernetes.io/part-of: miniodb-system
+spec:
+  type: NodePort  # 或 LoadBalancer，根据集群情况选择
+  ports:
+  - port: 9000
+    targetPort: 9000
+    nodePort: 30902  # 外部访问端口
+    protocol: TCP
+    name: api
+  - port: 9001
+    targetPort: 9001
+    nodePort: 30903  # 外部访问端口
+    protocol: TCP
+    name: console
+  selector:
+    app.kubernetes.io/name: minio-backup 

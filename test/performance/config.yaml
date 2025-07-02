@@ -1,0 +1,466 @@
+# MinIODB 性能测试配置文件
+
+# 测试数据配置
+test_data:
+  table_name: "performance_test_table"
+  # 测试数据规模配置
+  data_sizes:
+    small: 10000      # 1万条记录 - 用于快速测试
+    medium: 100000    # 10万条记录 - 用于中等规模测试
+    large: 1000000    # 100万条记录 - 用于大规模测试
+    xlarge: 10000000  # 1000万条记录 - 用于极限测试
+  
+  # 批处理配置
+  batch_sizes:
+    small: 500
+    medium: 1000
+    large: 2000
+    xlarge: 5000
+
+# 性能基准配置
+benchmarks:
+  # 插入性能基准 (records/second)
+  insert_throughput:
+    min_acceptable: 100     # 最低可接受的插入速度
+    good: 500              # 良好的插入速度
+    excellent: 1000        # 优秀的插入速度
+  
+  # 查询性能基准 (milliseconds)
+  query_latency:
+    simple_query_max: 1000      # 简单查询最大延迟 1秒
+    complex_query_max: 5000     # 复杂查询最大延迟 5秒
+    aggregation_query_max: 10000 # 聚合查询最大延迟 10秒
+  
+  # 并发性能基准
+  concurrency:
+    max_concurrent_queries: 50   # 最大并发查询数
+    max_concurrent_inserts: 20   # 最大并发插入数
+
+# 测试场景配置
+test_scenarios:
+  # 基础功能测试
+  basic:
+    enabled: true
+    data_size: "small"
+    batch_size: "small"
+    
+  # 吞吐量测试
+  throughput:
+    enabled: true
+    data_size: "medium"
+    batch_size: "medium"
+    
+  # 大数据量测试
+  large_scale:
+    enabled: false  # 默认关闭，需要手动启用
+    data_size: "large"
+    batch_size: "large"
+    
+  # 极限测试
+  stress:
+    enabled: false  # 默认关闭，需要手动启用
+    data_size: "xlarge"
+    batch_size: "xlarge"
+
+# 查询测试配置
+query_tests:
+  # 简单查询
+  simple_queries:
+    - name: "count_all"
+      sql: "SELECT COUNT(*) FROM {table}"
+      description: "全表计数查询"
+      max_duration: 1000ms
+      
+    - name: "select_limit"
+      sql: "SELECT * FROM {table} LIMIT 100"
+      description: "限制结果集查询"
+      max_duration: 500ms
+      
+  # 过滤查询
+  filter_queries:
+    - name: "amount_filter"
+      sql: "SELECT COUNT(*) FROM {table} WHERE amount > 5000"
+      description: "金额过滤查询"
+      max_duration: 2000ms
+      
+    - name: "date_range_filter"
+      sql: "SELECT COUNT(*) FROM {table} WHERE timestamp >= NOW() - INTERVAL '1 day'"
+      description: "时间范围过滤查询"
+      max_duration: 3000ms
+      
+  # 聚合查询
+  aggregation_queries:
+    - name: "group_by_region"
+      sql: "SELECT region, COUNT(*) as count, SUM(amount) as total FROM {table} GROUP BY region"
+      description: "按地区分组聚合"
+      max_duration: 5000ms
+      
+    - name: "group_by_status"
+      sql: "SELECT status, COUNT(*) as count, AVG(amount) as avg_amount FROM {table} GROUP BY status"
+      description: "按状态分组聚合"
+      max_duration: 5000ms
+      
+    - name: "complex_aggregation"
+      sql: "SELECT region, status, COUNT(*) as count, SUM(amount) as total, AVG(price) as avg_price FROM {table} GROUP BY region, status ORDER BY total DESC LIMIT 20"
+      description: "复杂多维度聚合"
+      max_duration: 10000ms
+
+# 并发测试配置
+concurrency_tests:
+  # 读并发测试
+  read_concurrency:
+    enabled: true
+    concurrent_users: [1, 5, 10, 20, 50]
+    queries_per_user: 10
+    max_duration_per_query: 5000ms
+    
+  # 写并发测试
+  write_concurrency:
+    enabled: true
+    concurrent_writers: [1, 2, 5, 10]
+    records_per_writer: 1000
+    batch_size: 100
+    
+  # 混合并发测试
+  mixed_concurrency:
+    enabled: false  # 默认关闭
+    read_users: 20
+    write_users: 5
+    test_duration: 60s
+
+
+# 环境配置
+environment:
+  # Docker 配置
+  docker:
+    compose_file: "../../deploy/docker/docker-compose.yml"
+    services:
+      - miniodb
+      - redis
+      - minio
+      
+  # 清理配置
+  cleanup:
+    after_test: true
+    keep_logs: true
+    keep_data: false
+
+# OLAP 特定测试配置
+olap_tests:
+  # TB级数据测试配置
+  tb_scale_test:
+    enabled: false  # 需要大量资源，默认关闭
+    target_data_size: 1TB
+    test_queries:
+      - "SELECT COUNT(*) FROM large_table"
+      - "SELECT region, SUM(amount) FROM large_table GROUP BY region"
+      - "SELECT * FROM large_table WHERE timestamp >= '2024-01-01' AND amount > 10000"
+    expected_response_time: 5s  # TB级数据查询期望在5秒内完成
+    
+  # 列式存储优化测试
+  columnar_optimization:
+    enabled: true
+    test_scenarios:
+      - scenario: "column_projection"
+        description: "列投影性能测试"
+        query: "SELECT amount FROM {table}"
+      - scenario: "column_aggregation"
+        description: "列聚合性能测试"
+        query: "SELECT SUM(amount), AVG(price) FROM {table}"
+      - scenario: "column_filter"
+        description: "列过滤性能测试"
+        query: "SELECT region FROM {table} WHERE amount > 1000"
+# MinIODB 高并发性能测试配置
+# 专为OLAP查询引擎优化的性能测试参数
+
+# 服务配置
+service:
+  host: "localhost"
+  port: 8080
+  api_base_url: "http://localhost:8080"
+  health_endpoint: "/health"
+  timeout: 30s
+  retry_attempts: 3
+  retry_delay: 5s
+
+# 数据库连接配置
+database:
+  driver: "clickhouse"
+  host: "localhost"
+  port: 9000
+  database: "miniodb_test"
+  username: "default"
+  password: ""
+  max_open_conns: 100
+  max_idle_conns: 50
+  conn_max_lifetime: 300s
+
+# OLAP性能基准
+performance_benchmarks:
+  # 数据插入性能
+  insert_throughput:
+    target: 10000        # records/sec - 目标吞吐量
+    acceptable: 5000     # records/sec - 可接受最低吞吐量
+    excellent: 20000     # records/sec - 优秀性能水平
+    
+  # 查询延迟基准
+  query_latency:
+    simple_query: 1s     # 简单查询 (SELECT, WHERE)
+    complex_query: 5s    # 复杂查询 (JOIN, GROUP BY)
+    aggregation_query: 3s # 聚合查询 (SUM, AVG, COUNT)
+    tb_query: 5s         # TB级数据查询
+    window_function: 5s   # 窗口函数查询
+    
+  # 并发性能基准
+  concurrency:
+    max_read_users: 500     # 最大读并发用户数
+    max_write_users: 100    # 最大写并发用户数
+    max_mixed_users: 300    # 最大混合负载用户数
+    target_qps: 1000        # 目标QPS
+    target_error_rate: 0.01 # 目标错误率 (1%)
+    
+  # 系统资源基准
+  system_resources:
+    max_cpu_usage: 0.8      # 最大CPU使用率 (80%)
+    max_memory_usage: 0.9   # 最大内存使用率 (90%)
+    min_cache_hit_rate: 0.8 # 最小缓存命中率 (80%)
+    
+  # OLAP专项指标
+  olap_metrics:
+    columnar_scan_speed: 1073741824  # 1GB/sec - 列扫描速度
+    compression_ratio: 3.0           # 3:1 - 压缩比
+    parallel_query_speedup: 4.0      # 4x - 并行查询加速比
+
+# TB级数据测试配置
+tb_scale_tests:
+  # 数据准备配置
+  data_preparation:
+    table_name: "tb_performance_test"
+    record_count: 50000000      # 5000万条记录
+    estimated_size: "50GB"      # 预估数据大小
+    batch_size: 10000          # 批量插入大小
+    parallel_workers: 10        # 并行工作线程数
+    partition_count: 50         # 分区数量
+    partition_key: "user_id"    # 分区键
+    
+  # 表结构配置
+  table_schema:
+    columns:
+      - name: "id"
+        type: "UInt64"
+        primary_key: true
+      - name: "user_id"
+        type: "UInt32"
+        index: true
+      - name: "timestamp"
+        type: "DateTime"
+        index: true
+      - name: "event_type"
+        type: "String"
+        index: true
+      - name: "amount"
+        type: "Decimal(18,2)"
+      - name: "quantity"
+        type: "UInt32"
+      - name: "price"
+        type: "Decimal(10,2)"
+      - name: "region"
+        type: "String"
+        index: true
+      - name: "category"
+        type: "String"
+        index: true
+      - name: "status"
+        type: "Enum8('active'=1, 'inactive'=2, 'pending'=3)"
+      - name: "metadata"
+        type: "String"  # JSON格式
+      - name: "tags"
+        type: "Array(String)"
+      - name: "score"
+        type: "Float64"
+      - name: "created_at"
+        type: "DateTime"
+        
+  # 存储优化配置
+  storage_optimization:
+    engine: "MergeTree"
+    order_by: ["user_id", "timestamp"]
+    partition_by: "toYYYYMM(timestamp)"
+    compression: "zstd"
+    bloom_filter_columns: ["user_id", "event_type"]
+    skip_indices:
+      - name: "user_idx"
+        expression: "user_id"
+        type: "bloom_filter"
+      - name: "time_idx"
+        expression: "timestamp"
+        type: "minmax"
+
+  # OLAP查询测试场景
+  query_scenarios:
+    - name: "full_table_scan"
+      description: "全表计数查询"
+      sql: "SELECT COUNT(*) FROM tb_performance_test"
+      target_time: 3s
+      expected_rows: 1
+      category: "scan"
+      
+    - name: "region_aggregation"
+      description: "按地区聚合统计"
+      sql: "SELECT region, SUM(amount), COUNT(*) FROM tb_performance_test GROUP BY region ORDER BY SUM(amount) DESC"
+      target_time: 5s
+      expected_rows: 10
+      category: "aggregation"
+      
+    - name: "time_series_analysis"
+      description: "时间序列月度分析"
+      sql: "SELECT toYYYYMM(timestamp) as month, SUM(amount), AVG(price) FROM tb_performance_test WHERE timestamp >= '2023-01-01' GROUP BY month ORDER BY month"
+      target_time: 5s
+      expected_rows: 12
+      category: "time_series"
+      
+    - name: "complex_filtering"
+      description: "复杂条件过滤聚合"
+      sql: "SELECT category, region, SUM(amount), COUNT(*) FROM tb_performance_test WHERE amount > 100 AND status = 'active' AND timestamp >= '2023-06-01' GROUP BY category, region HAVING COUNT(*) > 1000 ORDER BY SUM(amount) DESC LIMIT 20"
+      target_time: 5s
+      expected_rows: 20
+      category: "complex_filter"
+      
+    - name: "window_function"
+      description: "窗口函数排名分析"
+      sql: "SELECT user_id, amount, ROW_NUMBER() OVER (PARTITION BY region ORDER BY amount DESC) as rank FROM tb_performance_test WHERE rank <= 10"
+      target_time: 5s
+      expected_rows: 100
+      category: "window"
+      
+    - name: "percentile_analysis"
+      description: "百分位数分析"
+      sql: "SELECT region, quantile(0.5)(amount) as median, quantile(0.95)(amount) as p95 FROM tb_performance_test GROUP BY region"
+      target_time: 5s
+      expected_rows: 10
+      category: "percentile"
+      
+    - name: "moving_average"
+      description: "7日移动平均"
+      sql: "SELECT toDate(timestamp) as date, AVG(amount) OVER (ORDER BY toDate(timestamp) ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) as ma7 FROM (SELECT timestamp, amount FROM tb_performance_test ORDER BY timestamp) GROUP BY date ORDER BY date"
+      target_time: 5s
+      expected_rows: 365
+      category: "moving_average"
+
+# 列式存储优化测试
+columnar_tests:
+  # 列投影测试
+  column_projection:
+    - name: "single_column"
+      sql: "SELECT amount FROM tb_performance_test"
+      expected_speedup: 3.0  # 比全行查询快3倍
+      
+    - name: "few_columns"
+      sql: "SELECT user_id, amount, timestamp FROM tb_performance_test"
+      expected_speedup: 2.5
+      
+    - name: "many_columns"
+      sql: "SELECT user_id, timestamp, event_type, amount, quantity, price, region, category FROM tb_performance_test"
+      expected_speedup: 1.5
+
+  # 列聚合测试
+  column_aggregation:
+    - name: "sum_aggregation"
+      sql: "SELECT SUM(amount) FROM tb_performance_test"
+      expected_speedup: 4.0
+      
+    - name: "count_aggregation"
+      sql: "SELECT COUNT(*) FROM tb_performance_test"
+      expected_speedup: 5.0
+      
+    - name: "avg_aggregation"
+      sql: "SELECT AVG(amount) FROM tb_performance_test"
+      expected_speedup: 3.5
+
+# 压力测试配置
+stress_tests:
+  # 重复查询压力测试
+  repeated_queries:
+    iterations: 5
+    concurrent_users: 100
+    queries:
+      - "SELECT COUNT(*) FROM tb_performance_test"
+      - "SELECT SUM(amount) FROM tb_performance_test"
+      - "SELECT region, COUNT(*) FROM tb_performance_test GROUP BY region"
+      
+  # 复杂连接测试
+  complex_joins:
+    - name: "self_join"
+      sql: "SELECT a.user_id, COUNT(*) FROM tb_performance_test a JOIN tb_performance_test b ON a.user_id = b.user_id WHERE a.amount > b.amount GROUP BY a.user_id LIMIT 1000"
+      target_time: 10s
+      
+  # 内存密集查询
+  memory_intensive:
+    - name: "array_aggregation"
+      sql: "SELECT user_id, groupArray(amount) FROM tb_performance_test GROUP BY user_id HAVING length(groupArray(amount)) > 10 LIMIT 100"
+      target_time: 8s
+
+# 监控配置
+monitoring:
+  # 系统资源监控
+  system_metrics:
+    interval: 5s
+    metrics:
+      - "cpu_usage"
+      - "memory_usage"
+      - "disk_io"
+      - "network_io"
+      - "load_average"
+      
+  # API性能监控
+  api_metrics:
+    interval: 10s
+    endpoints:
+      - "/health"
+      - "/api/v1/query"
+      - "/api/v1/insert"
+      
+  # 数据库监控
+  database_metrics:
+    interval: 30s
+    metrics:
+      - "active_connections"
+      - "query_count"
+      - "slow_queries"
+      - "table_sizes"
+
+# 报告生成配置
+reporting:
+  output_format: ["html", "json", "text"]
+  include_charts: true
+  include_system_info: true
+  include_recommendations: true
+  
+  # 性能阈值告警
+  performance_alerts:
+    cpu_usage_threshold: 0.9
+    memory_usage_threshold: 0.95
+    error_rate_threshold: 0.05
+    latency_threshold: 10s
+
+# 容错测试配置
+fault_tolerance:
+  # 网络故障模拟
+  network_failures:
+    - type: "connection_timeout"
+      duration: 5s
+      frequency: 0.1  # 10%的请求
+      
+    - type: "connection_reset"
+      frequency: 0.05  # 5%的请求
+      
+  # 服务故障模拟
+  service_failures:
+    - type: "temporary_unavailable"
+      duration: 30s
+      frequency: 0.02  # 2%的时间
+      
+  # 数据损坏模拟
+  data_corruption:
+    - type: "partial_data_loss"
+      percentage: 0.001  # 0.1%的数据 

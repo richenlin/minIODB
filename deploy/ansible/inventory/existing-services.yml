@@ -1,0 +1,80 @@
+---
+# MinIODB 现有服务模式清单文件
+# 适用于已有Redis、MinIO服务的环境
+
+all:
+  children:
+    miniodb_nodes:
+      hosts:
+        node1:
+          ansible_host: 192.168.1.10
+          ansible_user: ubuntu
+          miniodb_role: primary
+          
+        node2:
+          ansible_host: 192.168.1.11
+          ansible_user: ubuntu
+          miniodb_role: worker
+          
+        node3:
+          ansible_host: 192.168.1.12
+          ansible_user: ubuntu
+          miniodb_role: worker
+          
+      vars:
+        # 部署模式：使用现有服务
+        auto_deploy_services: false
+        
+        # 现有Redis配置
+        redis_host: "192.168.1.100"
+        redis_port: 6379
+        redis_password: "{{ vault_redis_password }}"
+        redis_db: 0
+        
+        # 现有MinIO主存储配置
+        minio_endpoint: "192.168.1.101:9000"
+        minio_access_key: "{{ vault_minio_access_key }}"
+        minio_secret_key: "{{ vault_minio_secret_key }}"
+        minio_bucket: "miniodb-data"
+        minio_use_ssl: false
+        
+        # 现有MinIO备份存储配置
+        minio_backup_endpoint: "192.168.1.102:9000"
+        minio_backup_access_key: "{{ vault_minio_backup_access_key }}"
+        minio_backup_secret_key: "{{ vault_minio_backup_secret_key }}"
+        minio_backup_bucket: "miniodb-backup"
+        minio_backup_use_ssl: false
+        
+        # MinIODB应用配置
+        miniodb:
+          version: "latest"
+          log_level: "info"
+          grpc_port: 8080
+          rest_port: 8081
+          metrics_port: 9090
+          
+        # 认证配置
+        auth:
+          mode: "jwt"
+          jwt_secret: "{{ vault_jwt_secret }}"
+          jwt_expiration: "24h"
+          
+        # 缓冲区配置
+        buffer:
+          size: 1000
+          timeout: "30s"
+          batch_size: 100
+          
+        # 监控配置
+        monitoring:
+          enabled: true
+          prometheus_port: 9090
+          
+        # 数据路径
+        data_path: "/opt/miniodb/data"
+        
+        # 用户配置
+        miniodb_user: "miniodb"
+        miniodb_group: "miniodb"
+        miniodb_uid: 1001
+        miniodb_gid: 1001 

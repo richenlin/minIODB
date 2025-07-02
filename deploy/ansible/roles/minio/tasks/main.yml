@@ -1,0 +1,136 @@
+---
+# MinIO 部署任务
+
+- name: 创建 MinIO 目录
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ system.user | default('miniodb') }}"
+    group: "{{ system.group | default('miniodb') }}"
+    mode: '0755'
+  loop:
+    - "{{ minio.data_path | default('/opt/miniodb/data/minio') }}"
+    - "{{ minio.backup_data_path | default('/opt/miniodb/data/minio-backup') }}"
+    - "{{ minio.config_path | default('/opt/miniodb/config/minio') }}"
+    - "{{ minio.backup_config_path | default('/opt/miniodb/config/minio-backup') }}"
+    - "{{ minio.scripts_path | default('/opt/miniodb/scripts') }}"
+  become: true
+  tags: directories
+
+- name: 复制 MinIO 初始化脚本
+  template:
+    src: init-minio.sh.j2
+    dest: "{{ minio.scripts_path | default('/opt/miniodb/scripts') }}/init-minio.sh"
+    owner: "{{ system.user | default('miniodb') }}"
+    group: "{{ system.group | default('miniodb') }}"
+    mode: '0755'
+  become: true
+  tags: scripts
+
+- name: 复制 MinIO Docker Compose 配置
+  template:
+    src: docker-compose-minio.yml.j2
+    dest: "{{ minio.config_path | default('/opt/miniodb/config/minio') }}/docker-compose.yml"
+    owner: "{{ system.user | default('miniodb') }}"
+    group: "{{ system.group | default('miniodb') }}"
+    mode: '0644'
+  become: true
+  notify: restart minio
+  tags: config
+
+- name: 复制 MinIO 环境变量文件
+  template:
+    src: minio.env.j2
+    dest: "{{ minio.config_path | default('/opt/miniodb/config/minio') }}/.env"
+    owner: "{{ system.user | default('miniodb') }}"
+    group: "{{ system.group | default('miniodb') }}"
+    mode: '0600'
+  become: true
+  notify: restart minio
+  tags: config
+
+- name: 启动 MinIO 服务
+  docker_compose:
+    project_src: "{{ minio.config_path | default('/opt/miniodb/config/minio') }}"
+    state: present
+    pull: true
+  become: true
+  become_user: "{{ system.user | default('miniodb') }}"
+  tags: start
+
+- name: 等待 MinIO 主服务启动
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ minio.api_port | default(9000) }}/minio/health/live"
+    method: GET
+    timeout: 10
+  register: minio_health
+  until: minio_health.status == 200
+  retries: 30
+  delay: 10
+  tags: health-check
+
+- name: 等待 MinIO 备份服务启动
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ minio.backup_api_port | default(9002) }}/minio/health/live"
+    method: GET
+    timeout: 10
+  register: minio_backup_health
+  until: minio_backup_health.status == 200
+  retries: 30
+  delay: 10
+  when: minio.backup_enabled | default(true)
+  tags: health-check
+
+- name: 初始化 MinIO 存储桶
+  docker_container:
+    name: "miniodb-minio-init-{{ ansible_date_time.epoch }}"
+    image: "minio/mc:{{ minio.mc_version | default('latest') }}"
+    command: ["/bin/bash", "/scripts/init-minio.sh"]
+    env:
+      MINIO_ROOT_USER: "{{ minio.root_user | default('minioadmin') }}"
+      MINIO_ROOT_PASSWORD: "{{ minio.root_password | default('minioadmin123') }}"
+      MINIO_BACKUP_USER: "{{ minio.backup_user | default('minioadmin') }}"
+      MINIO_BACKUP_PASSWORD: "{{ minio.backup_password | default('minioadmin123') }}"
+      MINIO_BUCKET: "{{ minio.bucket | default('miniodb-data') }}"
+      MINIO_BACKUP_BUCKET: "{{ minio.backup_bucket | default('miniodb-backup') }}"
+    volumes:
+      - "{{ minio.scripts_path | default('/opt/miniodb/scripts') }}/init-minio.sh:/scripts/init-minio.sh:ro"
+    networks:
+      - name: "{{ docker.network_name | default('miniodb-network') }}"
+    cleanup: true
+    detach: false
+    auto_remove: true
+  become: true
+  tags: initialize
+
+- name: 验证存储桶创建
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ minio.api_port | default(9000) }}/{{ minio.bucket | default('miniodb-data') }}/"
+    method: HEAD
+    user: "{{ minio.root_user | default('minioadmin') }}"
+    password: "{{ minio.root_password | default('minioadmin123') }}"
+    force_basic_auth: true
+  register: bucket_check
+  until: bucket_check.status == 200
+  retries: 10
+  delay: 5
+  tags: verify
+
+- name: 配置防火墙规则
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ system.firewall_ports }}"
+  become: true
+  when: ansible_os_family == "Debian"
+
+- name: 配置防火墙规则 (CentOS/RHEL)
+  firewalld:
+    port: "{{ item }}"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  loop: "{{ system.firewall_ports }}"
+  become: true
+  when: ansible_os_family == "RedHat" 

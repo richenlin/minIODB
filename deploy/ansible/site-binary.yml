@@ -1,0 +1,318 @@
+---
+# MinIODB二进制部署主playbook
+# 支持离线部署和多架构适配
+
+- name: MinIODB二进制部署 - 系统预检
+  hosts: miniodb_nodes
+  gather_facts: true
+  become: true
+  tags: [prereq, setup]
+  
+  pre_tasks:
+    - name: 显示部署信息
+      debug:
+        msg: |
+          🚀 开始MinIODB二进制部署
+          
+          部署模式: {{ deployment_mode | default('offline') }}
+          部署类型: {{ deployment_type | default('single') }}
+          目标架构: {{ ansible_architecture }}
+          主机数量: {{ ansible_play_hosts | length }}
+          
+          目标主机:
+          {% for host in ansible_play_hosts %}
+          - {{ host }} ({{ hostvars[host]['ansible_default_ipv4']['address'] }})
+          {% endfor %}
+      run_once: true
+      
+  roles:
+    - role: prereq
+      tags: [prereq]
+
+- name: MinIODB二进制部署 - 下载和分发
+  hosts: miniodb_nodes
+  gather_facts: false
+  become: true
+  tags: [download, distribution]
+  
+  tasks:
+    - name: 检查离线包是否存在
+      stat:
+        path: "{{ playbook_dir }}/files/{{ system_info.architecture | default(ansible_architecture) }}/bin"
+      register: offline_packages
+      delegate_to: localhost
+      run_once: true
+      
+    - name: 离线包检查结果
+      fail:
+        msg: |
+          离线包不存在！请先运行下载脚本:
+          cd {{ playbook_dir }}
+          ./scripts/download-binaries.sh
+      when: not offline_packages.stat.exists
+      run_once: true
+      
+    - name: 分发二进制文件
+      copy:
+        src: "{{ playbook_dir }}/files/{{ system_info.architecture | default(ansible_architecture) }}/bin/"
+        dest: "{{ miniodb.install_dir }}/bin/"
+        mode: '0755'
+        owner: miniodb
+        group: miniodb
+      tags: [binaries]
+      
+    - name: 分发配置模板
+      copy:
+        src: "{{ playbook_dir }}/files/configs/"
+        dest: "{{ miniodb.config_dir }}/"
+        owner: miniodb
+        group: miniodb
+      tags: [configs]
+
+- name: MinIODB二进制部署 - Redis服务
+  hosts: miniodb_cache
+  gather_facts: false
+  become: true
+  tags: [redis]
+  
+  tasks:
+    - name: 检查Redis源码
+      stat:
+        path: "{{ miniodb.install_dir }}/redis-source"
+      register: redis_source_check
+      
+    - name: 解压Redis源码（如果需要编译）
+      unarchive:
+        src: "{{ playbook_dir }}/files/{{ system_info.architecture | default(ansible_architecture) }}/redis/redis-*.tar.gz"
+        dest: "{{ miniodb.install_dir }}/"
+        owner: miniodb
+        group: miniodb
+        creates: "{{ miniodb.install_dir }}/redis-source"
+      when: not redis_source_check.stat.exists
+      
+    - name: 编译Redis（如果Redis二进制不存在）
+      shell: |
+        cd {{ miniodb.install_dir }}/redis-source
+        make -j$(nproc)
+        make install PREFIX={{ miniodb.install_dir }}
+      args:
+        creates: "{{ miniodb.install_dir }}/bin/redis-server"
+      become_user: miniodb
+      
+    - name: 创建Redis配置文件
+      template:
+        src: "{{ playbook_dir }}/files/configs/redis.conf"
+        dest: "/etc/redis/redis.conf"
+        owner: redis
+        group: redis
+        mode: '0640'
+      notify: restart redis
+      
+    - name: 创建Redis systemd服务
+      template:
+        src: "{{ playbook_dir }}/files/configs/redis.service"
+        dest: "/etc/systemd/system/redis.service"
+      notify:
+        - reload systemd
+        - restart redis
+        
+    - name: 启动Redis服务
+      systemd:
+        name: redis
+        state: started
+        enabled: true
+        daemon_reload: true
+
+- name: MinIODB二进制部署 - MinIO服务
+  hosts: miniodb_storage
+  gather_facts: false
+  become: true
+  tags: [minio]
+  
+  tasks:
+    - name: 创建MinIO环境配置
+      template:
+        src: "{{ playbook_dir }}/files/configs/minio.env"
+        dest: "/etc/default/minio"
+        owner: minio
+        group: minio
+        mode: '0640'
+      notify: restart minio
+      
+    - name: 创建MinIO systemd服务
+      template:
+        src: "{{ playbook_dir }}/files/configs/minio.service" 
+        dest: "/etc/systemd/system/minio.service"
+      notify:
+        - reload systemd
+        - restart minio
+        
+    - name: 启动MinIO服务
+      systemd:
+        name: minio
+        state: started
+        enabled: true
+        daemon_reload: true
+        
+    # 备份MinIO配置（如果启用）
+    - name: 创建备份MinIO环境配置
+      template:
+        src: "{{ playbook_dir }}/templates/minio-backup.env.j2"
+        dest: "/etc/default/minio-backup"
+        owner: minio
+        group: minio
+        mode: '0640'
+      when: minio.backup_enabled | default(true)
+      notify: restart minio-backup
+      
+    - name: 创建备份MinIO systemd服务
+      template:
+        src: "{{ playbook_dir }}/templates/minio-backup.service.j2"
+        dest: "/etc/systemd/system/minio-backup.service"
+      when: minio.backup_enabled | default(true)
+      notify:
+        - reload systemd
+        - restart minio-backup
+        
+    - name: 启动备份MinIO服务
+      systemd:
+        name: minio-backup
+        state: started
+        enabled: true
+        daemon_reload: true
+      when: minio.backup_enabled | default(true)
+
+- name: MinIODB二进制部署 - 存储桶初始化
+  hosts: miniodb_storage[0]  # 只在第一个存储节点执行
+  gather_facts: false
+  become: true
+  tags: [init-storage, buckets]
+  
+  roles:
+    - role: init-storage
+      tags: [init-storage]
+
+- name: MinIODB二进制部署 - MinIODB应用
+  hosts: miniodb_compute
+  gather_facts: false
+  become: true
+  tags: [miniodb-app]
+  
+  tasks:
+    - name: 创建MinIODB配置文件
+      template:
+        src: "{{ playbook_dir }}/templates/miniodb-config.yaml.j2"
+        dest: "{{ miniodb.config_dir }}/config.yaml"
+        owner: miniodb
+        group: miniodb
+        mode: '0644'
+      notify: restart miniodb
+      
+    - name: 创建MinIODB systemd服务
+      template:
+        src: "{{ playbook_dir }}/files/configs/miniodb.service"
+        dest: "/etc/systemd/system/miniodb.service"
+      notify:
+        - reload systemd
+        - restart miniodb
+        
+    - name: 启动MinIODB服务
+      systemd:
+        name: miniodb
+        state: started
+        enabled: true
+        daemon_reload: true
+
+- name: MinIODB二进制部署 - 验证和健康检查
+  hosts: miniodb_nodes
+  gather_facts: false
+  become: false
+  tags: [verification, health-check]
+  
+  tasks:
+    - name: 等待服务启动
+      wait_for:
+        port: "{{ item }}"
+        host: "{{ ansible_default_ipv4.address }}"
+        timeout: 60
+      loop:
+        - "{{ redis.port }}"
+        - "{{ minio.api_port }}"
+        - "{{ miniodb_app.rest_port }}"
+        - "{{ miniodb_app.grpc_port }}"
+      
+    - name: 健康检查 - Redis
+      uri:
+        url: "redis://{{ ansible_default_ipv4.address }}:{{ redis.port }}"
+        method: GET
+        timeout: 10
+      ignore_errors: true
+      register: redis_health
+      
+    - name: 健康检查 - MinIO
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ minio.api_port }}/minio/health/live"
+        method: GET
+        timeout: 10
+      register: minio_health
+      
+    - name: 健康检查 - MinIODB REST API
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ miniodb_app.rest_port }}/v1/health"
+        method: GET
+        timeout: 10
+      register: miniodb_health
+      
+    - name: 显示部署结果
+      debug:
+        msg: |
+          🎉 MinIODB二进制部署完成！
+          
+          服务状态:
+          - Redis: {{ redis_health.status | default('ERROR') == 200 | ternary('✅ 正常', '❌ 异常') }}
+          - MinIO: {{ minio_health.status | default('ERROR') == 200 | ternary('✅ 正常', '❌ 异常') }}
+          - MinIODB: {{ miniodb_health.status | default('ERROR') == 200 | ternary('✅ 正常', '❌ 异常') }}
+          
+          访问地址:
+          - MinIODB REST API: http://{{ ansible_default_ipv4.address }}:{{ miniodb_app.rest_port }}
+          - MinIODB gRPC: {{ ansible_default_ipv4.address }}:{{ miniodb_app.grpc_port }}
+          - MinIO Console: http://{{ ansible_default_ipv4.address }}:{{ minio.console_port }}
+          - Metrics: http://{{ ansible_default_ipv4.address }}:{{ miniodb_app.metrics_port }}/metrics
+          
+          存储桶:
+          {% if storage_init_results is defined %}
+          - 主存储桶: {{ storage_init_results.primary_bucket_created | ternary('✅', '❌') }} {{ minio.primary_bucket }}
+          - 元数据存储桶: {{ storage_init_results.metadata_bucket_created | ternary('✅', '❌') }} {{ minio.metadata_bucket }}
+          {% if minio.backup_enabled %}
+          - 备份存储桶: {{ storage_init_results.backup_bucket_created | ternary('✅', '❌') }} {{ minio.backup_bucket }}
+          {% endif %}
+          {% endif %}
+          
+          🚀 部署成功完成！
+      run_once: true
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: true
+        
+    - name: restart redis
+      systemd:
+        name: redis
+        state: restarted
+        
+    - name: restart minio
+      systemd:
+        name: minio
+        state: restarted
+        
+    - name: restart minio-backup
+      systemd:
+        name: minio-backup
+        state: restarted
+      when: minio.backup_enabled | default(true)
+        
+    - name: restart miniodb
+      systemd:
+        name: miniodb
+        state: restarted 
