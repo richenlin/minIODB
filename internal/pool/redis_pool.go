@@ -600,7 +600,6 @@ func (p *RedisPool) GetConcreteClient() interface{} {
 }
 
 // GetRedisClient 获取Redis客户端（兼容性方法）
-// 对于单机和哨兵模式返回*redis.Client，对于集群模式返回nil
 func (p *RedisPool) GetRedisClient() *redis.Client {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
@@ -610,10 +609,48 @@ func (p *RedisPool) GetRedisClient() *redis.Client {
 		return p.standaloneClient
 	case RedisModeSentinel:
 		return p.sentinelClient
-	case RedisModeCluster:
-		// 集群模式不能返回*redis.Client类型
-		return nil
 	default:
 		return nil
 	}
+}
+
+// PoolStatus 连接池状态
+type PoolStatus struct {
+	TotalConnections  int `json:"total_connections"`
+	ActiveConnections int `json:"active_connections"`
+	IdleConnections   int `json:"idle_connections"`
+}
+
+// GetPoolStatus 获取连接池状态
+func (p *RedisPool) GetPoolStatus() *PoolStatus {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	status := &PoolStatus{}
+
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		if p.standaloneClient != nil {
+			poolStats := p.standaloneClient.PoolStats()
+			status.TotalConnections = int(poolStats.TotalConns)
+			status.ActiveConnections = int(poolStats.TotalConns - poolStats.IdleConns)
+			status.IdleConnections = int(poolStats.IdleConns)
+		}
+	case RedisModeSentinel:
+		if p.sentinelClient != nil {
+			poolStats := p.sentinelClient.PoolStats()
+			status.TotalConnections = int(poolStats.TotalConns)
+			status.ActiveConnections = int(poolStats.TotalConns - poolStats.IdleConns)
+			status.IdleConnections = int(poolStats.IdleConns)
+		}
+	case RedisModeCluster:
+		if p.clusterClient != nil {
+			poolStats := p.clusterClient.PoolStats()
+			status.TotalConnections = int(poolStats.TotalConns)
+			status.ActiveConnections = int(poolStats.TotalConns - poolStats.IdleConns)
+			status.IdleConnections = int(poolStats.IdleConns)
+		}
+	}
+
+	return status
 }

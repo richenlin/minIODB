@@ -13,6 +13,7 @@ import (
 
 	"minIODB/internal/buffer"
 	"minIODB/internal/config"
+	"minIODB/internal/pool"
 	"minIODB/internal/storage"
 
 	"github.com/go-redis/redis/v8"
@@ -49,6 +50,7 @@ type QueryStats struct {
 // 集成查询结果缓存、文件缓存和DuckDB连接池管理
 type Querier struct {
 	redisClient    *redis.Client
+	redisPool      *pool.RedisPool
 	minioClient    storage.Uploader
 	db             *sql.DB
 	buffer         *buffer.ConcurrentBuffer
@@ -71,47 +73,59 @@ type Querier struct {
 	statsLock  sync.RWMutex
 }
 
-// NewQuerier 创建增强的查询处理器
-func NewQuerier(redisClient *redis.Client, minioClient storage.Uploader,
-	cfg *config.Config, buf *buffer.ConcurrentBuffer, logger *zap.Logger) (*Querier, error) {
-
+// NewQuerier 创建查询器
+func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *config.Config, buf *buffer.ConcurrentBuffer, logger *zap.Logger) (*Querier, error) {
 	// 初始化DuckDB连接池
-	dbPool, err := NewDuckDBPool(5) // 5个连接的池
+	duckdbPool, err := sql.Open("duckdb", ":memory:")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create DuckDB pool: %w", err)
+		return nil, fmt.Errorf("failed to create DuckDB connection pool: %w", err)
 	}
 
-	// 获取主连接
-	db, err := dbPool.Get()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	// 初始化查询缓存和文件缓存（只有在Redis连接池可用时）
+	var queryCache *QueryCache
+	var fileCache *FileCache
+
+	if redisPool != nil {
+		// 从连接池获取Redis客户端
+		redisClient := redisPool.GetRedisClient()
+		if redisClient != nil {
+			// 创建查询缓存配置
+			cacheConfig := &CacheConfig{
+				DefaultTTL:     30 * time.Minute,
+				MaxCacheSize:   100 * 1024 * 1024, // 100MB
+				EnableMetrics:  true,
+				KeyPrefix:      "query_cache:",
+				EvictionPolicy: "lru",
+			}
+			queryCache = NewQueryCache(redisClient, cacheConfig, logger)
+
+			// 创建文件缓存配置
+			fileCacheConfig := &FileCacheConfig{
+				CacheDir:        filepath.Join(os.TempDir(), "miniodb_file_cache"),
+				MaxCacheSize:    500 * 1024 * 1024, // 500MB
+				MaxFileAge:      2 * time.Hour,
+				CleanupInterval: 10 * time.Minute,
+			}
+			fileCache, err = NewFileCache(fileCacheConfig, redisClient, logger)
+			if err != nil {
+				logger.Warn("Failed to create file cache", zap.Error(err))
+				fileCache = nil
+			}
+		}
+	}
+
+	// 如果Redis不可用，使用内存缓存或禁用缓存
+	if queryCache == nil {
+		logger.Info("Redis不可用，查询缓存已禁用")
+	}
+	if fileCache == nil {
+		logger.Info("Redis不可用，文件缓存已禁用")
 	}
 
 	// 创建临时目录
 	tempDir := filepath.Join(os.TempDir(), "miniodb_query")
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
-	}
-
-	// 初始化查询缓存
-	queryCacheConfig := &CacheConfig{
-		DefaultTTL:    30 * time.Minute,
-		MaxCacheSize:  200 * 1024 * 1024, // 200MB
-		EnableMetrics: true,
-		KeyPrefix:     "query_cache:",
-	}
-	queryCache := NewQueryCache(redisClient, queryCacheConfig, logger)
-
-	// 初始化文件缓存
-	fileCacheConfig := &FileCacheConfig{
-		CacheDir:        filepath.Join(tempDir, "file_cache"),
-		MaxCacheSize:    1024 * 1024 * 1024, // 1GB
-		MaxFileAge:      4 * time.Hour,
-		CleanupInterval: 15 * time.Minute,
-	}
-	fileCache, err := NewFileCache(fileCacheConfig, redisClient, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create file cache: %w", err)
 	}
 
 	// 初始化查询统计
@@ -121,21 +135,22 @@ func NewQuerier(redisClient *redis.Client, minioClient storage.Uploader,
 		FastestQuery:  time.Hour, // 初始化为一个大值
 	}
 
-	return &Querier{
-		redisClient:    redisClient,
+	querier := &Querier{
+		redisPool:      redisPool,
 		minioClient:    minioClient,
-		db:             db,
-		buffer:         buf,
-		tableExtractor: NewTableExtractor(), // 使用增强版本
-		logger:         logger,
-		tempDir:        tempDir,
-		config:         cfg,
+		db:             duckdbPool,
 		queryCache:     queryCache,
 		fileCache:      fileCache,
-		dbPool:         dbPool,
+		config:         cfg,
+		buffer:         buf,
+		logger:         logger,
+		tempDir:        tempDir,
+		tableExtractor: NewTableExtractor(),
 		preparedStmts:  make(map[string]*sql.Stmt),
 		queryStats:     queryStats,
-	}, nil
+	}
+
+	return querier, nil
 }
 
 // ExecuteQuery 执行SQL查询（增强版本）
@@ -160,12 +175,14 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 
 	log.Printf("Extracted tables: %v", validTables)
 
-	// 2. 检查查询缓存
+	// 2. 检查查询缓存（只有在Redis连接池可用时）
 	ctx := context.Background()
-	if cacheEntry, found := q.queryCache.Get(ctx, sqlQuery, validTables); found {
-		q.updateCacheHitStats(validTables, time.Since(startTime))
-		log.Printf("Query cache HIT - returning cached result")
-		return cacheEntry.Result, nil
+	if q.queryCache != nil && q.redisPool != nil {
+		if cacheEntry, found := q.queryCache.Get(ctx, sqlQuery, validTables); found {
+			q.updateCacheHitStats(validTables, time.Since(startTime))
+			log.Printf("Query cache HIT - returning cached result")
+			return cacheEntry.Result, nil
+		}
 	}
 
 	// 3. 缓存未命中，执行查询
@@ -194,9 +211,11 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 		return "", fmt.Errorf("query execution failed: %w", err)
 	}
 
-	// 7. 将结果存入缓存
-	if err := q.queryCache.Set(ctx, sqlQuery, result, validTables); err != nil {
-		q.logger.Warn("Failed to cache query result", zap.Error(err))
+	// 7. 将结果存入缓存（只有在Redis连接池可用时）
+	if q.queryCache != nil && q.redisPool != nil {
+		if err := q.queryCache.Set(ctx, sqlQuery, result, validTables); err != nil {
+			q.logger.Warn("Failed to cache query result", zap.Error(err))
+		}
 	}
 
 	// 8. 更新统计信息
@@ -595,9 +614,17 @@ func (q *Querier) prepareTableDataWithCache(tableName string) error {
 
 // getStorageFilesWithCache 使用文件缓存获取存储文件
 func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string) ([]string, error) {
+	// 如果Redis连接池不可用，返回空列表
+	if q.redisPool == nil {
+		return []string{}, nil
+	}
+
+	// 从连接池获取Redis客户端
+	redisClient := q.redisPool.GetClient()
+
 	// 使用架构设计的索引格式：index:table:tableName:id:*
 	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
-	keys, err := q.redisClient.Keys(ctx, pattern).Result()
+	keys, err := redisClient.Keys(ctx, pattern).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get file index keys: %w", err)
 	}
@@ -605,7 +632,7 @@ func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string
 	var files []string
 	for _, key := range keys {
 		// 使用SMembers获取集合中的所有文件名（因为buffer使用SAdd存储）
-		objectNames, err := q.redisClient.SMembers(ctx, key).Result()
+		objectNames, err := redisClient.SMembers(ctx, key).Result()
 		if err != nil {
 			log.Printf("WARN: failed to get object names for key %s: %v", key, err)
 			continue

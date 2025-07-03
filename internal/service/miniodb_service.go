@@ -14,9 +14,9 @@ import (
 	"minIODB/internal/config"
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
+	"minIODB/internal/pool"
 	"minIODB/internal/query"
 
-	"github.com/go-redis/redis/v8"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -29,22 +29,22 @@ type MinIODBService struct {
 	cfg          *config.Config
 	ingester     *ingest.Ingester
 	querier      *query.Querier
-	redisClient  *redis.Client
+	redisPool    *pool.RedisPool
 	tableManager *TableManager
 	metadataMgr  *metadata.Manager
 }
 
 // NewMinIODBService 创建新的MinIODBService实例
 func NewMinIODBService(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier,
-	redisClient *redis.Client, metadataMgr *metadata.Manager) (*MinIODBService, error) {
+	redisPool *pool.RedisPool, metadataMgr *metadata.Manager) (*MinIODBService, error) {
 
-	tableManager := NewTableManager(redisClient, nil, nil, cfg)
+	tableManager := NewTableManager(redisPool, nil, nil, cfg)
 
 	return &MinIODBService{
 		cfg:          cfg,
 		ingester:     ingester,
 		querier:      querier,
-		redisClient:  redisClient,
+		redisPool:    redisPool,
 		tableManager: tableManager,
 		metadataMgr:  metadataMgr,
 	}, nil
@@ -281,21 +281,23 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 	}
 
 	// 3. 清理相关的缓存
-	if s.redisClient != nil {
+	if s.redisPool != nil {
+		redisClient := s.redisPool.GetClient()
+
 		// 清理相关的缓存项
 		cachePattern := fmt.Sprintf("cache:table:%s:id:%s:*", tableName, req.Id)
-		if keys, err := s.redisClient.Keys(ctx, cachePattern).Result(); err == nil {
+		if keys, err := redisClient.Keys(ctx, cachePattern).Result(); err == nil {
 			if len(keys) > 0 {
-				s.redisClient.Del(ctx, keys...)
+				redisClient.Del(ctx, keys...)
 				log.Printf("Cleaned %d cache entries for updated record", len(keys))
 			}
 		}
 
 		// 清理查询缓存（因为数据已更新）
 		queryCachePattern := fmt.Sprintf("query_cache:*%s*", tableName)
-		if keys, err := s.redisClient.Keys(ctx, queryCachePattern).Result(); err == nil {
+		if keys, err := redisClient.Keys(ctx, queryCachePattern).Result(); err == nil {
 			if len(keys) > 0 {
-				s.redisClient.Del(ctx, keys...)
+				redisClient.Del(ctx, keys...)
 				log.Printf("Cleaned %d query cache entries for table %s", len(keys), tableName)
 			}
 		}
@@ -395,19 +397,21 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 	}
 
 	// 2. 清理相关的缓存和索引
-	if s.redisClient != nil {
+	if s.redisPool != nil {
+		redisClient := s.redisPool.GetClient()
+
 		// 清理相关的缓存项
 		cachePattern := fmt.Sprintf("cache:table:%s:id:%s:*", tableName, req.Id)
-		if keys, err := s.redisClient.Keys(ctx, cachePattern).Result(); err == nil {
+		if keys, err := redisClient.Keys(ctx, cachePattern).Result(); err == nil {
 			if len(keys) > 0 {
-				s.redisClient.Del(ctx, keys...)
+				redisClient.Del(ctx, keys...)
 				log.Printf("Cleaned %d cache entries for deleted record", len(keys))
 			}
 		}
 
 		// 更新表的记录计数
 		recordCountKey := fmt.Sprintf("table:%s:record_count", tableName)
-		s.redisClient.Decr(ctx, recordCountKey)
+		redisClient.Decr(ctx, recordCountKey)
 	}
 
 	// 3. 更新表的最后修改时间
@@ -1230,47 +1234,18 @@ func (s *MinIODBService) GetMetadataStatus(ctx context.Context, req *miniodb.Get
 }
 
 // HealthCheck 健康检查
-func (s *MinIODBService) HealthCheck(ctx context.Context, req *miniodb.HealthCheckRequest) (*miniodb.HealthCheckResponse, error) {
-	log.Printf("Processing health check request")
-
-	status := "healthy"
-	details := make(map[string]string)
-
-	// 检查Redis连接
-	if err := s.redisClient.Ping(ctx).Err(); err != nil {
-		status = "unhealthy"
-		details["redis"] = fmt.Sprintf("Redis connection failed: %v", err)
-	} else {
-		details["redis"] = "connected"
+func (s *MinIODBService) HealthCheck(ctx context.Context) error {
+	// 检查Redis连接池
+	if err := s.redisPool.HealthCheck(ctx); err != nil {
+		return fmt.Errorf("redis health check failed: %w", err)
 	}
 
-	// 检查缓冲区状态
-	if s.ingester != nil {
-		stats := s.ingester.GetBufferStats()
-		if stats != nil {
-			details["buffer_size"] = fmt.Sprintf("%d", stats.BufferSize)
-		} else {
-			details["buffer"] = "not_available"
-		}
+	// 检查配置是否有效
+	if s.cfg == nil {
+		return fmt.Errorf("configuration is nil")
 	}
 
-	// 检查查询引擎
-	if s.querier != nil {
-		details["query_engine"] = "available"
-	} else {
-		status = "unhealthy"
-		details["query_engine"] = "not_available"
-	}
-
-	details["node_id"] = s.cfg.Server.NodeID
-	details["timestamp"] = time.Now().UTC().Format(time.RFC3339)
-
-	return &miniodb.HealthCheckResponse{
-		Status:    status,
-		Timestamp: timestamppb.New(time.Now()),
-		Version:   "1.0.0",
-		Details:   details,
-	}, nil
+	return nil
 }
 
 // GetStatus 获取状态
@@ -1295,8 +1270,9 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 
 	// 收集Redis统计信息
 	redisStats := make(map[string]int64)
-	if s.redisClient != nil {
-		if poolStats := s.redisClient.PoolStats(); poolStats != nil {
+	if s.redisPool != nil {
+		redisClient := s.redisPool.GetClient()
+		if poolStats := s.redisPool.GetStats(); poolStats != nil {
 			redisStats["hits"] = int64(poolStats.Hits)
 			redisStats["misses"] = int64(poolStats.Misses)
 			redisStats["timeouts"] = int64(poolStats.Timeouts)
@@ -1306,7 +1282,7 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 		}
 
 		// 获取Redis内存使用情况
-		if info, err := s.redisClient.Info(ctx, "memory").Result(); err == nil {
+		if info, err := redisClient.Info(ctx, "memory").Result(); err == nil {
 			lines := strings.Split(info, "\r\n")
 			for _, line := range lines {
 				if strings.HasPrefix(line, "used_memory:") {
@@ -1320,7 +1296,7 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 		}
 
 		// 获取Redis键数量统计
-		if dbSize, err := s.redisClient.DBSize(ctx).Result(); err == nil {
+		if dbSize, err := redisClient.DBSize(ctx).Result(); err == nil {
 			redisStats["total_keys"] = dbSize
 		}
 	}
@@ -1359,11 +1335,11 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 	nodes = append(nodes, currentNode)
 
 	// 从Redis发现其他节点（如果有的话）
-	if s.redisClient != nil {
+	if s.redisPool != nil {
 		nodePattern := "service:nodes:*"
-		if keys, err := s.redisClient.Keys(ctx, nodePattern).Result(); err == nil {
+		if keys, err := s.redisPool.GetClient().Keys(ctx, nodePattern).Result(); err == nil {
 			for _, key := range keys {
-				if nodeInfo, err := s.redisClient.HGetAll(ctx, key).Result(); err == nil {
+				if nodeInfo, err := s.redisPool.GetClient().HGetAll(ctx, key).Result(); err == nil {
 					nodeID := strings.TrimPrefix(key, "service:nodes:")
 					if nodeID != s.cfg.Server.NodeID { // 排除当前节点
 						lastSeen, _ := strconv.ParseInt(nodeInfo["last_seen"], 10, 64)
@@ -1382,7 +1358,7 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 	}
 
 	// 更新当前节点在Redis中的状态
-	if s.redisClient != nil {
+	if s.redisPool != nil {
 		nodeKey := fmt.Sprintf("service:nodes:%s", s.cfg.Server.NodeID)
 		nodeData := map[string]interface{}{
 			"status":    "running",
@@ -1390,8 +1366,8 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 			"address":   fmt.Sprintf("localhost:%s", strings.TrimPrefix(s.cfg.Server.GrpcPort, ":")),
 			"last_seen": time.Now().Unix(),
 		}
-		s.redisClient.HMSet(ctx, nodeKey, nodeData)
-		s.redisClient.Expire(ctx, nodeKey, 60*time.Second) // 60秒过期
+		s.redisPool.GetClient().HMSet(ctx, nodeKey, nodeData)
+		s.redisPool.GetClient().Expire(ctx, nodeKey, 60*time.Second) // 60秒过期
 	}
 
 	response := &miniodb.GetStatusResponse{
@@ -1461,15 +1437,16 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 	resourceUsage := make(map[string]int64)
 
 	// Redis资源使用
-	if s.redisClient != nil {
-		if poolStats := s.redisClient.PoolStats(); poolStats != nil {
+	if s.redisPool != nil {
+		redisClient := s.redisPool.GetClient()
+		if poolStats := s.redisPool.GetStats(); poolStats != nil {
 			resourceUsage["redis_total_connections"] = int64(poolStats.TotalConns)
 			resourceUsage["redis_idle_connections"] = int64(poolStats.IdleConns)
 			resourceUsage["redis_active_connections"] = int64(poolStats.TotalConns - poolStats.IdleConns)
 		}
 
 		// Redis内存使用
-		if info, err := s.redisClient.Info(ctx, "memory").Result(); err == nil {
+		if info, err := redisClient.Info(ctx, "memory").Result(); err == nil {
 			lines := strings.Split(info, "\r\n")
 			for _, line := range lines {
 				if strings.HasPrefix(line, "used_memory:") {
@@ -1489,7 +1466,7 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 		}
 
 		// Redis键数量
-		if dbSize, err := s.redisClient.DBSize(ctx).Result(); err == nil {
+		if dbSize, err := redisClient.DBSize(ctx).Result(); err == nil {
 			resourceUsage["redis_total_keys"] = dbSize
 		}
 	}
@@ -1576,11 +1553,7 @@ func (s *MinIODBService) Close() error {
 		s.querier.Close()
 	}
 
-	if s.redisClient != nil {
-		if err := s.redisClient.Close(); err != nil {
-			log.Printf("WARN: Failed to close Redis client: %v", err)
-		}
-	}
+	// 连接池会由池管理器关闭，这里不需要手动关闭
 
 	return nil
 }

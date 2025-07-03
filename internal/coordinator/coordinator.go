@@ -10,12 +10,13 @@ import (
 	"time"
 
 	pb "minIODB/api/proto/miniodb/v1"
+	"minIODB/internal/config"
 	"minIODB/internal/discovery"
+	"minIODB/internal/pool"
 	"minIODB/internal/query"
 	"minIODB/internal/utils"
 	"minIODB/pkg/consistenthash"
 
-	"github.com/go-redis/redis/v8"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -43,12 +44,78 @@ type WriteCoordinator struct {
 	mu             sync.RWMutex
 }
 
+// QueryInfo 查询信息
+type QueryInfo struct {
+	ID        string    `json:"id"`
+	Query     string    `json:"query"`
+	StartTime time.Time `json:"start_time"`
+	Status    string    `json:"status"`
+	NodeID    string    `json:"node_id"`
+}
+
+// NodeStatus 节点状态
+type NodeStatus struct {
+	ID            string    `json:"id"`
+	Address       string    `json:"address"`
+	Status        string    `json:"status"`
+	LastSeen      time.Time `json:"last_seen"`
+	ActiveQueries int       `json:"active_queries"`
+	Load          float64   `json:"load"`
+}
+
+// LoadBalancer 负载均衡器
+type LoadBalancer struct {
+	cfg *config.Config
+}
+
+// NewLoadBalancer 创建负载均衡器
+func NewLoadBalancer(cfg *config.Config) *LoadBalancer {
+	return &LoadBalancer{
+		cfg: cfg,
+	}
+}
+
+// HealthChecker 健康检查器
+type HealthChecker struct {
+	cfg *config.Config
+}
+
+// NewHealthChecker 创建健康检查器
+func NewHealthChecker(cfg *config.Config) *HealthChecker {
+	return &HealthChecker{
+		cfg: cfg,
+	}
+}
+
+// CoordinatorMetrics 协调器指标
+type CoordinatorMetrics struct {
+	TotalQueries    int64         `json:"total_queries"`
+	SuccessQueries  int64         `json:"success_queries"`
+	FailedQueries   int64         `json:"failed_queries"`
+	AvgResponseTime time.Duration `json:"avg_response_time"`
+}
+
+// NewCoordinatorMetrics 创建协调器指标
+func NewCoordinatorMetrics() *CoordinatorMetrics {
+	return &CoordinatorMetrics{}
+}
+
 // QueryCoordinator 查询协调器
 type QueryCoordinator struct {
-	redisClient    *redis.Client
+	redisPool      *pool.RedisPool
 	registry       *discovery.ServiceRegistry
+	localQuerier   LocalQuerier
+	cfg            *config.Config
 	circuitBreaker *utils.CircuitBreaker
-	localQuerier   LocalQuerier // 添加本地查询接口
+	mu             sync.RWMutex
+	activeQueries  map[string]*QueryInfo
+	nodeStatus     map[string]*NodeStatus
+	loadBalancer   *LoadBalancer
+	healthChecker  *HealthChecker
+	metrics        *CoordinatorMetrics
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
 }
 
 // LocalQuerier 本地查询接口
@@ -68,15 +135,30 @@ func NewWriteCoordinator(registry *discovery.ServiceRegistry) *WriteCoordinator 
 }
 
 // NewQueryCoordinator 创建查询协调器
-func NewQueryCoordinator(redisClient *redis.Client, registry *discovery.ServiceRegistry, localQuerier LocalQuerier) *QueryCoordinator {
+func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceRegistry, localQuerier LocalQuerier, cfg *config.Config) *QueryCoordinator {
+	ctx, cancel := context.WithCancel(context.Background())
 	cb := utils.NewCircuitBreaker("query_coordinator", utils.DefaultCircuitBreakerConfig)
 
-	return &QueryCoordinator{
-		redisClient:    redisClient,
+	qc := &QueryCoordinator{
+		redisPool:      redisPool,
 		registry:       registry,
-		circuitBreaker: cb,
 		localQuerier:   localQuerier,
+		cfg:            cfg,
+		circuitBreaker: cb,
+		activeQueries:  make(map[string]*QueryInfo),
+		nodeStatus:     make(map[string]*NodeStatus),
+		loadBalancer:   NewLoadBalancer(cfg),
+		healthChecker:  NewHealthChecker(cfg),
+		metrics:        NewCoordinatorMetrics(),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
+
+	// 启动监控goroutine
+	qc.wg.Add(1)
+	go qc.monitorNodes()
+
+	return qc
 }
 
 // RouteWrite 路由写入请求到对应的节点
@@ -339,13 +421,24 @@ func (qc *QueryCoordinator) extractTablesFromSQL(sql string) ([]string, error) {
 
 // getDataDistribution 获取数据分布信息
 func (qc *QueryCoordinator) getDataDistribution(tables []string) (map[string][]string, error) {
-	ctx := context.Background()
 	distribution := make(map[string][]string)
+
+	// 如果Redis未启用，直接返回本地节点信息
+	if !qc.cfg.Redis.Enabled {
+		currentNode := fmt.Sprintf("%s:%s",
+			qc.registry.GetNodeInfo().Address,
+			qc.registry.GetNodeInfo().Port)
+		// 在单节点模式下，假设所有数据都在本地
+		distribution[currentNode] = []string{} // 空文件列表表示需要本地扫描
+		return distribution, nil
+	}
+
+	ctx := context.Background()
 
 	for _, table := range tables {
 		// 从Redis获取该表的文件分布信息
 		pattern := fmt.Sprintf("file_index:%s:*", table)
-		keys, err := qc.redisClient.Keys(ctx, pattern).Result()
+		keys, err := qc.redisPool.GetClient().Keys(ctx, pattern).Result()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get file index keys for table %s: %w", table, err)
 		}
@@ -353,14 +446,14 @@ func (qc *QueryCoordinator) getDataDistribution(tables []string) (map[string][]s
 		// 获取每个文件的节点信息
 		for _, key := range keys {
 			// 获取文件的节点信息
-			nodeInfo, err := qc.redisClient.HGet(ctx, key, "node").Result()
+			nodeInfo, err := qc.redisPool.GetClient().HGet(ctx, key, "node").Result()
 			if err != nil {
 				// 如果没有节点信息，跳过
 				continue
 			}
 
 			// 获取文件名
-			fileName, err := qc.redisClient.HGet(ctx, key, "file").Result()
+			fileName, err := qc.redisPool.GetClient().HGet(ctx, key, "file").Result()
 			if err != nil {
 				continue
 			}
@@ -527,5 +620,23 @@ func (qc *QueryCoordinator) GetQueryStats() map[string]interface{} {
 		"total_nodes":     len(nodes),
 		"hash_ring_stats": qc.registry.GetHashRing().Stats(),
 		"nodes":           nodes,
+	}
+}
+
+// monitorNodes 监控节点
+func (qc *QueryCoordinator) monitorNodes() {
+	defer qc.wg.Done()
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-qc.ctx.Done():
+			return
+		case <-ticker.C:
+			// 监控节点状态
+			log.Println("Monitoring nodes...")
+		}
 	}
 }

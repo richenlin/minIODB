@@ -19,6 +19,7 @@ import (
 	"minIODB/internal/discovery"
 	"minIODB/internal/ingest"
 	"minIODB/internal/metrics"
+	"minIODB/internal/monitoring"
 	"minIODB/internal/query"
 	"minIODB/internal/service"
 	"minIODB/internal/storage"
@@ -73,8 +74,10 @@ func main() {
 
 	// 获取Redis连接池（支持高可用）
 	redisPool := poolManager.GetRedisPool()
-	if redisPool == nil {
-		log.Fatalf("Failed to get Redis pool from storage")
+	if redisPool != nil {
+		log.Println("Redis connection pool initialized successfully")
+	} else {
+		log.Println("Redis disabled - running in single-node mode")
 	}
 
 	// 注意：高级存储引擎优化功能已实现但当前保持禁用以维持系统简单性
@@ -104,7 +107,7 @@ func main() {
 	)
 
 	ingesterService := ingest.NewIngester(concurrentBuffer)
-	querierService, err := query.NewQuerier(redisPool.GetRedisClient(), primaryMinio, cfg, concurrentBuffer, logger)
+	querierService, err := query.NewQuerier(redisPool, primaryMinio, cfg, concurrentBuffer, logger)
 	if err != nil {
 		log.Fatalf("Failed to create querier service: %v", err)
 	}
@@ -123,7 +126,13 @@ func main() {
 
 	// 初始化协调器
 	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry)
-	queryCoord := coordinator.NewQueryCoordinator(redisPool.GetRedisClient(), serviceRegistry, querierService)
+
+	queryCoord := coordinator.NewQueryCoordinator(
+		redisPool, // 使用连接池
+		serviceRegistry,
+		querierService,
+		cfg,
+	)
 
 	// 启动元数据备份管理器
 	var metadataManager *metadata.Manager
@@ -149,12 +158,27 @@ func main() {
 		}
 	}
 
+	// 初始化服务
+	log.Println("Initializing services...")
+
+	// 创建MinIODB服务
+	miniodbService, err := service.NewMinIODBService(cfg, ingesterService, querierService, redisPool, metadataManager)
+	if err != nil {
+		log.Fatalf("Failed to create MinIODB service: %v", err)
+	}
+
+	// 创建健康检查器
+	healthChecker := monitoring.NewHealthChecker(redisPool, primaryMinio.GetClient(), nil, cfg)
+
+	// 启动健康检查
+	go healthChecker.StartHealthCheck(ctx, 30*time.Second)
+
 	// 创建gRPC传输层
-	grpcServer := startGRPCServer(cfg, ingesterService, querierService, writeCoord,
+	grpcServer := startGRPCServer(cfg, miniodbService, writeCoord,
 		queryCoord, redisPool, primaryMinio, backupMinio, metadataManager)
 
 	// 启动REST服务器
-	restServer := startRESTServer(cfg, ingesterService, querierService, writeCoord,
+	restServer := startRESTServer(cfg, miniodbService, writeCoord,
 		queryCoord, redisPool, primaryMinio, backupMinio, metadataManager)
 
 	// 启动指标服务器
@@ -165,27 +189,6 @@ func main() {
 		systemMonitor = metrics.NewSystemMonitor()
 		systemMonitor.Start()
 	}
-
-	// 创建健康检查器
-	healthChecker := recovery.NewHealthChecker(30*time.Second, 5*time.Second, log.New(os.Stdout, "[HEALTH] ", log.LstdFlags))
-
-	// 添加健康检查
-	healthChecker.AddCheck(recovery.NewDatabaseHealthCheck("redis", func() error {
-		// Redis 健康检查 - 使用连接池的健康检查
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return redisPool.HealthCheck(ctx)
-	}))
-
-	healthChecker.AddCheck(recovery.NewDatabaseHealthCheck("minio", func() error {
-		// MinIO 健康检查
-		return nil // 这里应该实际检查 MinIO 连接
-	}))
-
-	// 启动健康检查器
-	recoveryHandler.SafeGoWithContext(ctx, func(ctx context.Context) {
-		healthChecker.Start(ctx)
-	})
 
 	// 启动备份goroutine
 	if cfg.Backup.Enabled && backupMinio != nil {
@@ -200,17 +203,10 @@ func main() {
 	log.Println("MinIODB server stopped")
 }
 
-func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester,
-	querier *query.Querier, writeCoord *coordinator.WriteCoordinator,
-	queryCoord *coordinator.QueryCoordinator, redisPool *pool.RedisPool,
-	primaryMinio, backupMinio storage.Uploader, metadataManager *metadata.Manager) *grpc.Server {
-
-	// 创建统一MinIODB服务
-	miniodbService, err := service.NewMinIODBService(cfg, ingester, querier,
-		redisPool.GetRedisClient(), metadataManager)
-	if err != nil {
-		log.Fatalf("Failed to create MinIODB service: %v", err)
-	}
+func startGRPCServer(cfg *config.Config, miniodbService *service.MinIODBService,
+	writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator,
+	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader,
+	metadataManager *metadata.Manager) *grpc.Server {
 
 	// 创建gRPC服务
 	grpcService, err := grpcTransport.NewServer(miniodbService, *cfg)
@@ -237,16 +233,10 @@ func startGRPCServer(cfg *config.Config, ingester *ingest.Ingester,
 	return nil // gRPC服务器在内部管理
 }
 
-func startRESTServer(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier,
+func startRESTServer(cfg *config.Config, miniodbService *service.MinIODBService,
 	writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator,
-	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader, metadataManager *metadata.Manager) *http.Server {
-
-	// 创建统一MinIODB服务
-	miniodbService, err := service.NewMinIODBService(cfg, ingester, querier,
-		redisPool.GetRedisClient(), metadataManager)
-	if err != nil {
-		log.Fatalf("Failed to create MinIODB service for REST: %v", err)
-	}
+	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader,
+	metadataManager *metadata.Manager) *http.Server {
 
 	// 创建REST服务
 	restServer := restTransport.NewServer(miniodbService, cfg)

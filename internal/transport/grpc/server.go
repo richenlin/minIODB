@@ -18,6 +18,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server 统一的gRPC服务器实现
@@ -555,13 +556,27 @@ func (s *Server) GetMetadataStatus(ctx context.Context, req *miniodb.GetMetadata
 // HealthCheck 实现健康检查API
 func (s *Server) HealthCheck(ctx context.Context, req *miniodb.HealthCheckRequest) (*miniodb.HealthCheckResponse, error) {
 	// 调用服务方法处理请求
-	result, err := s.miniodbService.HealthCheck(ctx, req)
+	err := s.miniodbService.HealthCheck(ctx)
 	if err != nil {
 		log.Printf("ERROR: HealthCheck failed: %v", err)
-		return nil, err
+		return &miniodb.HealthCheckResponse{
+			Status:    "unhealthy",
+			Timestamp: timestamppb.Now(),
+			Version:   "1.0.0",
+			Details: map[string]string{
+				"error": err.Error(),
+			},
+		}, nil
 	}
 
-	return result, nil
+	return &miniodb.HealthCheckResponse{
+		Status:    "healthy",
+		Timestamp: timestamppb.Now(),
+		Version:   "1.0.0",
+		Details: map[string]string{
+			"message": "All systems operational",
+		},
+	}, nil
 }
 
 // GetStatus 实现获取状态API

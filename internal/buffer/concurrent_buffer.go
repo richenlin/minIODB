@@ -637,7 +637,7 @@ func (cb *ConcurrentBuffer) GetTableKeys(tableName string) []string {
 	defer cb.mutex.RUnlock()
 
 	prefix := tableName + "/"
-	var keys []string
+	keys := make([]string, 0) // 初始化为空slice而不是nil
 	for key := range cb.buffer {
 		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
 			keys = append(keys, key)
