@@ -7,12 +7,13 @@ import (
 
 	"minIODB/internal/config"
 	"minIODB/internal/discovery"
+	"minIODB/internal/pool"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 )
 
-func setupTestEnvironment(t *testing.T) (*redis.Client, *discovery.ServiceRegistry, func()) {
+func setupTestEnvironment(t *testing.T) (*pool.RedisPool, *discovery.ServiceRegistry, func()) {
 	// 使用真实的Redis客户端进行测试
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
@@ -32,22 +33,55 @@ func setupTestEnvironment(t *testing.T) (*redis.Client, *discovery.ServiceRegist
 	// 清理测试数据
 	redisClient.FlushDB(ctx)
 
-	// 创建服务注册表
+	// 创建Redis连接池
 	cfg := config.Config{
 		Redis: config.RedisConfig{
+			Enabled:  true,
+			Mode:     "standalone",
 			Addr:     "localhost:6379",
 			Password: "",
 			DB:       1,
 		},
 	}
+
+	// 转换为RedisPoolConfig
+	redisPoolConfig := &pool.RedisPoolConfig{
+		Mode:     pool.RedisModeStandalone,
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	}
+	// 使用默认配置填充其他字段
+	defaultConfig := pool.DefaultRedisPoolConfig()
+	redisPoolConfig.PoolSize = defaultConfig.PoolSize
+	redisPoolConfig.MinIdleConns = defaultConfig.MinIdleConns
+	redisPoolConfig.MaxConnAge = defaultConfig.MaxConnAge
+	redisPoolConfig.PoolTimeout = defaultConfig.PoolTimeout
+	redisPoolConfig.IdleTimeout = defaultConfig.IdleTimeout
+	redisPoolConfig.IdleCheckFreq = defaultConfig.IdleCheckFreq
+	redisPoolConfig.DialTimeout = defaultConfig.DialTimeout
+	redisPoolConfig.ReadTimeout = defaultConfig.ReadTimeout
+	redisPoolConfig.WriteTimeout = defaultConfig.WriteTimeout
+	redisPoolConfig.MaxRetries = defaultConfig.MaxRetries
+	redisPoolConfig.MinRetryBackoff = defaultConfig.MinRetryBackoff
+	redisPoolConfig.MaxRetryBackoff = defaultConfig.MaxRetryBackoff
+	redisPoolConfig.MaxRedirects = defaultConfig.MaxRedirects
+	redisPoolConfig.ReadOnly = defaultConfig.ReadOnly
+	redisPoolConfig.RouteByLatency = defaultConfig.RouteByLatency
+	redisPoolConfig.RouteRandomly = defaultConfig.RouteRandomly
+
+	redisPool, _ := pool.NewRedisPool(redisPoolConfig)
+
+	// 创建服务注册表
 	registry, _ := discovery.NewServiceRegistry(cfg, "test-node-1", "8080")
 
 	cleanup := func() {
 		redisClient.FlushDB(context.Background())
 		redisClient.Close()
+		redisPool.Close()
 	}
 
-	return redisClient, registry, cleanup
+	return redisPool, registry, cleanup
 }
 
 func TestNewWriteCoordinator(t *testing.T) {
@@ -68,25 +102,38 @@ func (t *testLocalQuerier) ExecuteQuery(sql string) (string, error) {
 }
 
 func TestNewQueryCoordinator(t *testing.T) {
-	client := &redis.Client{}
-	registry := &discovery.ServiceRegistry{}
-	localQuerier := &testLocalQuerier{}
+	redisPool, registry, cleanup := setupTestEnvironment(t)
+	defer cleanup()
 
-	qc := NewQueryCoordinator(client, registry, localQuerier)
+	localQuerier := &testLocalQuerier{}
+	cfg := &config.Config{
+		Redis: config.RedisConfig{
+			Enabled: true,
+			Mode:    "standalone",
+		},
+	}
+
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
 
 	assert.NotNil(t, qc)
-	assert.Equal(t, client, qc.redisClient)
+	assert.Equal(t, redisPool, qc.redisPool)
 	assert.Equal(t, registry, qc.registry)
 	assert.Equal(t, localQuerier, qc.localQuerier)
 }
 
 func TestQueryCoordinator_ExecuteDistributedQuery(t *testing.T) {
 	// 使用真实的Redis和ServiceRegistry来避免空指针异常
-	redisClient, registry, cleanup := setupTestEnvironment(t)
+	redisPool, registry, cleanup := setupTestEnvironment(t)
 	defer cleanup()
 
 	localQuerier := &testLocalQuerier{}
-	qc := NewQueryCoordinator(redisClient, registry, localQuerier)
+	cfg := &config.Config{
+		Redis: config.RedisConfig{
+			Enabled: true,
+			Mode:    "standalone",
+		},
+	}
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
 
 	// 这个测试主要验证方法存在且可以调用
 	// 由于没有真实的分布式环境，可能会失败，但这是预期的
@@ -99,11 +146,18 @@ func TestQueryCoordinator_ExecuteDistributedQuery(t *testing.T) {
 }
 
 func TestQueryCoordinator_aggregateQueryResults_basic(t *testing.T) {
-	client := &redis.Client{}
-	registry := &discovery.ServiceRegistry{}
-	localQuerier := &testLocalQuerier{}
+	redisPool, registry, cleanup := setupTestEnvironment(t)
+	defer cleanup()
 
-	qc := NewQueryCoordinator(client, registry, localQuerier)
+	localQuerier := &testLocalQuerier{}
+	cfg := &config.Config{
+		Redis: config.RedisConfig{
+			Enabled: true,
+			Mode:    "standalone",
+		},
+	}
+
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
 
 	// 测试结果聚合
 	results := []QueryResult{
@@ -118,10 +172,16 @@ func TestQueryCoordinator_aggregateQueryResults_basic(t *testing.T) {
 }
 
 func TestQueryCoordinator_GetQueryStats(t *testing.T) {
-	redisClient, registry, cleanup := setupTestEnvironment(t)
+	redisPool, registry, cleanup := setupTestEnvironment(t)
 	defer cleanup()
 
-	qc := NewQueryCoordinator(redisClient, registry, &testLocalQuerier{})
+	cfg := &config.Config{
+		Redis: config.RedisConfig{
+			Enabled: true,
+			Mode:    "standalone",
+		},
+	}
+	qc := NewQueryCoordinator(redisPool, registry, &testLocalQuerier{}, cfg)
 
 	stats := qc.GetQueryStats()
 	assert.NotNil(t, stats)

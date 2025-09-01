@@ -18,12 +18,18 @@ type StorageFactoryImpl struct {
 
 // NewStorageFactory 创建新的存储工厂
 func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
-	// 获取优化的Redis配置（优先使用新的网络配置）
-	redisConfig := getEnhancedRedisConfig(cfg)
-	
 	// 创建连接池管理器配置
 	poolConfig := &pool.PoolManagerConfig{
-		Redis: &pool.RedisPoolConfig{
+		MinIO:               getEnhancedMinIOPoolConfig(cfg),
+		HealthCheckInterval: getHealthCheckInterval(cfg),
+	}
+
+	// 只有在Redis启用时才配置Redis连接池
+	if cfg.Redis.Enabled {
+		// 获取优化的Redis配置（优先使用新的网络配置）
+		redisConfig := getEnhancedRedisConfig(cfg)
+
+		poolConfig.Redis = &pool.RedisPoolConfig{
 			Mode:             pool.RedisMode(redisConfig.Mode),
 			Addr:             redisConfig.Addr,
 			Password:         redisConfig.Password,
@@ -48,9 +54,7 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 			ReadOnly:         redisConfig.ReadOnly,
 			RouteByLatency:   redisConfig.RouteByLatency,
 			RouteRandomly:    redisConfig.RouteRandomly,
-		},
-		MinIO: getEnhancedMinIOPoolConfig(cfg),
-		HealthCheckInterval: getHealthCheckInterval(cfg),
+		}
 	}
 
 	// 如果配置了备份MinIO，添加到配置中
@@ -69,7 +73,11 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 		config:      cfg,
 	}
 
-	log.Println("Storage factory initialized with connection pools")
+	if cfg.Redis.Enabled {
+		log.Println("Storage factory initialized with Redis and MinIO connection pools")
+	} else {
+		log.Println("Storage factory initialized with MinIO connection pool only (Redis disabled)")
+	}
 	return factory, nil
 }
 
@@ -240,33 +248,33 @@ func getEnhancedRedisConfig(cfg *config.Config) *config.EnhancedRedisConfig {
 	if cfg.Network.Pools.Redis.PoolSize > 0 {
 		return &cfg.Network.Pools.Redis
 	}
-	
+
 	// 回退到旧配置，转换为增强配置格式
 	return &config.EnhancedRedisConfig{
-		Mode:            cfg.Redis.Mode,
-		Addr:            cfg.Redis.Addr,
-		Password:        cfg.Redis.Password,
-		DB:              cfg.Redis.DB,
-		MasterName:      cfg.Redis.MasterName,
-		SentinelAddrs:   cfg.Redis.SentinelAddrs,
+		Mode:             cfg.Redis.Mode,
+		Addr:             cfg.Redis.Addr,
+		Password:         cfg.Redis.Password,
+		DB:               cfg.Redis.DB,
+		MasterName:       cfg.Redis.MasterName,
+		SentinelAddrs:    cfg.Redis.SentinelAddrs,
 		SentinelPassword: cfg.Redis.SentinelPassword,
-		ClusterAddrs:    cfg.Redis.ClusterAddrs,
-		PoolSize:        cfg.Redis.PoolSize,
-		MinIdleConns:    cfg.Redis.MinIdleConns,
-		MaxConnAge:      cfg.Redis.MaxConnAge,
-		PoolTimeout:     cfg.Redis.PoolTimeout,
-		IdleTimeout:     cfg.Redis.IdleTimeout,
-		IdleCheckFreq:   time.Minute,             // 默认值
-		DialTimeout:     cfg.Redis.DialTimeout,
-		ReadTimeout:     cfg.Redis.ReadTimeout,
-		WriteTimeout:    cfg.Redis.WriteTimeout,
-		MaxRetries:      3,                       // 默认值
-		MinRetryBackoff: 8 * time.Millisecond,   // 默认值
-		MaxRetryBackoff: 512 * time.Millisecond, // 默认值
-		MaxRedirects:    cfg.Redis.MaxRedirects,
-		ReadOnly:        cfg.Redis.ReadOnly,
-		RouteByLatency:  false,                   // 默认值
-		RouteRandomly:   false,                   // 默认值
+		ClusterAddrs:     cfg.Redis.ClusterAddrs,
+		PoolSize:         cfg.Redis.PoolSize,
+		MinIdleConns:     cfg.Redis.MinIdleConns,
+		MaxConnAge:       cfg.Redis.MaxConnAge,
+		PoolTimeout:      cfg.Redis.PoolTimeout,
+		IdleTimeout:      cfg.Redis.IdleTimeout,
+		IdleCheckFreq:    time.Minute, // 默认值
+		DialTimeout:      cfg.Redis.DialTimeout,
+		ReadTimeout:      cfg.Redis.ReadTimeout,
+		WriteTimeout:     cfg.Redis.WriteTimeout,
+		MaxRetries:       3,                      // 默认值
+		MinRetryBackoff:  8 * time.Millisecond,   // 默认值
+		MaxRetryBackoff:  512 * time.Millisecond, // 默认值
+		MaxRedirects:     cfg.Redis.MaxRedirects,
+		ReadOnly:         cfg.Redis.ReadOnly,
+		RouteByLatency:   false, // 默认值
+		RouteRandomly:    false, // 默认值
 	}
 }
 
@@ -297,28 +305,28 @@ func getEnhancedMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
 			DisableCompression:    minioConfig.DisableCompression,
 		}
 	}
-	
+
 	// 回退到旧配置，使用优化的默认值
 	return &pool.MinIOPoolConfig{
 		Endpoint:              cfg.MinIO.Endpoint,
 		AccessKeyID:           cfg.MinIO.AccessKeyID,
 		SecretAccessKey:       cfg.MinIO.SecretAccessKey,
 		UseSSL:                cfg.MinIO.UseSSL,
-		Region:                "us-east-1",      // 默认值
-		MaxIdleConns:          300,              // 优化默认值
-		MaxIdleConnsPerHost:   150,              // 优化默认值
-		MaxConnsPerHost:       300,              // 优化默认值
-		IdleConnTimeout:       90 * time.Second, // 默认值
-		DialTimeout:           5 * time.Second,  // 优化超时
-		TLSHandshakeTimeout:   5 * time.Second,  // 优化超时
-		ResponseHeaderTimeout: 15 * time.Second, // 优化超时
-		ExpectContinueTimeout: 1 * time.Second,  // 默认值
-		MaxRetries:            3,                // 默认值
+		Region:                "us-east-1",            // 默认值
+		MaxIdleConns:          300,                    // 优化默认值
+		MaxIdleConnsPerHost:   150,                    // 优化默认值
+		MaxConnsPerHost:       300,                    // 优化默认值
+		IdleConnTimeout:       90 * time.Second,       // 默认值
+		DialTimeout:           5 * time.Second,        // 优化超时
+		TLSHandshakeTimeout:   5 * time.Second,        // 优化超时
+		ResponseHeaderTimeout: 15 * time.Second,       // 优化超时
+		ExpectContinueTimeout: 1 * time.Second,        // 默认值
+		MaxRetries:            3,                      // 默认值
 		RetryDelay:            100 * time.Millisecond, // 优化重试延迟
-		RequestTimeout:        60 * time.Second, // 优化超时
-		KeepAlive:             30 * time.Second, // 默认值
-		DisableKeepAlive:      false,            // 默认值
-		DisableCompression:    false,            // 默认值
+		RequestTimeout:        60 * time.Second,       // 优化超时
+		KeepAlive:             30 * time.Second,       // 默认值
+		DisableKeepAlive:      false,                  // 默认值
+		DisableCompression:    false,                  // 默认值
 	}
 }
 
@@ -349,28 +357,28 @@ func getBackupMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
 			DisableCompression:    backupConfig.DisableCompression,
 		}
 	}
-	
+
 	// 回退到旧配置，使用优化的默认值
 	return &pool.MinIOPoolConfig{
 		Endpoint:              cfg.Backup.MinIO.Endpoint,
 		AccessKeyID:           cfg.Backup.MinIO.AccessKeyID,
 		SecretAccessKey:       cfg.Backup.MinIO.SecretAccessKey,
 		UseSSL:                cfg.Backup.MinIO.UseSSL,
-		Region:                "us-east-1",      // 默认值
-		MaxIdleConns:          200,              // 备份可以少一些连接
-		MaxIdleConnsPerHost:   100,              // 备份可以少一些连接
-		MaxConnsPerHost:       200,              // 备份可以少一些连接
-		IdleConnTimeout:       90 * time.Second, // 默认值
-		DialTimeout:           5 * time.Second,  // 优化超时
-		TLSHandshakeTimeout:   5 * time.Second,  // 优化超时
-		ResponseHeaderTimeout: 15 * time.Second, // 优化超时
-		ExpectContinueTimeout: 1 * time.Second,  // 默认值
-		MaxRetries:            3,                // 默认值
+		Region:                "us-east-1",            // 默认值
+		MaxIdleConns:          200,                    // 备份可以少一些连接
+		MaxIdleConnsPerHost:   100,                    // 备份可以少一些连接
+		MaxConnsPerHost:       200,                    // 备份可以少一些连接
+		IdleConnTimeout:       90 * time.Second,       // 默认值
+		DialTimeout:           5 * time.Second,        // 优化超时
+		TLSHandshakeTimeout:   5 * time.Second,        // 优化超时
+		ResponseHeaderTimeout: 15 * time.Second,       // 优化超时
+		ExpectContinueTimeout: 1 * time.Second,        // 默认值
+		MaxRetries:            3,                      // 默认值
 		RetryDelay:            100 * time.Millisecond, // 优化重试延迟
-		RequestTimeout:        60 * time.Second, // 优化超时
-		KeepAlive:             30 * time.Second, // 默认值
-		DisableKeepAlive:      false,            // 默认值
-		DisableCompression:    false,            // 默认值
+		RequestTimeout:        60 * time.Second,       // 优化超时
+		KeepAlive:             30 * time.Second,       // 默认值
+		DisableKeepAlive:      false,                  // 默认值
+		DisableCompression:    false,                  // 默认值
 	}
 }
 
@@ -380,7 +388,7 @@ func getHealthCheckInterval(cfg *config.Config) time.Duration {
 	if cfg.Network.Pools.HealthCheckInterval > 0 {
 		return cfg.Network.Pools.HealthCheckInterval
 	}
-	
+
 	// 返回默认值
 	return 15 * time.Second // 优化的默认值，比原来的30s更频繁
 }

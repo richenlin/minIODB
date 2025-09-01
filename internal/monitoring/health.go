@@ -4,58 +4,56 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"runtime"
 	"sync"
 	"time"
 
 	"minIODB/internal/config"
-	"minIODB/internal/storage"
+	"minIODB/internal/pool"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/minio/minio-go/v7"
 )
 
 // HealthStatus 健康状态
-type HealthStatus string
-
-const (
-	HealthStatusHealthy   HealthStatus = "healthy"
-	HealthStatusUnhealthy HealthStatus = "unhealthy"
-	HealthStatusDegraded  HealthStatus = "degraded"
-)
+type HealthStatus struct {
+	Status    string `json:"status"`
+	Timestamp string `json:"timestamp"`
+	Message   string `json:"message"`
+}
 
 // ComponentHealth 组件健康状态
 type ComponentHealth struct {
-	Name      string        `json:"name"`
-	Status    HealthStatus  `json:"status"`
-	Message   string        `json:"message,omitempty"`
-	Timestamp time.Time     `json:"timestamp"`
-	Duration  time.Duration `json:"duration"`
+	Redis  *HealthStatus `json:"redis"`
+	MinIO  *HealthStatus `json:"minio"`
+	DB     *HealthStatus `json:"db"`
+	System *HealthStatus `json:"system"`
 }
 
 // OverallHealth 整体健康状态
 type OverallHealth struct {
-	Status     HealthStatus      `json:"status"`
-	Components []ComponentHealth `json:"components"`
-	Timestamp  time.Time         `json:"timestamp"`
-	Uptime     time.Duration     `json:"uptime"`
+	Status     string           `json:"status"`
+	Timestamp  string           `json:"timestamp"`
+	Components *ComponentHealth `json:"components"`
 }
 
 // HealthChecker 健康检查器
 type HealthChecker struct {
-	redisClient *redis.Client
-	minioClient storage.Uploader
+	redisPool   *pool.RedisPool
+	minioClient *minio.Client
 	db          *sql.DB
-	config      *config.Config
+	cfg         *config.Config
 	startTime   time.Time
 	mu          sync.RWMutex
 }
 
 // NewHealthChecker 创建新的健康检查器
-func NewHealthChecker(redisClient *redis.Client, minioClient storage.Uploader, db *sql.DB, cfg *config.Config) *HealthChecker {
+func NewHealthChecker(redisPool *pool.RedisPool, minioClient *minio.Client, db *sql.DB, cfg *config.Config) *HealthChecker {
 	return &HealthChecker{
-		redisClient: redisClient,
+		redisPool:   redisPool,
 		minioClient: minioClient,
 		db:          db,
-		config:      cfg,
+		cfg:         cfg,
 		startTime:   time.Now(),
 	}
 }
@@ -65,219 +63,205 @@ func (hc *HealthChecker) CheckHealth(ctx context.Context) *OverallHealth {
 	hc.mu.RLock()
 	defer hc.mu.RUnlock()
 
-	var components []ComponentHealth
-	overallStatus := HealthStatusHealthy
+	now := time.Now().UTC().Format(time.RFC3339)
 
-	// 检查Redis连接
-	redisHealth := hc.checkRedis(ctx)
-	components = append(components, redisHealth)
-	if redisHealth.Status != HealthStatusHealthy {
-		overallStatus = HealthStatusDegraded
-	}
+	// 并发检查各个组件
+	redisHealth := hc.checkRedisHealth(ctx)
+	minioHealth := hc.checkMinIOHealth(ctx)
+	dbHealth := hc.checkDBHealth(ctx)
+	systemHealth := hc.checkSystemHealth(ctx)
 
-	// 检查MinIO连接
-	minioHealth := hc.checkMinIO(ctx)
-	components = append(components, minioHealth)
-	if minioHealth.Status != HealthStatusHealthy {
-		if overallStatus == HealthStatusDegraded {
-			overallStatus = HealthStatusUnhealthy
-		} else {
-			overallStatus = HealthStatusDegraded
-		}
-	}
-
-	// 检查数据库连接
-	dbHealth := hc.checkDatabase(ctx)
-	components = append(components, dbHealth)
-	if dbHealth.Status != HealthStatusHealthy {
-		if overallStatus == HealthStatusDegraded {
-			overallStatus = HealthStatusUnhealthy
-		} else {
-			overallStatus = HealthStatusDegraded
-		}
-	}
-
-	// 检查系统资源
-	systemHealth := hc.checkSystemResources(ctx)
-	components = append(components, systemHealth)
-	if systemHealth.Status != HealthStatusHealthy {
-		overallStatus = HealthStatusDegraded
+	// 确定整体状态
+	overallStatus := "healthy"
+	if redisHealth.Status == "unhealthy" || minioHealth.Status == "unhealthy" ||
+		dbHealth.Status == "unhealthy" || systemHealth.Status == "unhealthy" {
+		overallStatus = "unhealthy"
 	}
 
 	return &OverallHealth{
-		Status:     overallStatus,
-		Components: components,
-		Timestamp:  time.Now(),
-		Uptime:     time.Since(hc.startTime),
+		Status:    overallStatus,
+		Timestamp: now,
+		Components: &ComponentHealth{
+			Redis:  redisHealth,
+			MinIO:  minioHealth,
+			DB:     dbHealth,
+			System: systemHealth,
+		},
 	}
 }
 
-// checkRedis 检查Redis连接
-func (hc *HealthChecker) checkRedis(ctx context.Context) ComponentHealth {
+// checkRedisHealth 检查Redis健康状态
+func (hc *HealthChecker) checkRedisHealth(ctx context.Context) *HealthStatus {
 	start := time.Now()
+	defer func() {
+		RecordHealthCheck("redis", true, time.Since(start))
+	}()
 
-	// 创建带超时的上下文
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	now := time.Now().UTC().Format(time.RFC3339)
 
-	// 执行ping命令
-	err := hc.redisClient.Ping(checkCtx).Err()
-	duration := time.Since(start)
+	// 如果Redis连接池为空，认为Redis被禁用
+	if hc.redisPool == nil {
+		return &HealthStatus{
+			Status:    "disabled",
+			Timestamp: now,
+			Message:   "Redis is disabled",
+		}
+	}
 
-	if err != nil {
-		return ComponentHealth{
-			Name:      "redis",
-			Status:    HealthStatusUnhealthy,
+	// 获取Redis客户端并测试连接
+	redisClient := hc.redisPool.GetClient()
+	if redisClient == nil {
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
+			Message:   "Failed to get Redis client from pool",
+		}
+	}
+
+	// 执行PING命令
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
 			Message:   fmt.Sprintf("Redis ping failed: %v", err),
-			Timestamp: time.Now(),
-			Duration:  duration,
 		}
 	}
 
-	// 检查响应时间
-	if duration > 1*time.Second {
-		return ComponentHealth{
-			Name:      "redis",
-			Status:    HealthStatusDegraded,
-			Message:   fmt.Sprintf("Redis response time is slow: %v", duration),
-			Timestamp: time.Now(),
-			Duration:  duration,
-		}
-	}
-
-	return ComponentHealth{
-		Name:      "redis",
-		Status:    HealthStatusHealthy,
+	return &HealthStatus{
+		Status:    "healthy",
+		Timestamp: now,
 		Message:   "Redis is healthy",
-		Timestamp: time.Now(),
-		Duration:  duration,
 	}
 }
 
-// checkMinIO 检查MinIO连接
-func (hc *HealthChecker) checkMinIO(ctx context.Context) ComponentHealth {
+// checkMinIOHealth 检查MinIO连接
+func (hc *HealthChecker) checkMinIOHealth(ctx context.Context) *HealthStatus {
 	start := time.Now()
+	defer func() {
+		RecordHealthCheck("minio", true, time.Since(start))
+	}()
 
-	// 创建带超时的上下文
-	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// 检查MinIO连接
+	if hc.minioClient == nil {
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
+			Message:   "MinIO client is not initialized",
+		}
+	}
 
 	// 检查存储桶是否存在
-	exists, err := hc.minioClient.BucketExists(checkCtx, hc.config.MinIO.Bucket)
-	duration := time.Since(start)
-
+	exists, err := hc.minioClient.BucketExists(ctx, hc.cfg.MinIO.Bucket)
 	if err != nil {
-		return ComponentHealth{
-			Name:      "minio",
-			Status:    HealthStatusUnhealthy,
-			Message:   fmt.Sprintf("MinIO connection failed: %v", err),
-			Timestamp: time.Now(),
-			Duration:  duration,
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
+			Message:   fmt.Sprintf("MinIO bucket check failed: %v", err),
 		}
 	}
 
 	if !exists {
-		return ComponentHealth{
-			Name:      "minio",
-			Status:    HealthStatusDegraded,
-			Message:   fmt.Sprintf("MinIO bucket '%s' does not exist", hc.config.MinIO.Bucket),
-			Timestamp: time.Now(),
-			Duration:  duration,
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
+			Message:   fmt.Sprintf("MinIO bucket '%s' does not exist", hc.cfg.MinIO.Bucket),
 		}
 	}
 
-	// 检查响应时间
-	if duration > 2*time.Second {
-		return ComponentHealth{
-			Name:      "minio",
-			Status:    HealthStatusDegraded,
-			Message:   fmt.Sprintf("MinIO response time is slow: %v", duration),
-			Timestamp: time.Now(),
-			Duration:  duration,
-		}
-	}
-
-	return ComponentHealth{
-		Name:      "minio",
-		Status:    HealthStatusHealthy,
-		Message:   "MinIO is healthy",
-		Timestamp: time.Now(),
-		Duration:  duration,
+	return &HealthStatus{
+		Status:    "healthy",
+		Timestamp: now,
+		Message:   fmt.Sprintf("MinIO bucket '%s' is accessible", hc.cfg.MinIO.Bucket),
 	}
 }
 
-// checkDatabase 检查数据库连接
-func (hc *HealthChecker) checkDatabase(ctx context.Context) ComponentHealth {
+// checkDBHealth 检查数据库连接
+func (hc *HealthChecker) checkDBHealth(ctx context.Context) *HealthStatus {
 	start := time.Now()
+	defer func() {
+		RecordHealthCheck("db", true, time.Since(start))
+	}()
+
+	now := time.Now().UTC().Format(time.RFC3339)
 
 	if hc.db == nil {
-		return ComponentHealth{
-			Name:      "database",
-			Status:    HealthStatusUnhealthy,
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
 			Message:   "Database connection is nil",
-			Timestamp: time.Now(),
-			Duration:  0,
 		}
 	}
 
-	// 创建带超时的上下文
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// 执行简单查询
-	err := hc.db.PingContext(checkCtx)
-	duration := time.Since(start)
-
-	if err != nil {
-		return ComponentHealth{
-			Name:      "database",
-			Status:    HealthStatusUnhealthy,
+	// 检查数据库连接
+	if err := hc.db.PingContext(ctx); err != nil {
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
 			Message:   fmt.Sprintf("Database ping failed: %v", err),
-			Timestamp: time.Now(),
-			Duration:  duration,
 		}
 	}
 
-	// 检查响应时间
-	if duration > 1*time.Second {
-		return ComponentHealth{
-			Name:      "database",
-			Status:    HealthStatusDegraded,
-			Message:   fmt.Sprintf("Database response time is slow: %v", duration),
-			Timestamp: time.Now(),
-			Duration:  duration,
-		}
-	}
+	// 获取数据库统计信息
+	stats := hc.db.Stats()
 
-	return ComponentHealth{
-		Name:      "database",
-		Status:    HealthStatusHealthy,
-		Message:   "Database is healthy",
-		Timestamp: time.Now(),
-		Duration:  duration,
+	return &HealthStatus{
+		Status:    "healthy",
+		Timestamp: now,
+		Message: fmt.Sprintf("Database healthy (Open: %d, InUse: %d, Idle: %d)",
+			stats.OpenConnections, stats.InUse, stats.Idle),
 	}
 }
 
-// checkSystemResources 检查系统资源
-func (hc *HealthChecker) checkSystemResources(ctx context.Context) ComponentHealth {
+// checkSystemHealth 检查系统资源
+func (hc *HealthChecker) checkSystemHealth(ctx context.Context) *HealthStatus {
 	start := time.Now()
+	defer func() {
+		RecordHealthCheck("system", true, time.Since(start))
+	}()
 
-	// 这里可以添加系统资源检查，如内存、CPU等
-	// 目前简化为基本检查
+	now := time.Now().UTC().Format(time.RFC3339)
 
-	return ComponentHealth{
-		Name:      "system",
-		Status:    HealthStatusHealthy,
-		Message:   "System resources are healthy",
-		Timestamp: time.Now(),
-		Duration:  time.Since(start),
+	// 获取系统资源信息
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	// 检查内存使用率
+	memUsageMB := float64(m.Alloc) / 1024 / 1024
+	maxMemoryMB := float64(hc.cfg.System.MaxMemoryMB)
+
+	if maxMemoryMB > 0 && memUsageMB > maxMemoryMB {
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
+			Message:   fmt.Sprintf("Memory usage too high: %.2f MB (limit: %.2f MB)", memUsageMB, maxMemoryMB),
+		}
+	}
+
+	// 检查Goroutine数量
+	numGoroutines := runtime.NumGoroutine()
+	maxGoroutines := hc.cfg.System.MaxGoroutines
+
+	if maxGoroutines > 0 && numGoroutines > maxGoroutines {
+		return &HealthStatus{
+			Status:    "unhealthy",
+			Timestamp: now,
+			Message:   fmt.Sprintf("Too many goroutines: %d (limit: %d)", numGoroutines, maxGoroutines),
+		}
+	}
+
+	return &HealthStatus{
+		Status:    "healthy",
+		Timestamp: now,
+		Message:   fmt.Sprintf("System healthy (Memory: %.2f MB, Goroutines: %d)", memUsageMB, numGoroutines),
 	}
 }
 
 // IsHealthy 检查整体是否健康
 func (hc *HealthChecker) IsHealthy(ctx context.Context) bool {
 	health := hc.CheckHealth(ctx)
-	return health.Status == HealthStatusHealthy
+	return health.Status == "healthy"
 }
 
 // GetReadiness 获取就绪状态
@@ -285,12 +269,18 @@ func (hc *HealthChecker) GetReadiness(ctx context.Context) bool {
 	// 就绪状态要求所有关键组件都正常
 	health := hc.CheckHealth(ctx)
 
-	for _, component := range health.Components {
-		if component.Name == "redis" || component.Name == "minio" {
-			if component.Status == HealthStatusUnhealthy {
-				return false
-			}
-		}
+	// 检查各个组件的健康状态
+	if health.Components.Redis != nil && health.Components.Redis.Status == "unhealthy" {
+		return false
+	}
+	if health.Components.MinIO != nil && health.Components.MinIO.Status == "unhealthy" {
+		return false
+	}
+	if health.Components.DB != nil && health.Components.DB.Status == "unhealthy" {
+		return false
+	}
+	if health.Components.System != nil && health.Components.System.Status == "unhealthy" {
+		return false
 	}
 
 	return true
@@ -300,4 +290,26 @@ func (hc *HealthChecker) GetReadiness(ctx context.Context) bool {
 func (hc *HealthChecker) GetLiveness(ctx context.Context) bool {
 	// 存活状态只需要基本服务运行
 	return true
+}
+
+// StartHealthCheck 启动定期健康检查
+func (hc *HealthChecker) StartHealthCheck(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Printf("Starting health check with interval: %v", interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Health check stopped")
+			return
+		case <-ticker.C:
+			health := hc.CheckHealth(ctx)
+			if health.Status == "unhealthy" {
+				log.Printf("Health check failed: %s", health.Status)
+				// 可以在这里添加告警逻辑
+			}
+		}
+	}
 }

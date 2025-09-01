@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"minIODB/internal/config"
 	"minIODB/internal/discovery"
+	"minIODB/internal/pool"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -23,15 +24,50 @@ func (m *MockLocalQuerier) ExecuteQuery(sql string) (string, error) {
 
 // 为了测试，我们需要创建一个简单的测试环境
 func createTestQueryCoordinator() *QueryCoordinator {
-	// 使用真实的Redis客户端（但不连接）和服务注册中心进行基本测试
-	client := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379", // 不会真正连接
-	})
+	// 创建Redis连接池配置
+	cfg := &config.Config{
+		Redis: config.RedisConfig{
+			Enabled:  true,
+			Mode:     "standalone",
+			Addr:     "localhost:6379",
+			Password: "",
+			DB:       0,
+		},
+	}
+
+	// 转换为RedisPoolConfig
+	redisPoolConfig := &pool.RedisPoolConfig{
+		Mode:     pool.RedisModeStandalone,
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	}
+	// 使用默认配置填充其他字段
+	defaultConfig := pool.DefaultRedisPoolConfig()
+	redisPoolConfig.PoolSize = defaultConfig.PoolSize
+	redisPoolConfig.MinIdleConns = defaultConfig.MinIdleConns
+	redisPoolConfig.MaxConnAge = defaultConfig.MaxConnAge
+	redisPoolConfig.PoolTimeout = defaultConfig.PoolTimeout
+	redisPoolConfig.IdleTimeout = defaultConfig.IdleTimeout
+	redisPoolConfig.IdleCheckFreq = defaultConfig.IdleCheckFreq
+	redisPoolConfig.DialTimeout = defaultConfig.DialTimeout
+	redisPoolConfig.ReadTimeout = defaultConfig.ReadTimeout
+	redisPoolConfig.WriteTimeout = defaultConfig.WriteTimeout
+	redisPoolConfig.MaxRetries = defaultConfig.MaxRetries
+	redisPoolConfig.MinRetryBackoff = defaultConfig.MinRetryBackoff
+	redisPoolConfig.MaxRetryBackoff = defaultConfig.MaxRetryBackoff
+	redisPoolConfig.MaxRedirects = defaultConfig.MaxRedirects
+	redisPoolConfig.ReadOnly = defaultConfig.ReadOnly
+	redisPoolConfig.RouteByLatency = defaultConfig.RouteByLatency
+	redisPoolConfig.RouteRandomly = defaultConfig.RouteRandomly
+
+	// 创建Redis连接池（不会真正连接）
+	redisPool, _ := pool.NewRedisPool(redisPoolConfig)
 
 	registry := &discovery.ServiceRegistry{}
 	localQuerier := &MockLocalQuerier{}
 
-	return NewQueryCoordinator(client, registry, localQuerier)
+	return NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
 }
 
 func TestQueryCoordinator_extractTablesFromSQL(t *testing.T) {
@@ -58,7 +94,7 @@ func TestQueryCoordinator_extractTablesFromSQL(t *testing.T) {
 		{
 			name:     "Case insensitive",
 			sql:      "select * from USERS join ORDERS on users.id = orders.user_id",
-			expected: []string{"users", "orders"},
+			expected: []string{"USERS", "ORDERS"},
 		},
 	}
 

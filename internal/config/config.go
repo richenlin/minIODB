@@ -28,6 +28,7 @@ type Config struct {
 	Log               LogConfig               `yaml:"log"`        // 日志配置
 	Tables            TablesConfig            `yaml:"tables"`
 	TableManagement   TableManagementConfig   `yaml:"table_management"`
+	System            SystemConfig            `yaml:"system"` // 系统配置
 }
 
 // TableConfig 表级配置
@@ -107,6 +108,9 @@ type PoolsConfig struct {
 
 // EnhancedRedisConfig 增强的Redis配置（包含所有pool配置参数）
 type EnhancedRedisConfig struct {
+	// Redis服务开关
+	Enabled bool `yaml:"enabled"` // 是否启用Redis服务
+
 	// 继承原有RedisConfig的所有字段
 	Mode         string        `yaml:"mode"`
 	Addr         string        `yaml:"addr"`
@@ -175,6 +179,7 @@ type EnhancedMinIOConfig struct {
 
 // RedisConfig Redis配置
 type RedisConfig struct {
+	Enabled      bool          `yaml:"enabled"` // 是否启用Redis服务
 	Mode         string        `yaml:"mode"`
 	Addr         string        `yaml:"addr"`
 	Password     string        `yaml:"password"`
@@ -531,6 +536,12 @@ type StorageMemoryConfig struct {
 	GCInterval         time.Duration  `yaml:"gc_interval"`
 }
 
+// SystemConfig 系统配置
+type SystemConfig struct {
+	MaxMemoryMB   int `yaml:"max_memory_mb"`  // 最大内存使用量（MB）
+	MaxGoroutines int `yaml:"max_goroutines"` // 最大协程数量
+}
+
 // GetTableConfig 获取指定表的配置，如果不存在则返回默认配置
 func (c *Config) GetTableConfig(tableName string) *TableConfig {
 	if tableConfig, exists := c.Tables.Tables[tableName]; exists {
@@ -651,6 +662,7 @@ func (c *Config) setDefaults() {
 		},
 		Pools: PoolsConfig{
 			Redis: EnhancedRedisConfig{
+				Enabled:         true,
 				Mode:            "standalone",
 				Addr:            "localhost:6379",
 				Password:        "",
@@ -700,6 +712,7 @@ func (c *Config) setDefaults() {
 
 	// Redis默认配置（保持向后兼容）
 	c.Redis = RedisConfig{
+		Enabled:      true,
 		Mode:         "standalone",
 		Addr:         "localhost:6379",
 		Password:     "",

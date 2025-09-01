@@ -467,20 +467,27 @@ func (s *Server) setupRoutes() {
 
 // healthCheck 处理健康检查请求
 func (s *Server) healthCheck(c *gin.Context) {
-	protoReq := &miniodbv1.HealthCheckRequest{}
-
 	// 调用统一服务
-	resp, err := s.miniodbService.HealthCheck(c.Request.Context(), protoReq)
+	err := s.miniodbService.HealthCheck(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":    "unhealthy",
+			"timestamp": time.Now().Format(time.RFC3339),
+			"version":   "1.0.0",
+			"details": map[string]string{
+				"error": err.Error(),
+			},
+		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":    resp.Status,
-		"timestamp": resp.Timestamp,
-		"version":   resp.Version,
-		"details":   resp.Details,
+		"status":    "healthy",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"version":   "1.0.0",
+		"details": map[string]string{
+			"message": "All systems operational",
+		},
 	})
 }
 

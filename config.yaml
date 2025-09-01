@@ -26,6 +26,7 @@ network:
   pools:
     # Redis连接池 (第二阶段优化: 增加25%)
     redis:
+      enabled: true                # Redis服务开关 - 控制是否启用Redis功能
       mode: "standalone"
       addr: "redis:6379"
       password: "redis123"
