@@ -1,0 +1,244 @@
+---
+# MinIODB 分布式部署配置
+# 此配置启用Redis作为元数据中心，支持多节点协作
+
+# 部署模式
+deployment_mode: distributed
+auto_deploy_services: true
+
+# 系统配置
+system:
+  user: miniodb
+  group: miniodb
+  uid: 1000
+  gid: 1000
+
+# MinIODB 应用配置
+miniodb:
+  enabled: true
+  grpc_port: 8080
+  rest_port: 8081
+  metrics_port: 9090
+  node_id_prefix: "miniodb-node"
+  
+  # 分布式模式：启用Redis
+  redis_enabled: true
+  
+  # 日志配置
+  log_level: info
+  log_format: json
+  
+  # 认证配置
+  auth_mode: jwt
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  jwt_expiry: "24h"
+  
+  # 缓冲区配置
+  buffer_size: 5000
+  flush_interval: 15s
+  worker_pool_size: 20
+  
+  # 表管理配置
+  max_tables: 1000
+  auto_create_tables: true
+  
+  # 集群配置
+  replica_count: 2  # 副本数量
+  service_discovery_enabled: true
+
+# Redis 配置（分布式模式启用）
+redis:
+  enabled: true
+  port: 6379
+  password: "redis123"
+  db: 0
+  
+  # 连接池配置
+  pool_size: 250
+  min_idle_conns: 25
+  max_conn_age: 1800s
+  
+  # 持久化配置
+  appendonly: true
+  appendfsync: everysec
+  
+  # 内存配置
+  maxmemory: "2gb"
+  maxmemory_policy: "allkeys-lru"
+  
+  # 数据存储
+  data_dir: "/opt/miniodb/data/redis"
+  
+  # 资源限制
+  memory_limit: "2g"
+  cpu_limit: "1"
+  
+  # 高可用配置（可选）
+  sentinel_enabled: false
+  cluster_enabled: false
+
+# MinIO 配置
+minio:
+  enabled: true
+  api_port: 9000
+  console_port: 9001
+  root_user: "minioadmin"
+  root_password: "minioadmin123"
+  bucket: "miniodb-data"
+  use_ssl: false
+  
+  # 分布式模式：启用备份MinIO
+  backup_enabled: true
+  backup_api_port: 9002
+  backup_console_port: 9003
+  backup_root_user: "minioadmin"
+  backup_root_password: "minioadmin123"
+  backup_bucket: "miniodb-backup"
+  metadata_bucket: "miniodb-metadata"
+  
+  # 数据存储
+  data_dir: "/opt/miniodb/data/minio"
+  backup_data_dir: "/opt/miniodb/data/minio-backup"
+  
+  # 资源限制
+  memory_limit: "2g"
+  cpu_limit: "2"
+  
+  # 高可用配置（可选）
+  distributed_mode: false
+  nodes_count: 4
+
+# 监控配置
+monitoring:
+  enabled: true
+  prometheus_port: 9090
+  grafana_enabled: false
+  alertmanager_enabled: false
+
+# 网络配置
+network:
+  docker_network: miniodb-net
+  subnet: "172.20.0.0/16"
+  
+  # 连接池优化
+  server:
+    grpc:
+      max_connections: 1000
+      connection_timeout: 30s
+    rest:
+      read_timeout: 30s
+      write_timeout: 30s
+
+# 智能限流配置
+rate_limiting:
+  enabled: true
+  default_tier: standard
+  tiers:
+    health:
+      requests_per_second: 200
+      burst_size: 50
+    query:
+      requests_per_second: 100
+      burst_size: 30
+    write:
+      requests_per_second: 80
+      burst_size: 20
+    standard:
+      requests_per_second: 50
+      burst_size: 15
+    strict:
+      requests_per_second: 20
+      burst_size: 5
+
+# 查询优化配置（完整版）
+query_optimization:
+  query_cache:
+    enabled: true
+    redis_key_prefix: "qcache:"
+    default_ttl: 3600s
+    max_cache_size: "200MB"
+    eviction_policy: lru
+    cache_strategies:
+      simple_select: 7200s
+      count_query: 3600s
+      aggregation: 1800s
+      join_query: 900s
+      complex_query: 600s
+  file_cache:
+    enabled: true
+    max_cache_size: "1GB"
+    max_file_age: 14400s
+    redis_index_enabled: true
+  duckdb:
+    enabled: true
+    pool_size: 5
+    memory_limit: "1GB"
+    threads: 4
+
+# 存储引擎配置（完整版）
+storage_engine:
+  enabled: true
+  auto_optimization: true
+  optimize_interval: 1800s
+  performance_mode: balanced
+  enable_monitoring: true
+  parquet:
+    default_compression: zstd
+    default_partition: analytical
+    auto_select_strategy: true
+    compression_analysis: true
+    metadata_indexing: true
+  sharding:
+    default_strategy: hash_uniform
+    auto_rebalance: true
+    hot_cold_separation: true
+    locality_optimization: true
+    rebalance_threshold: 0.8
+    migration_limit: 3
+  indexing:
+    auto_index_creation: true
+    index_types:
+      - bloom
+      - minmax
+      - inverted
+      - bitmap
+      - composite
+    maintenance_interval: 3600s
+  memory:
+    max_memory_usage: "2GB"
+    enable_pooling: true
+    enable_zero_copy: true
+    buffer_optimization: true
+    gc_optimization: true
+
+# 备份配置
+backup:
+  enabled: true
+  interval: 3600
+  metadata:
+    enabled: true
+    interval: 30m
+    retention_days: 7
+    bucket: "miniodb-metadata"
+
+# Docker 配置
+docker:
+  version: "latest"
+  compose_version: "2.20.0"
+  install_compose: true
+  registry_mirrors: []
+
+# 负载均衡配置（可选）
+load_balancer:
+  enabled: false
+  type: nginx  # nginx, haproxy, traefik
+  port: 80
+  ssl_enabled: false
+
+# 高可用配置
+high_availability:
+  enabled: false
+  keepalived_enabled: false
+  virtual_ip: ""
+  priority: 100
+

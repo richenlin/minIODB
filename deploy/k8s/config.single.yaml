@@ -1,0 +1,308 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: miniodb-single-config
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: miniodb
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: miniodb-system
+    app.kubernetes.io/mode: single-node
+data:
+  config.yaml: |
+    server:
+      grpc_port: ":8080"
+      rest_port: ":8081"
+      node_id: "miniodb-k8s-single-node"
+      
+    # 网络和连接池配置（单节点模式简化版）
+    network:
+      server:
+        grpc:
+          max_connections: 500
+          connection_timeout: 30s
+          stream_timeout: 60s
+          keep_alive_time: 30s
+          keep_alive_timeout: 5s
+          max_connection_idle: 15m
+          max_connection_age: 30m
+          max_connection_age_grace: 5s
+          max_send_msg_size: 4194304
+          max_recv_msg_size: 4194304
+        rest:
+          read_timeout: 30s
+          write_timeout: 30s
+          idle_timeout: 60s
+          read_header_timeout: 10s
+          max_header_bytes: 1048576
+          shutdown_timeout: 30s
+      
+      pools:
+        redis:
+          mode: "standalone"
+          addr: "localhost:6379"
+          password: ""
+          db: 0
+          pool_size: 50
+          min_idle_conns: 5
+          max_conn_age: 1800s
+          pool_timeout: 3s
+          idle_timeout: 300s
+          dial_timeout: 3s
+          read_timeout: 2s
+          write_timeout: 2s
+        
+        minio:
+          endpoint: "minio-service:9000"
+          access_key_id: "minioadmin"
+          secret_access_key: "minioadmin"
+          use_ssl: false
+          region: "us-east-1"
+          bucket: "miniodb-data"
+          max_idle_conns: 100
+          max_idle_conns_per_host: 50
+          max_conns_per_host: 100
+          idle_conn_timeout: 90s
+          dial_timeout: 5s
+          tls_handshake_timeout: 5s
+          response_header_timeout: 15s
+          expect_continue_timeout: 1s
+          max_retries: 3
+          retry_delay: 100ms
+          request_timeout: 60s
+          keep_alive: 30s
+          disable_keep_alive: false
+          disable_compression: false
+        
+        health_check_interval: 15s
+
+    # Redis配置（单节点模式：禁用）
+    redis:
+      enabled: false
+      mode: "standalone"
+      addr: "localhost:6379"
+      password: ""
+      db: 0
+
+    # MinIO配置
+    minio:
+      endpoint: "minio-service:9000"
+      access_key_id: "minioadmin"
+      secret_access_key: "minioadmin"
+      use_ssl: false
+      region: "us-east-1"
+      bucket: "miniodb-data"
+
+    # 智能限流系统（简化版）
+    rate_limiting:
+      enabled: true
+      tiers:
+        health:
+          requests_per_second: 100
+          burst_size: 25
+          window_size: "1s"
+        query:
+          requests_per_second: 50
+          burst_size: 15
+          window_size: "1s"
+        write:
+          requests_per_second: 40
+          burst_size: 10
+          window_size: "1s"
+        standard:
+          requests_per_second: 30
+          burst_size: 10
+          window_size: "1s"
+        strict:
+          requests_per_second: 10
+          burst_size: 3
+          window_size: "1s"
+      path_rules:
+        - path: "/health"
+          method: "GET"
+          tier: "health"
+        - path: "/v1/health"
+          method: "GET"
+          tier: "health"
+        - path: "/metrics"
+          method: "GET"
+          tier: "health"
+        - path: "/v1/query"
+          method: "POST"
+          tier: "query"
+        - path: "/v1/write"
+          method: "POST"
+          tier: "write"
+      default_tier: "standard"
+      response:
+        include_tier: true
+        include_limit: true
+        include_burst: true
+        include_window: true
+        include_retry_after: true
+
+    # 查询性能优化（单节点模式简化版，禁用Redis相关功能）
+    query_optimization:
+      query_cache:
+        enabled: false  # 单节点模式禁用查询缓存
+      
+      file_cache:
+        enabled: true
+        cache_dir: "/tmp/miniodb_cache"
+        max_cache_size: 536870912  # 512MB
+        max_file_age: 7200s
+        cleanup_interval: 600s
+        redis_index:
+          enabled: false  # 单节点模式禁用Redis索引
+        metadata:
+          track_access_count: true
+          track_creation_time: true
+          enable_hash_verification: true
+        enable_stats: true
+        stats_interval: 60s
+      
+      duckdb:
+        enabled: true
+        pool_size: 3
+        max_idle_time: 1800s
+        connection_timeout: 30s
+        performance:
+          memory_limit: "512MB"
+          threads: 2
+          enable_object_cache: true
+          temp_directory: "/tmp/duckdb"
+        prepared_statements:
+          enabled: true
+          cache_size: 50
+          auto_prepare_aggregations: true
+        connection_reuse:
+          enabled: true
+          max_reuse_count: 500
+          health_check_interval: 300s
+
+    # 存储引擎优化配置（简化版）
+    storage_engine:
+      enabled: true
+      auto_optimization: true
+      optimize_interval: 3600s
+      performance_mode: "balanced"
+      enable_monitoring: true
+      enable_profiling: false
+      parquet:
+        default_compression: "snappy"
+        default_partition: "analytical"
+        auto_select_strategy: true
+        compression_analysis: false
+        metadata_indexing: true
+      sharding:
+        default_strategy: "hash_uniform"
+        auto_rebalance: false
+        hot_cold_separation: false
+        locality_optimization: false
+      indexing:
+        auto_index_creation: true
+        index_types: ["bloom", "minmax"]
+        bloom_filter_enabled: true
+        minmax_enabled: true
+        inverted_enabled: false
+        composite_enabled: false
+        maintenance_interval: 7200s
+      memory:
+        enable_pooling: true
+        enable_zero_copy: true
+        buffer_optimization: true
+        gc_optimization: true
+        max_memory_usage: 1073741824  # 1GB
+        memory_pool_sizes:
+          small: 512
+          medium: 8192
+          large: 131072
+        gc_interval: 300s
+
+    # 缓冲区配置（简化版）
+    buffer:
+      buffer_size: 1000
+      flush_interval: 30s
+      worker_pool_size: 5
+      task_queue_size: 50
+      batch_flush_size: 3
+      enable_batching: true
+      flush_timeout: 60s
+      max_retries: 3
+      retry_delay: 1s
+      enable_concurrent: true
+      enable_metrics: true
+
+    # 备份配置（单节点模式禁用）
+    backup:
+      enabled: false
+      interval: 3600
+
+    # 日志配置
+    log:
+      level: "info"
+      format: "json"
+      output: "both"
+      filename: "logs/minIODB.log"
+      max_size: 100
+      max_backups: 3
+      max_age: 14
+      compress: true
+
+    # 监控配置
+    monitoring:
+      enabled: true
+      port: ":8082"
+      path: "/metrics"
+      prometheus: true
+
+    # 认证配置
+    auth:
+      enable_jwt: true
+      jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+      token_expiry: "24h"
+      enable_api_key: true
+      api_keys:
+        - "api-key-1234567890abcdef"
+      skip_auth_paths:
+        - "/health"
+        - "/metrics"
+        - "/v1/health"
+      require_auth_paths:
+        - "/v1/write"
+        - "/v1/query"
+
+    # 表管理配置
+    table_management:
+      auto_create_tables: true
+      default_table: "default"
+      max_tables: 100
+      table_name_pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,63}$"
+      default_config:
+        buffer_size: 1000
+        flush_interval: 30s
+        retention_days: 90
+        backup_enabled: false
+        properties: {}
+      tables: {}
+
+    # 安全配置
+    security:
+      mode: "jwt"
+      jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+      enable_tls: false
+      valid_tokens: 
+        - "test-token-123456"
+      rate_limit:
+        enabled: false
+
+    # 表配置
+    tables:
+      default_config:
+        buffer_size: 1000
+        flush_interval: 30s
+        retention_days: 90
+        backup_enabled: false
+        properties: {}
+      tables: {}
+

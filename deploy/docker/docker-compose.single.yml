@@ -33,7 +33,7 @@ services:
   miniodb:
     build:
       context: ../../
-      dockerfile: Dockerfile
+      dockerfile: deploy/Dockerfile
     image: miniodb:latest
     container_name: miniodb-app-single
     restart: unless-stopped

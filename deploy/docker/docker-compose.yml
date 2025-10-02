@@ -98,7 +98,7 @@ services:
   miniodb:
     build:
       context: ../../
-      dockerfile: ${DOCKERFILE:-Dockerfile}
+      dockerfile: deploy/${DOCKERFILE:-Dockerfile}
     image: miniodb:${PLATFORM_TAG:-latest}
     container_name: miniodb-app
     restart: unless-stopped

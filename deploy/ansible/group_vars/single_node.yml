@@ -1,0 +1,133 @@
+---
+# MinIODB 单节点部署配置
+# 此配置禁用Redis，仅使用MinIO作为存储后端
+
+# 部署模式
+deployment_mode: single_node
+auto_deploy_services: true
+
+# 系统配置
+system:
+  user: miniodb
+  group: miniodb
+  uid: 1000
+  gid: 1000
+
+# MinIODB 应用配置
+miniodb:
+  enabled: true
+  grpc_port: 8080
+  rest_port: 8081
+  metrics_port: 9090
+  node_id: "miniodb-single-node"
+  
+  # 单节点模式：禁用Redis
+  redis_enabled: false
+  
+  # 日志配置
+  log_level: info
+  log_format: json
+  
+  # 认证配置
+  auth_mode: jwt
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  jwt_expiry: "24h"
+  
+  # 缓冲区配置
+  buffer_size: 1000
+  flush_interval: 30s
+  
+  # 表管理配置
+  max_tables: 100
+  auto_create_tables: true
+
+# Redis 配置（单节点模式禁用）
+redis:
+  enabled: false
+
+# MinIO 配置
+minio:
+  enabled: true
+  api_port: 9000
+  console_port: 9001
+  root_user: "minioadmin"
+  root_password: "minioadmin"
+  bucket: "miniodb-data"
+  use_ssl: false
+  
+  # 单节点模式：禁用备份MinIO
+  backup_enabled: false
+  
+  # 数据存储
+  data_dir: "/opt/miniodb/data/minio"
+  
+  # 资源限制
+  memory_limit: "1g"
+  cpu_limit: "1"
+
+# 监控配置
+monitoring:
+  enabled: true
+  prometheus_port: 9090
+  
+# 网络配置
+network:
+  docker_network: miniodb-net
+  subnet: "172.22.0.0/16"
+
+# 智能限流配置（简化版）
+rate_limiting:
+  enabled: true
+  default_tier: standard
+  tiers:
+    health:
+      requests_per_second: 100
+      burst_size: 25
+    query:
+      requests_per_second: 50
+      burst_size: 15
+    write:
+      requests_per_second: 40
+      burst_size: 10
+    standard:
+      requests_per_second: 30
+      burst_size: 10
+
+# 查询优化配置（简化版，禁用Redis相关功能）
+query_optimization:
+  query_cache:
+    enabled: false  # 单节点模式禁用查询缓存
+  file_cache:
+    enabled: true
+    max_cache_size: "512MB"
+    max_file_age: 7200s
+  duckdb:
+    enabled: true
+    pool_size: 3
+    memory_limit: "512MB"
+    threads: 2
+
+# 存储引擎配置（简化版）
+storage_engine:
+  enabled: true
+  auto_optimization: true
+  optimize_interval: 3600s
+  performance_mode: balanced
+  parquet:
+    default_compression: snappy
+    default_partition: analytical
+  memory:
+    max_memory_usage: "1GB"
+    enable_pooling: true
+
+# 备份配置（单节点模式禁用）
+backup:
+  enabled: false
+
+# Docker 配置
+docker:
+  version: "latest"
+  compose_version: "2.20.0"
+  install_compose: true
+  registry_mirrors: []
+
