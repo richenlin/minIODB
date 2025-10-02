@@ -181,7 +181,7 @@ docker run -p 9000:9000 -p 9001:9001 \
   -e MINIO_ROOT_PASSWORD=minioadmin \
   minio/minio server /data --console-address ":9001"
 
-# 启动MinIODB（单节点模式）
+# 启动MinIODB
 go run cmd/server/main.go
 ```
 
@@ -194,7 +194,7 @@ docker run -p 9000:9000 -p 9001:9001 \
   -e MINIO_ROOT_PASSWORD=minioadmin \
   minio/minio server /data --console-address ":9001"
 
-# 启动MinIODB（分布式模式）
+# 启动MinIODB
 go run cmd/server/main.go
 ```
 
@@ -229,70 +229,6 @@ curl -X POST http://localhost:8081/v1/tables \
 # 列出所有表
 curl http://localhost:8081/v1/tables
 ```
-
-## 📦 部署方式
-
-### 🏠 单节点模式部署（推荐新手）
-
-#### 方式一：Docker Compose
-```bash
-cd deploy/docker
-cp env.example .env
-# 编辑.env文件，设置 SINGLE_NODE=true
-docker-compose -f docker-compose.single.yml up -d
-```
-
-#### 方式二：直接启动
-```bash
-# 启动MinIO
-docker run -d --name minio \
-  -p 9000:9000 -p 9001:9001 \
-  -e MINIO_ROOT_USER=minioadmin \
-  -e MINIO_ROOT_PASSWORD=minioadmin \
-  minio/minio server /data --console-address ":9001"
-
-# 启动MinIODB（单节点模式）
-docker run -d --name miniodb \
-  --link minio:minio \
-  -p 8080:8080 -p 8081:8081 \
-  -e REDIS_ENABLED=false \
-  -e MINIO_ENDPOINT=minio:9000 \
-  your-org/miniodb:latest
-```
-
-### 🏢 分布式模式部署
-
-### 🐳 Docker Compose（推荐生产）
-
-```bash
-cd deploy/docker
-cp env.example .env
-# 编辑.env文件，设置 SINGLE_NODE=false
-docker-compose -f docker-compose.distributed.yml up -d
-```
-
-
-### 🔧 Ansible（推荐批量部署）
-
-```bash
-cd deploy/ansible
-# 编辑inventory文件
-ansible-playbook -i inventory/auto-deploy.yml site.yml
-```
-
-### ☸️ Kubernetes（推荐生产）
-
-```bash
-cd deploy/k8s
-kubectl apply -f namespace.yaml
-kubectl apply -f configmap.yaml
-kubectl apply -f secret.yaml
-kubectl apply -f redis/
-kubectl apply -f minio/
-kubectl apply -f miniodb/
-```
-
-详细部署文档请参考：[部署指南](deploy/README.md)
 
 ## 📖 API文档
 

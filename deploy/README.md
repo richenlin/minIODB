@@ -231,66 +231,6 @@ ansible-playbook -i inventory/multi-node.yml site-binary.yml \
 
 ## ⚙️ 配置选项
 
-### 🆕 v1.4+ 新特性配置
-
-MinIODB v1.4.0 引入了大量新特性和配置项。详细配置说明请参考 [配置文件说明](#配置文件详解)。
-
-#### 关键新增配置
-
-| 配置节 | 说明 | 单节点模式 | 分布式模式 |
-|--------|------|-----------|-----------|
-| `network` | 网络和连接池统一配置 | ✅ 简化配置 | ✅ 完整配置 |
-| `rate_limiting` | 智能分层限流系统 | ✅ 简化等级 | ✅ 完整等级 |
-| `query_optimization` | 查询性能优化（缓存、连接池） | ⚠️ 禁用Redis缓存 | ✅ 全部启用 |
-| `storage_engine` | 存储引擎优化（Parquet、索引等） | ✅ 基础优化 | ✅ 高级优化 |
-| `table_management` | 表级管理和配置 | ✅ 基础功能 | ✅ 完整功能 |
-
-#### 部署模式配置差异
-
-**单节点模式核心配置：**
-```yaml
-redis:
-  enabled: false  # 关键：禁用Redis
-
-query_optimization:
-  query_cache:
-    enabled: false  # 禁用查询缓存（依赖Redis）
-  file_cache:
-    redis_index:
-      enabled: false  # 禁用Redis索引
-
-backup:
-  enabled: false  # 可选：禁用备份
-
-storage_engine:
-  parquet:
-    default_compression: "snappy"  # 轻量级压缩
-  indexing:
-    index_types: ["bloom", "minmax"]  # 基础索引
-```
-
-**分布式模式核心配置：**
-```yaml
-redis:
-  enabled: true  # 启用Redis
-
-query_optimization:
-  query_cache:
-    enabled: true  # 启用查询缓存
-  file_cache:
-    redis_index:
-      enabled: true  # 启用Redis索引
-
-backup:
-  enabled: true  # 启用备份
-
-storage_engine:
-  parquet:
-    default_compression: "zstd"  # 高效压缩
-  indexing:
-    index_types: ["bloom", "minmax", "inverted", "bitmap", "composite"]  # 全部索引
-```
-
 ### 核心配置变量
 
 | 变量名 | 默认值 | 说明 | 部署方式 |
@@ -298,8 +238,7 @@ storage_engine:
 | `deployment_mode` | `offline` | 部署模式 (offline/online) | Ansible |
 | `deployment_type` | `single` | 部署类型 (single/cluster) | Ansible |
 | `miniodb.install_dir` | `/opt/miniodb` | 安装目录 | Ansible |
-| `minio.backup_enabled` | `true` / `false` | 启用备份MinIO（分布式/单节点） | 所有 |
-| `redis.enabled` | `true` / `false` | 启用Redis（分布式/单节点） | 🆕 所有 |
+| `minio.backup_enabled` | `true` | 启用备份MinIO | 所有 |
 | `redis.max_memory` | `2gb` | Redis内存限制 | 所有 |
 
 ### 环境变量
@@ -593,114 +532,16 @@ curl http://localhost:9000/minio/v2/metrics/cluster
 3. **禁用安全检查** - 简化开发流程
 4. **使用开发配置** - 较小的资源配置
 
-## 📖 配置文件详解
-
-### 配置文件位置
-
-根据不同的部署方式，配置文件位于：
-
-| 部署方式 | 配置文件路径 | 说明 |
-|---------|-------------|------|
-| **Docker Compose (分布式)** | `deploy/docker/config/config.yaml` | 完整配置，Redis启用 |
-| **Docker Compose (单节点)** | `deploy/docker/config/config.single.yaml` | 简化配置，Redis禁用 |
-| **Kubernetes (分布式)** | `deploy/k8s/config.yaml` | ConfigMap完整配置 |
-| **Kubernetes (单节点)** | `deploy/k8s/config.single.yaml` | ConfigMap简化配置 |
-| **Ansible (分布式)** | `deploy/ansible/group_vars/distributed.yml` | 变量文件 |
-| **Ansible (单节点)** | `deploy/ansible/group_vars/single_node.yml` | 变量文件 |
-| **开发环境** | `config.yaml`（根目录） | 本地开发配置 |
-
-### 网络和连接池配置 (`network`)
-
-统一管理所有网络连接和连接池：
-
-```yaml
-network:
-  server:
-    grpc:
-      max_connections: 1000         # 最大并发连接数
-      connection_timeout: 30s       # 连接超时
-    rest:
-      read_timeout: 30s            # REST读取超时
-      write_timeout: 30s           # REST写入超时
-  
-  pools:
-    redis:                         # Redis连接池
-      mode: "standalone"           # standalone/sentinel/cluster
-      pool_size: 250               # 连接池大小
-    minio:                         # MinIO连接池
-      max_idle_conns: 300          # 最大空闲连接
-```
-
-### 智能限流配置 (`rate_limiting`)
-
-分层限流策略：
-
-- **health**: 监控端点（200 RPS）
-- **query**: 查询操作（100 RPS）
-- **write**: 写入操作（80 RPS）
-- **standard**: 普通API（50 RPS）
-- **strict**: 敏感操作（20 RPS）
-
-### 查询优化配置 (`query_optimization`)
-
-三层缓存系统：
-
-1. **查询缓存**（基于Redis） - 单节点模式禁用
-2. **文件缓存**（本地磁盘）
-3. **DuckDB连接池**
-
-### 存储引擎优化 (`storage_engine`)
-
-四大优化系统：
-
-1. **Parquet优化** - 压缩算法、分区策略
-2. **智能分片** - 负载均衡、冷热分离
-3. **索引系统** - Bloom Filter、MinMax、倒排索引等
-4. **内存优化** - 内存池、零拷贝、GC优化
-
-### 配置示例
-
-查看完整配置示例：
-- [分布式模式配置](./docker/config/config.yaml)
-- [单节点模式配置](./docker/config/config.single.yaml)
-- [配置变更日志](./CHANGES.md)
-
-## 🔄 v1.4+ 配置更新
-
-### 新增配置项
-
-- ✅ `network` - 网络和连接池统一配置
-- ✅ `rate_limiting` - 智能分层限流系统
-- ✅ `query_optimization` - 查询性能优化
-- ✅ `storage_engine` - 存储引擎优化
-- ✅ `table_management` - 表级管理
-
-### 配置变更
-
-- 🔄 `redis.enabled` - 新增Redis开关
-- 🔄 Dockerfile - 移动到 `deploy/` 目录
-- 🔄 配置分离 - 单节点/分布式独立配置
-
-### 向后兼容
-
-- ✅ 旧版配置继续有效
-- ✅ 新配置项有默认值
-- ✅ 渐进式迁移支持
-
-详细变更请参考：[CHANGES.md](./CHANGES.md)
-
 ## 📚 相关文档
 
 - [Docker部署详细说明](./docker/README.md)
 - [Kubernetes部署详细说明](./k8s/README.md)
 - [Ansible离线部署详细说明](./ansible/README.md)
-- [配置变更说明](./CHANGES.md) - 🆕
-- [部署指南](./DEPLOYMENT_GUIDE.md) - 🆕 完整配置说明
 - [部署脚本使用说明](./scripts/README.md)
 - [API使用示例](../examples/README.md)
 - [系统配置说明](../config.yaml)
 - [架构设计文档](../docs/architecture.md)
-- [变更日志](../CHANGELOG.md)
+- [存储桶管理指南](../docs/storage-management.md)
 
 ## 🤝 支持与反馈
 
