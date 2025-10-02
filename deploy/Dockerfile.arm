@@ -35,7 +35,7 @@ RUN go mod download
 COPY . .
 
 # 构建应用 - ARM64优化
-RUN go build -ldflags="-s -w" -o miniodb cmd/server/main.go
+RUN go build -ldflags="-s -w" -o miniodb cmd/main.go
 
 # 使用Ubuntu ARM64作为运行时镜像
 FROM ubuntu:22.04

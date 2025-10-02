@@ -71,6 +71,16 @@ type Querier struct {
 	queryCache *QueryCache
 	fileCache  *FileCache
 
+	// 单节点模式文件索引缓存
+	localFileIndex      map[string][]string // tableName -> []filePath
+	localFileIndexMutex sync.RWMutex
+	localFileIndexTTL   time.Duration
+	localIndexLastScan  map[string]time.Time // tableName -> lastScanTime
+
+	// 视图初始化缓存
+	initializedViews      map[string]bool // tableName -> initialized
+	initializedViewsMutex sync.RWMutex
+
 	// 性能优化组件
 	dbPool        *DuckDBPool
 	preparedStmts map[string]*sql.Stmt
@@ -157,6 +167,11 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		indexSystem:    indexSystem, // 新增：索引系统
 		preparedStmts:  make(map[string]*sql.Stmt),
 		queryStats:     queryStats,
+		// 【新增】初始化缓存
+		localFileIndex:     make(map[string][]string),
+		localIndexLastScan: make(map[string]time.Time),
+		localFileIndexTTL:  5 * time.Minute, // 文件索引缓存5分钟
+		initializedViews:   make(map[string]bool),
 	}
 
 	return querier, nil
@@ -423,10 +438,11 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 		log.Printf("Buffer table %s exists and will be included in view", bufferTableName)
 	}
 
-	// 如果既没有文件也没有缓冲区表，直接返回
+	// 【修复】即使没有数据，也要创建空视图和 _active 视图，以便后续查询可以正常工作
+	// 如果既没有文件也没有缓冲区表，创建一个空视图结构
 	if len(files) == 0 && !hasBufferTable {
-		log.Printf("No files or buffer data for table %s, skipping view creation", tableName)
-		return nil
+		log.Printf("No files or buffer data for table %s, creating empty view structure", tableName)
+		return q.createEmptyTableView(db, tableName)
 	}
 
 	// 构建视图SQL
@@ -528,6 +544,115 @@ func (q *Querier) createActiveDataView(db *sql.DB, tableName string) error {
 
 	log.Printf("Successfully created active data view: %s", activeViewName)
 	return nil
+}
+
+// createEmptyTableView 创建空表视图（当表存在但还没有数据时）
+func (q *Querier) createEmptyTableView(db *sql.DB, tableName string) error {
+	// 先创建一个空的缓冲区表结构
+	bufferTableName := fmt.Sprintf("%s_buffer", tableName)
+	createBufferTableSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id VARCHAR,
+			timestamp BIGINT,
+			payload VARCHAR,
+			table_name VARCHAR
+		)
+	`, bufferTableName)
+
+	if _, err := db.Exec(createBufferTableSQL); err != nil {
+		return fmt.Errorf("failed to create empty buffer table: %w", err)
+	}
+
+	log.Printf("Created empty buffer table: %s", bufferTableName)
+
+	// 创建基于空缓冲区表的视图
+	viewSQL := fmt.Sprintf(
+		"CREATE VIEW %s AS SELECT id, timestamp, payload, table_name AS \"table\" FROM %s",
+		tableName, bufferTableName,
+	)
+
+	if _, err := db.Exec(viewSQL); err != nil {
+		return fmt.Errorf("failed to create empty view for table %s: %w", tableName, err)
+	}
+
+	log.Printf("Successfully created empty view for table %s", tableName)
+
+	// 创建智能活跃数据视图
+	if err := q.createActiveDataView(db, tableName); err != nil {
+		log.Printf("WARN: Failed to create active data view for empty table %s: %v", tableName, err)
+		// 不返回错误，因为这只是一个优化视图
+	}
+
+	return nil
+}
+
+// InitializeTableView 初始化表视图结构（用于新创建的表）
+func (q *Querier) InitializeTableView(ctx context.Context, tableName string) error {
+	log.Printf("Initializing table view for: %s", tableName)
+
+	// 获取数据库连接
+	db, err := q.getDBConnection()
+	if err != nil {
+		return fmt.Errorf("failed to get DB connection: %w", err)
+	}
+	defer q.returnDBConnection(db)
+
+	// 创建空视图结构
+	return q.createEmptyTableView(db, tableName)
+}
+
+// EnsureTableViewExists 确保表视图存在（幂等操作，带内存缓存）
+func (q *Querier) EnsureTableViewExists(ctx context.Context, tableName string) error {
+	// 检查内存缓存
+	q.initializedViewsMutex.RLock()
+	if initialized, ok := q.initializedViews[tableName]; ok && initialized {
+		q.initializedViewsMutex.RUnlock()
+		// 视图已初始化过，直接返回
+		return nil
+	}
+	q.initializedViewsMutex.RUnlock()
+
+	// 缓存未命中，检查并创建视图
+	q.initializedViewsMutex.Lock()
+	defer q.initializedViewsMutex.Unlock()
+
+	// 双重检查（Double-Check Locking）
+	if initialized, ok := q.initializedViews[tableName]; ok && initialized {
+		return nil
+	}
+
+	// 获取数据库连接
+	db, err := q.getDBConnection()
+	if err != nil {
+		return fmt.Errorf("failed to get DB connection: %w", err)
+	}
+	defer q.returnDBConnection(db)
+
+	// 检查主视图是否存在
+	checkSQL := fmt.Sprintf("SELECT COUNT(*) FROM %s LIMIT 0", tableName)
+	if _, err := db.Query(checkSQL); err != nil {
+		// 视图不存在，创建之
+		log.Printf("Table view %s does not exist, creating it now", tableName)
+		if err := q.createEmptyTableView(db, tableName); err != nil {
+			return err
+		}
+	} else {
+		log.Printf("Table view %s already exists (first time check)", tableName)
+	}
+
+	// 更新缓存
+	q.initializedViews[tableName] = true
+	log.Printf("Marked table %s as initialized in cache", tableName)
+
+	return nil
+}
+
+// InvalidateViewCache 使视图缓存失效（在表删除时调用）
+func (q *Querier) InvalidateViewCache(tableName string) {
+	q.initializedViewsMutex.Lock()
+	delete(q.initializedViews, tableName)
+	q.initializedViewsMutex.Unlock()
+	log.Printf("Invalidated view cache for table %s", tableName)
 }
 
 // incrementalUpdateView 增量更新视图（只更新变更的部分）
@@ -897,9 +1022,10 @@ func (q *Querier) prepareTableDataWithCache(tableName string) error {
 
 // getStorageFilesWithCache 使用文件缓存获取存储文件
 func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string) ([]string, error) {
-	// 如果Redis连接池不可用，返回空列表
+	// 【修复】如果Redis连接池不可用（单节点模式），直接扫描MinIO
 	if q.redisPool == nil {
-		return []string{}, nil
+		log.Printf("Single-node mode: scanning MinIO directly for table %s", tableName)
+		return q.scanMinIOForTable(ctx, tableName)
 	}
 
 	// 从连接池获取Redis客户端
@@ -937,6 +1063,91 @@ func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string
 	}
 
 	return files, nil
+}
+
+// scanMinIOForTable 扫描MinIO获取表的所有Parquet文件（单节点模式，带缓存）
+func (q *Querier) scanMinIOForTable(ctx context.Context, tableName string) ([]string, error) {
+	if q.minioClient == nil {
+		log.Printf("MinIO client not available for table %s", tableName)
+		return []string{}, nil
+	}
+
+	// 【修复】移除 _active 后缀，数据存储在基础表名下
+	baseTableName := strings.TrimSuffix(tableName, "_active")
+
+	// 检查缓存
+	q.localFileIndexMutex.RLock()
+	if cachedFiles, ok := q.localFileIndex[baseTableName]; ok {
+		lastScan := q.localIndexLastScan[baseTableName]
+		if time.Since(lastScan) < q.localFileIndexTTL {
+			q.localFileIndexMutex.RUnlock()
+			log.Printf("Using cached file index for table %s (%d files, age: %v)",
+				baseTableName, len(cachedFiles), time.Since(lastScan))
+			return cachedFiles, nil
+		}
+	}
+	q.localFileIndexMutex.RUnlock()
+
+	// 缓存未命中或已过期，执行扫描
+	bucket := q.config.MinIO.Bucket
+	prefix := baseTableName + "/"
+
+	log.Printf("Scanning MinIO bucket %s with prefix %s (table: %s, cache miss)",
+		bucket, prefix, baseTableName)
+
+	// 列出所有对象
+	objectCh := q.minioClient.ListObjects(ctx, bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	var files []string
+	objectCount := 0
+	for object := range objectCh {
+		if object.Err != nil {
+			log.Printf("ERROR: Failed to list object: %v", object.Err)
+			continue
+		}
+
+		// 只处理 .parquet 文件
+		if !strings.HasSuffix(object.Key, ".parquet") {
+			continue
+		}
+
+		objectCount++
+		log.Printf("Found MinIO object: %s (size: %d bytes)", object.Key, object.Size)
+
+		// 下载到临时目录
+		localPath, err := q.downloadToTemp(ctx, object.Key)
+		if err != nil {
+			log.Printf("WARN: failed to download %s: %v", object.Key, err)
+			continue
+		}
+
+		files = append(files, localPath)
+	}
+
+	log.Printf("Scanned MinIO for table %s: found %d objects, downloaded %d files", baseTableName, objectCount, len(files))
+
+	// 更新缓存
+	q.localFileIndexMutex.Lock()
+	q.localFileIndex[baseTableName] = files
+	q.localIndexLastScan[baseTableName] = time.Now()
+	q.localFileIndexMutex.Unlock()
+
+	log.Printf("Updated file index cache for table %s (%d files)", baseTableName, len(files))
+
+	return files, nil
+}
+
+// InvalidateFileIndexCache 使文件索引缓存失效（在数据刷新后调用）
+func (q *Querier) InvalidateFileIndexCache(tableName string) {
+	baseTableName := strings.TrimSuffix(tableName, "_active")
+	q.localFileIndexMutex.Lock()
+	delete(q.localFileIndex, baseTableName)
+	delete(q.localIndexLastScan, baseTableName)
+	q.localFileIndexMutex.Unlock()
+	log.Printf("Invalidated file index cache for table %s", baseTableName)
 }
 
 // getDBConnection 获取数据库连接
@@ -1195,13 +1406,19 @@ func (q *Querier) prepareTableDataWithCacheAndDB(ctx context.Context, db *sql.DB
 // getBufferDataRows 从缓冲区获取指定表的数据行（用于混合查询）
 func (q *Querier) getBufferDataRows(tableName string) ([]buffer.DataRow, error) {
 	if q.buffer == nil {
+		log.Printf("Buffer is nil for table %s", tableName)
 		return []buffer.DataRow{}, nil
 	}
 
 	startTime := time.Now()
 
+	// 【修复】移除 _active 后缀，查询基础表的缓冲区数据
+	baseTableName := strings.TrimSuffix(tableName, "_active")
+	log.Printf("Getting buffer data for base table: %s (original: %s)", baseTableName, tableName)
+
 	// 获取该表的所有缓冲区键
-	keys := q.buffer.GetTableKeys(tableName)
+	keys := q.buffer.GetTableKeys(baseTableName)
+	log.Printf("Found %d buffer keys for table %s", len(keys), baseTableName)
 	if len(keys) == 0 {
 		return []buffer.DataRow{}, nil
 	}
@@ -1222,7 +1439,7 @@ func (q *Querier) getBufferDataRows(tableName string) ([]buffer.DataRow, error) 
 	}
 
 	log.Printf("Retrieved %d buffer rows for table %s from %d keys in %v",
-		len(allRows), tableName, len(keys), time.Since(startTime))
+		len(allRows), baseTableName, len(keys), time.Since(startTime))
 	return allRows, nil
 }
 

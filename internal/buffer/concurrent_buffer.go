@@ -443,7 +443,10 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 
 	redisPool := w.buffer.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return fmt.Errorf("Redis pool not available")
+		// 【修复】单节点模式下Redis不可用是正常情况，不应返回错误
+		// 数据已经上传到MinIO，索引可以通过扫描MinIO bucket来构建
+		log.Printf("Single-node mode: skipping Redis index update for key %s (Redis not available)", bufferKey)
+		return nil
 	}
 
 	client := redisPool.GetClient()

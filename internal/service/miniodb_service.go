@@ -85,6 +85,16 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		}, nil
 	}
 
+	// 【修复】每次数据写入前，确保视图结构已初始化
+	// 注意：这个操作是幂等的，已存在的视图不会被重复创建
+	if s.querier != nil {
+		// 这是一个轻量级操作，只在视图不存在时才会创建
+		if err := s.querier.EnsureTableViewExists(ctx, tableName); err != nil {
+			log.Printf("WARN: Failed to ensure view for table %s: %v", tableName, err)
+			// 不返回错误，因为数据写入本身仍然可以成功
+		}
+	}
+
 	// 转换为内部写入请求格式
 	ingestReq := &miniodb.WriteRequest{
 		Table:     tableName,
@@ -1164,6 +1174,12 @@ func (s *MinIODBService) DeleteTable(ctx context.Context, req *miniodb.DeleteTab
 		}, nil
 	}
 
+	// 使缓存失效
+	if s.querier != nil {
+		s.querier.InvalidateViewCache(req.TableName)
+		s.querier.InvalidateFileIndexCache(req.TableName)
+	}
+
 	return &miniodb.DeleteTableResponse{
 		Success:      true,
 		Message:      fmt.Sprintf("Table %s deleted successfully", req.TableName),
@@ -1771,6 +1787,12 @@ func (s *MinIODBService) FlushTable(ctx context.Context, req *FlushTableRequest)
 		}, fmt.Errorf("ingester not initialized")
 	}
 
+	// 【修复】获取刷新前的待写入数据数量
+	recordsBeforeFlush := int64(0)
+	if stats := s.ingester.GetBufferStats(); stats != nil {
+		recordsBeforeFlush = stats.PendingWrites
+	}
+
 	err := s.ingester.FlushBuffer()
 	if err != nil {
 		log.Printf("ERROR: Failed to flush buffer: %v", err)
@@ -1780,10 +1802,33 @@ func (s *MinIODBService) FlushTable(ctx context.Context, req *FlushTableRequest)
 		}, err
 	}
 
+	// 【修复】等待一小段时间让刷新任务完成
+	time.Sleep(100 * time.Millisecond)
+
+	// 使文件索引缓存失效（数据已刷新到MinIO）
+	if s.querier != nil {
+		s.querier.InvalidateFileIndexCache(req.TableName)
+		log.Printf("Invalidated file index cache for table %s after flush", req.TableName)
+	}
+
+	// 获取刷新后的待写入数据数量
+	recordsAfterFlush := int64(0)
+	if stats := s.ingester.GetBufferStats(); stats != nil {
+		recordsAfterFlush = stats.PendingWrites
+	}
+
+	// 计算实际刷新的记录数
+	recordsFlushed := recordsBeforeFlush - recordsAfterFlush
+	if recordsFlushed < 0 {
+		recordsFlushed = 0 // 防止负数（可能有新数据写入）
+	}
+
+	log.Printf("Flushed %d records for table %s", recordsFlushed, req.TableName)
+
 	return &FlushTableResponse{
 		Success:        true,
 		Message:        fmt.Sprintf("Table %s flushed successfully", req.TableName),
-		RecordsFlushed: 0, // 实际刷新的记录数，当前实现无法精确统计
+		RecordsFlushed: recordsFlushed,
 	}, nil
 }
 

@@ -33,7 +33,7 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN go build -o miniodb cmd/server/main.go
+RUN go build -o miniodb cmd/main.go
 
 # 使用Debian作为运行时镜像（与构建器保持一致的GLIBC版本）
 FROM debian:trixie-slim
