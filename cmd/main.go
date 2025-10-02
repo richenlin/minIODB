@@ -80,9 +80,14 @@ func main() {
 		log.Println("Redis disabled - running in single-node mode")
 	}
 
-	// 注意：高级存储引擎优化功能已实现但当前保持禁用以维持系统简单性
-	// 相关文件保留在 internal/storage/ 目录下供未来使用
-	// 包括: engine.go, index_system.go, memory.go, shard.go 等
+	// 初始化存储引擎优化器（如果配置启用）
+	var storageEngine *storage.StorageEngine
+	if cfg.StorageEngine.Enabled {
+		storageEngine = storage.NewStorageEngine(cfg, redisPool)
+		log.Println("Storage engine optimizer initialized successfully")
+	} else {
+		log.Println("Storage engine optimizer disabled - using standard storage operations")
+	}
 
 	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO)
 	if err != nil {
@@ -107,7 +112,17 @@ func main() {
 	)
 
 	ingesterService := ingest.NewIngester(concurrentBuffer)
-	querierService, err := query.NewQuerier(redisPool, primaryMinio, cfg, concurrentBuffer, logger)
+
+	// 先创建索引系统（需要在querier之前创建）
+	var indexSystem *storage.IndexSystem
+	if redisPool != nil {
+		indexSystem = storage.NewIndexSystem(redisPool)
+		log.Println("Index system initialized successfully")
+	} else {
+		log.Println("Index system disabled - Redis not available")
+	}
+
+	querierService, err := query.NewQuerier(redisPool, primaryMinio, cfg, concurrentBuffer, logger, indexSystem)
 	if err != nil {
 		log.Fatalf("Failed to create querier service: %v", err)
 	}
@@ -132,6 +147,7 @@ func main() {
 		serviceRegistry,
 		querierService,
 		cfg,
+		indexSystem, // 新增：索引系统
 	)
 
 	// 启动元数据备份管理器
@@ -181,13 +197,20 @@ func main() {
 	restServer := startRESTServer(cfg, miniodbService, writeCoord,
 		queryCoord, redisPool, primaryMinio, backupMinio, metadataManager)
 
-	// 启动指标服务器
+	// 启动指标服务器和告警管理器
 	var metricsServer *http.Server
 	var systemMonitor *metrics.SystemMonitor
+	var alertManager *monitoring.AlertManager
 	if cfg.Metrics.Enabled {
 		metricsServer = startMetricsServer(cfg)
 		systemMonitor = metrics.NewSystemMonitor()
 		systemMonitor.Start()
+
+		// 启动告警管理器
+		alertManager = monitoring.NewAlertManager(5 * time.Minute) // 5分钟去重窗口
+		alertManager.AddNotifier(&monitoring.LogNotifier{})
+		alertManager.Start(ctx)
+		log.Println("Alert manager started")
 	}
 
 	// 启动备份goroutine
@@ -198,7 +221,7 @@ func main() {
 	log.Println("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, metadataManager, nil)
+	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, alertManager, metadataManager, storageEngine)
 
 	log.Println("MinIODB server stopped")
 }
@@ -283,7 +306,8 @@ func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.C
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	grpcServer *grpc.Server, restServer *http.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
-	metadataManager *metadata.Manager, _ interface{}) {
+	alertManager *monitoring.AlertManager,
+	metadataManager *metadata.Manager, storageEngine *storage.StorageEngine) {
 
 	// 捕获中断信号
 	sigCh := make(chan os.Signal, 1)
@@ -292,6 +316,12 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 
 	log.Println("Received shutdown signal")
 	cancel() // 取消上下文
+
+	// 停止告警管理器
+	if alertManager != nil {
+		alertManager.Stop()
+		log.Println("Alert manager stopped")
+	}
 
 	// 停止系统监视器
 	if systemMonitor != nil {
@@ -305,7 +335,13 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 		}
 	}
 
-	// 注意：存储引擎优化功能已禁用，无需关闭处理
+	// 停止存储引擎优化器
+	if storageEngine != nil {
+		log.Println("Stopping storage engine optimizer...")
+		if err := storageEngine.Stop(); err != nil {
+			log.Printf("Error stopping storage engine: %v", err)
+		}
+	}
 
 	// 停止gRPC服务器
 	if grpcServer != nil {

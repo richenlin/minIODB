@@ -1022,3 +1022,21 @@ func (is *IndexSystem) optimizeInvertedIndexes() error {
 
 	return nil
 }
+
+// HasBloomFilter 检查是否存在指定的BloomFilter索引
+func (is *IndexSystem) HasBloomFilter(key string) bool {
+	is.mutex.RLock()
+	defer is.mutex.RUnlock()
+
+	_, exists := is.bloomFilters[key]
+	return exists
+}
+
+// HasMinMaxIndex 检查是否存在指定的MinMax索引
+func (is *IndexSystem) HasMinMaxIndex(key string) bool {
+	is.mutex.RLock()
+	defer is.mutex.RUnlock()
+
+	_, exists := is.minMaxIndexes[key]
+	return exists
+}

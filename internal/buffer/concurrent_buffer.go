@@ -14,6 +14,7 @@ import (
 	"minIODB/internal/config"
 	"minIODB/internal/metrics"
 	"minIODB/internal/pool"
+	"minIODB/internal/storage"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/xitongsys/parquet-go-source/local"
@@ -70,11 +71,12 @@ type FlushTask struct {
 
 // ConcurrentBuffer 支持并发刷新的缓冲区
 type ConcurrentBuffer struct {
-	config       *ConcurrentBufferConfig
-	appConfig    *config.Config
-	poolManager  *pool.PoolManager
-	backupBucket string
-	nodeID       string
+	config         *ConcurrentBufferConfig
+	appConfig      *config.Config
+	poolManager    *pool.PoolManager
+	backupBucket   string
+	nodeID         string
+	shardOptimizer *storage.ShardOptimizer // 分片优化器
 
 	// 缓冲区数据
 	buffer map[string][]DataRow
@@ -89,6 +91,9 @@ type ConcurrentBuffer struct {
 
 	// 统计信息
 	stats *ConcurrentBufferStats
+
+	// 内存优化器（新增）
+	memoryOptimizer *storage.MemoryOptimizer
 }
 
 // ConcurrentBufferStats 并发缓冲区统计信息
@@ -114,7 +119,7 @@ type Worker struct {
 	stopChan chan struct{}
 }
 
-// NewConcurrentBuffer 创建新的并发缓冲区
+// NewConcurrentBuffer 创建新的并发缓冲区（集成内存优化器）
 func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config, backupBucket, nodeID string, config *ConcurrentBufferConfig) *ConcurrentBuffer {
 	if config == nil {
 		config = DefaultConcurrentBufferConfig()
@@ -131,6 +136,26 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 		workers:      make([]*Worker, config.WorkerPoolSize),
 		shutdown:     make(chan struct{}),
 		stats:        &ConcurrentBufferStats{},
+	}
+
+	// 初始化内存优化器（如果配置启用）
+	if appConfig != nil && appConfig.StorageEngine.Memory.EnablePooling {
+		memConfig := &storage.MemoryConfig{
+			MaxMemoryUsage:  appConfig.StorageEngine.Memory.MaxMemoryUsage,
+			PoolSizes:       appConfig.StorageEngine.Memory.MemoryPoolSizes,
+			GCInterval:      appConfig.StorageEngine.Memory.GCInterval,
+			ZeroCopyEnabled: appConfig.StorageEngine.Memory.EnableZeroCopy,
+		}
+		cb.memoryOptimizer = storage.NewMemoryOptimizer(memConfig)
+		log.Println("Memory optimizer initialized for concurrent buffer")
+	} else {
+		log.Println("Memory optimizer disabled - using standard memory allocation")
+	}
+
+	// 初始化分片优化器（如果存储引擎启用）
+	if appConfig != nil && appConfig.StorageEngine.Enabled {
+		cb.shardOptimizer = storage.NewShardOptimizer()
+		log.Println("Shard optimizer initialized for concurrent buffer")
 	}
 
 	// 启动工作线程
@@ -296,7 +321,8 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), w.buffer.config.FlushTimeout)
 	defer cancel()
 
-	objectName := fmt.Sprintf("%s/%d.parquet", bufferKey, time.Now().UnixNano())
+	// 生成对象名（支持智能分片优化）
+	objectName := w.generateObjectName(bufferKey)
 
 	// 上传到主存储
 	minioPool := w.buffer.poolManager.GetMinIOPool()
@@ -344,6 +370,61 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 
 	// 更新Redis索引
 	return w.updateRedisIndex(ctx, bufferKey, objectName)
+}
+
+// Worker.generateObjectName 生成对象名（支持智能分片）
+func (w *Worker) generateObjectName(bufferKey string) string {
+	timestamp := time.Now().UnixNano()
+
+	// 如果分片优化器未启用，使用默认命名
+	if w.buffer.shardOptimizer == nil {
+		return fmt.Sprintf("%s/%d.parquet", bufferKey, timestamp)
+	}
+
+	// 使用分片优化器决定数据放置
+	// 解析 bufferKey: 表名/ID/日期
+	parts := strings.Split(bufferKey, "/")
+	if len(parts) != 3 {
+		// 格式不正确，使用默认命名
+		return fmt.Sprintf("%s/%d.parquet", bufferKey, timestamp)
+	}
+
+	tableName := parts[0]
+	dataID := parts[1]
+	dateStr := parts[2]
+
+	// 生成分片键
+	shardKey := fmt.Sprintf("%s:%s", tableName, dataID)
+
+	// 创建访问模式（简化版，实际可以基于历史数据）
+	accessPattern := &storage.AccessPattern{
+		DataKey:       shardKey,
+		AccessCount:   1,
+		LastAccess:    time.Now(),
+		AccessNodes:   make(map[string]int64),
+		AccessRegions: make(map[string]int64),
+		Frequency:     0.1,    // 新数据默认低频率
+		Locality:      0.5,    // 中等局部性
+		Temperature:   "warm", // 新数据默认为温数据
+		Properties:    make(map[string]string),
+	}
+
+	// 使用分片优化器优化数据放置
+	optimalNode, err := w.buffer.shardOptimizer.OptimizeDataPlacement(
+		context.Background(),
+		shardKey,
+		0, // dataSize will be calculated later
+		accessPattern,
+	)
+
+	if err != nil {
+		log.Printf("WARN: shard optimization failed for key %s: %v, using default placement", bufferKey, err)
+		return fmt.Sprintf("%s/%d.parquet", bufferKey, timestamp)
+	}
+
+	// 生成带分片信息的对象名
+	// 格式: 表名/日期/分片节点/ID_时间戳.parquet
+	return fmt.Sprintf("%s/%s/shard_%s/%s_%d.parquet", tableName, dateStr, optimalNode, dataID, timestamp)
 }
 
 // Worker.updateRedisIndex 更新Redis索引
@@ -671,4 +752,25 @@ func (cb *ConcurrentBuffer) AddDataPoint(id string, data []byte, timestamp time.
 func (cb *ConcurrentBuffer) FlushDataPoints() error {
 	cb.flushAllBuffers()
 	return nil
+}
+
+// GetMemoryStats 获取内存优化统计（新增）
+func (cb *ConcurrentBuffer) GetMemoryStats() map[string]interface{} {
+	if cb.memoryOptimizer == nil {
+		return map[string]interface{}{
+			"enabled": false,
+			"message": "Memory optimizer not initialized",
+		}
+	}
+
+	stats := cb.memoryOptimizer.GetStats()
+	return map[string]interface{}{
+		"enabled":             true,
+		"total_allocated":     stats.TotalAllocated,
+		"current_usage":       stats.CurrentUsage,
+		"peak_usage":          stats.PeakUsage,
+		"pool_efficiency":     stats.PoolEfficiency,
+		"fragmentation_ratio": stats.FragmentationRatio,
+		"gc_efficiency":       stats.GCEfficiency,
+	}
 }

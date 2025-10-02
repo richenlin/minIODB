@@ -17,6 +17,7 @@ type StorageEngine struct {
 	shardOptimizer   *ShardOptimizer
 	indexSystem      *IndexSystem
 	memoryOptimizer  *MemoryOptimizer
+	rebalanceMonitor *RebalanceMonitor // 自动重平衡监控器
 
 	config    *EngineConfig
 	stats     *EngineStats
@@ -219,9 +220,11 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 		// 这里可以根据实际配置进行调整
 	}
 
+	shardOptimizer := NewShardOptimizer()
+
 	optimizer := &StorageEngine{
 		parquetOptimizer: NewParquet(),
-		shardOptimizer:   NewShardOptimizer(),
+		shardOptimizer:   shardOptimizer,
 		indexSystem:      NewIndexSystem(redisPool),
 		memoryOptimizer: NewMemoryOptimizer(&MemoryConfig{
 			MaxMemoryUsage:  engineConfig.MemoryConfig.MaxMemoryUsage,
@@ -229,6 +232,7 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 			GCInterval:      engineConfig.MemoryConfig.GCInterval,
 			ZeroCopyEnabled: engineConfig.MemoryConfig.EnableZeroCopy,
 		}),
+		rebalanceMonitor: NewRebalanceMonitor(shardOptimizer, DefaultRebalanceMonitorConfig()),
 
 		config:    engineConfig,
 		stats:     &EngineStats{},
@@ -247,6 +251,12 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 	// 启动性能监控（如果启用）
 	if engineConfig.EnableMonitoring {
 		optimizer.monitor.Start()
+	}
+
+	// 启动重平衡监控（如果启用）
+	if engineConfig.AutoOptimization {
+		optimizer.rebalanceMonitor.Start(context.Background())
+		log.Println("Rebalance monitor started")
 	}
 
 	log.Println("Storage Engine Optimizer initialized successfully")
@@ -352,6 +362,31 @@ func (seo *StorageEngine) StopAutoOptimization() error {
 	seo.scheduler.Stop()
 
 	log.Println("Auto optimization stopped")
+	return nil
+}
+
+// Stop 停止存储引擎（新增）
+func (seo *StorageEngine) Stop() error {
+	log.Println("Stopping storage engine optimizer...")
+
+	// 停止自动优化
+	if seo.isRunning {
+		if err := seo.StopAutoOptimization(); err != nil {
+			log.Printf("WARN: failed to stop auto optimization: %v", err)
+		}
+	}
+
+	// 停止性能监控
+	if seo.monitor != nil {
+		seo.monitor.Stop()
+	}
+
+	// 停止重平衡监控
+	if seo.rebalanceMonitor != nil {
+		seo.rebalanceMonitor.Stop()
+	}
+
+	log.Println("Storage engine optimizer stopped successfully")
 	return nil
 }
 
@@ -858,4 +893,17 @@ func (pm *PerformanceMonitor) addMetric(name string, value float64, timestamp ti
 			history.Trend = "stable"
 		}
 	}
+}
+
+// GetRebalanceMonitor 获取重平衡监控器
+func (seo *StorageEngine) GetRebalanceMonitor() *RebalanceMonitor {
+	return seo.rebalanceMonitor
+}
+
+// GetRebalanceStats 获取重平衡统计
+func (seo *StorageEngine) GetRebalanceStats() *RebalanceMonitorStats {
+	if seo.rebalanceMonitor != nil {
+		return seo.rebalanceMonitor.GetStats()
+	}
+	return nil
 }

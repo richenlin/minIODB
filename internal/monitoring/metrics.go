@@ -192,6 +192,48 @@ var (
 			Help: "Number of healthy nodes in cluster",
 		},
 	)
+
+	// 高级功能使用率指标
+	indexSystemHitRate = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_index_system_hit_rate",
+			Help: "Index system cache hit rate",
+		},
+		[]string{"index_type"},
+	)
+
+	memoryOptimizerUsage = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_memory_optimizer_usage_bytes",
+			Help: "Memory optimizer usage in bytes",
+		},
+		[]string{"pool_type"},
+	)
+
+	storageEnginePerformance = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_storage_engine_performance",
+			Help: "Storage engine performance metrics",
+		},
+		[]string{"metric_name"},
+	)
+
+	tableACLChecks = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miniodb_table_acl_checks_total",
+			Help: "Total number of table ACL permission checks",
+		},
+		[]string{"table", "permission", "result"},
+	)
+
+	// 性能瓶颈检测指标
+	performanceBottlenecks = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_performance_bottlenecks",
+			Help: "Detected performance bottlenecks (1=detected, 0=normal)",
+		},
+		[]string{"component", "bottleneck_type"},
+	)
 )
 
 // MetricsCollector 指标收集器
@@ -224,6 +266,11 @@ func NewMetricsCollector() *MetricsCollector {
 		systemUptime,
 		clusterNodesTotal,
 		clusterNodesHealthy,
+		indexSystemHitRate,
+		memoryOptimizerUsage,
+		storageEnginePerformance,
+		tableACLChecks,
+		performanceBottlenecks,
 	)
 
 	collector := &MetricsCollector{
@@ -320,4 +367,33 @@ func UpdateClusterMetrics(totalNodes, healthyNodes int) {
 // GetMetricsHandler 获取Prometheus指标处理器
 func GetMetricsHandler() http.Handler {
 	return promhttp.Handler()
-} 
+}
+
+// UpdateIndexSystemHitRate 更新索引系统命中率
+func UpdateIndexSystemHitRate(indexType string, hitRate float64) {
+	indexSystemHitRate.WithLabelValues(indexType).Set(hitRate)
+}
+
+// UpdateMemoryOptimizerUsage 更新内存优化器使用量
+func UpdateMemoryOptimizerUsage(poolType string, usage int64) {
+	memoryOptimizerUsage.WithLabelValues(poolType).Set(float64(usage))
+}
+
+// UpdateStorageEnginePerformance 更新存储引擎性能指标
+func UpdateStorageEnginePerformance(metricName string, value float64) {
+	storageEnginePerformance.WithLabelValues(metricName).Set(value)
+}
+
+// RecordTableACLCheck 记录表级ACL检查
+func RecordTableACLCheck(table, permission, result string) {
+	tableACLChecks.WithLabelValues(table, permission, result).Inc()
+}
+
+// UpdatePerformanceBottleneck 更新性能瓶颈检测
+func UpdatePerformanceBottleneck(component, bottleneckType string, detected bool) {
+	value := 0.0
+	if detected {
+		value = 1.0
+	}
+	performanceBottlenecks.WithLabelValues(component, bottleneckType).Set(value)
+}

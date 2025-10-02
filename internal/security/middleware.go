@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"fmt"
+	"minIODB/internal/monitoring"
 	"net/http"
 	"strings"
 	"sync"
@@ -170,10 +171,10 @@ func (sm *SecurityMiddleware) RateLimiter(requestsPerMinute int) gin.HandlerFunc
 		requests []time.Time
 		mutex    sync.RWMutex
 	}
-	
+
 	clients := make(map[string]*clientData)
 	var globalMutex sync.RWMutex
-	
+
 	// 清理goroutine，每30秒清理一次过期数据
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -202,22 +203,22 @@ func (sm *SecurityMiddleware) RateLimiter(requestsPerMinute int) gin.HandlerFunc
 			}
 		}
 	}()
-	
+
 	return func(c *gin.Context) {
 		// 如果requestsPerMinute <= 0，则不限流
 		if requestsPerMinute <= 0 {
 			c.Next()
 			return
 		}
-		
+
 		clientIP := c.ClientIP()
 		now := time.Now()
-		
+
 		// 获取或创建客户端数据
 		globalMutex.RLock()
 		data, exists := clients[clientIP]
 		globalMutex.RUnlock()
-		
+
 		if !exists {
 			globalMutex.Lock()
 			// 双重检查
@@ -229,10 +230,10 @@ func (sm *SecurityMiddleware) RateLimiter(requestsPerMinute int) gin.HandlerFunc
 			}
 			globalMutex.Unlock()
 		}
-		
+
 		data.mutex.Lock()
 		defer data.mutex.Unlock()
-		
+
 		// 清理过期的请求记录
 		var validRequests []time.Time
 		for _, reqTime := range data.requests {
@@ -241,7 +242,7 @@ func (sm *SecurityMiddleware) RateLimiter(requestsPerMinute int) gin.HandlerFunc
 			}
 		}
 		data.requests = validRequests
-		
+
 		// 检查请求频率
 		if len(data.requests) >= requestsPerMinute {
 			c.JSON(http.StatusTooManyRequests, gin.H{
@@ -253,10 +254,10 @@ func (sm *SecurityMiddleware) RateLimiter(requestsPerMinute int) gin.HandlerFunc
 			c.Abort()
 			return
 		}
-		
+
 		// 记录当前请求
 		data.requests = append(data.requests, now)
-		
+
 		c.Next()
 	}
 }
@@ -294,11 +295,11 @@ func GetUserFromContext(c *gin.Context) (*User, bool) {
 	if !exists {
 		return nil, false
 	}
-	
+
 	if u, ok := user.(*User); ok {
 		return u, true
 	}
-	
+
 	return nil, false
 }
 
@@ -308,11 +309,11 @@ func GetClaimsFromContext(c *gin.Context) (*Claims, bool) {
 	if !exists {
 		return nil, false
 	}
-	
+
 	if c, ok := claims.(*Claims); ok {
 		return c, true
 	}
-	
+
 	return nil, false
 }
 
@@ -336,4 +337,105 @@ func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 	claims, ok := ctx.Value(ClaimsContextKey).(*Claims)
 	return claims, ok
-} 
+}
+
+// TablePermissionRequired 表级权限验证中间件（新增）
+func (sm *SecurityMiddleware) TablePermissionRequired(permission Permission) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 从请求中提取表名（支持多种方式）
+		tableName := extractTableName(c)
+
+		if tableName == "" {
+			// 如果没有指定表，允许通过（由后续逻辑处理）
+			c.Next()
+			return
+		}
+
+		// 获取用户信息
+		userInterface, exists := c.Get(string(UserContextKey))
+		if !exists && sm.authManager.IsEnabled() {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":   "authentication_required",
+				"message": "Authentication required for table operations",
+			})
+			c.Abort()
+			return
+		}
+
+		// 如果未认证，检查是否有ACL
+		if !exists {
+			aclMgr := sm.authManager.GetTableACLManager()
+			if !aclMgr.CheckPermission(tableName, "", permission, []string{}) {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error":   "permission_denied",
+					"message": fmt.Sprintf("No %s permission for table %s", permission, tableName),
+				})
+				c.Abort()
+				return
+			}
+			c.Next()
+			return
+		}
+
+		user := userInterface.(*User)
+		aclMgr := sm.authManager.GetTableACLManager()
+
+		// 检查权限
+		hasPermission := aclMgr.CheckPermission(tableName, user.ID, permission, user.Roles)
+
+		// 记录ACL检查指标
+		result := "allowed"
+		if !hasPermission {
+			result = "denied"
+		}
+		// 导入 monitoring 包后取消注释
+		monitoring.RecordTableACLCheck(tableName, string(permission), result)
+
+		if !hasPermission {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":   "permission_denied",
+				"message": fmt.Sprintf("User %s does not have %s permission for table %s", user.Username, permission, tableName),
+			})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// extractTableName 从请求中提取表名
+func extractTableName(c *gin.Context) string {
+	// 1. 尝试从URL参数获取
+	tableName := c.Param("table")
+	if tableName != "" {
+		return tableName
+	}
+
+	// 2. 尝试从查询参数获取
+	tableName = c.Query("table")
+	if tableName != "" {
+		return tableName
+	}
+
+	// 3. 尝试从请求头获取
+	tableName = c.GetHeader("X-Table-Name")
+	if tableName != "" {
+		return tableName
+	}
+
+	// 4. 尝试从请求体获取
+	if c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut {
+		var reqBody map[string]interface{}
+		if err := c.ShouldBindJSON(&reqBody); err == nil {
+			if t, ok := reqBody["table"].(string); ok {
+				return t
+			}
+			if t, ok := reqBody["table_name"].(string); ok {
+				return t
+			}
+		}
+	}
+
+	return ""
+}

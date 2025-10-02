@@ -12,13 +12,13 @@ import (
 
 // AuthConfig 认证配置
 type AuthConfig struct {
-	Mode            string        `yaml:"mode" json:"mode"`                         // "none" 或 "token"
+	Mode            string        `yaml:"mode" json:"mode"` // "none" 或 "token"
 	JWTSecret       string        `yaml:"jwt_secret" json:"jwt_secret"`
 	TokenExpiration time.Duration `yaml:"token_expiration" json:"token_expiration"`
 	Issuer          string        `yaml:"issuer" json:"issuer"`
 	Audience        string        `yaml:"audience" json:"audience"`
 	// 预设的token列表，用于简单的token验证
-	ValidTokens     []string      `yaml:"valid_tokens" json:"valid_tokens"`
+	ValidTokens []string `yaml:"valid_tokens" json:"valid_tokens"`
 }
 
 // DefaultAuthConfig 默认认证配置
@@ -33,23 +33,26 @@ var DefaultAuthConfig = AuthConfig{
 
 // Claims JWT声明
 type Claims struct {
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
+	UserID   string   `json:"user_id"`
+	Username string   `json:"username"`
+	Roles    []string `json:"roles"` // 新增：用户角色列表
 	jwt.RegisteredClaims
 }
 
 // User 简化的用户结构
 type User struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
+	ID       string   `json:"id"`
+	Username string   `json:"username"`
+	Roles    []string `json:"roles"` // 新增：用户角色列表
 }
 
-// AuthManager 认证管理器
+// AuthManager 认证管理器（扩展支持表级权限）
 type AuthManager struct {
-	config *AuthConfig
+	config      *AuthConfig
+	tableACLMgr *TableACLManager // 新增：表级权限管理器
 }
 
-// NewAuthManager 创建认证管理器
+// NewAuthManager 创建认证管理器（支持表级权限）
 func NewAuthManager(config *AuthConfig) (*AuthManager, error) {
 	if config == nil {
 		config = &DefaultAuthConfig
@@ -65,8 +68,14 @@ func NewAuthManager(config *AuthConfig) (*AuthManager, error) {
 	}
 
 	return &AuthManager{
-		config: config,
+		config:      config,
+		tableACLMgr: NewTableACLManager(), // 初始化表级权限管理器
 	}, nil
+}
+
+// GetTableACLManager 获取表级权限管理器
+func (am *AuthManager) GetTableACLManager() *TableACLManager {
+	return am.tableACLMgr
 }
 
 // IsEnabled 检查认证是否启用
@@ -180,4 +189,4 @@ func hashPassword(password string) string {
 func verifyPassword(password, hashedPassword string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 	return err == nil
-} 
+}
