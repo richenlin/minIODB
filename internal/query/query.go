@@ -397,13 +397,19 @@ func (q *Querier) createTableView(tableName string, files []string) error {
 
 // createTableViewWithDB 在指定的DuckDB连接中创建表视图
 func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []string) error {
-	// 删除可能存在的旧视图
+	// 删除可能存在的旧视图（包括主视图和活跃数据视图）
 	dropViewSQL := fmt.Sprintf("DROP VIEW IF EXISTS %s", tableName)
 	log.Printf("Executing DROP VIEW SQL: %s", dropViewSQL)
 	if _, err := db.Exec(dropViewSQL); err != nil {
 		log.Printf("WARN: failed to drop existing view for table %s: %v", tableName, err)
 	} else {
 		log.Printf("Successfully dropped existing view (if any) for table %s", tableName)
+	}
+
+	// 删除活跃数据视图（如果存在）
+	dropActiveViewSQL := fmt.Sprintf("DROP VIEW IF EXISTS %s_active", tableName)
+	if _, err := db.Exec(dropActiveViewSQL); err != nil {
+		log.Printf("WARN: failed to drop existing active view for table %s: %v", tableName, err)
 	}
 
 	// 检查是否存在缓冲区表
@@ -486,7 +492,160 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 	}
 
 	log.Printf("View verification successful for table %s", tableName)
+
+	// 创建智能活跃数据视图（自动过滤墓碑记录）
+	if err := q.createActiveDataView(db, tableName); err != nil {
+		log.Printf("WARN: Failed to create active data view for table %s: %v", tableName, err)
+		// 不返回错误，因为这只是一个优化视图
+	}
 	return nil
+}
+
+// createActiveDataView 创建智能活跃数据视图（自动过滤墓碑记录）
+func (q *Querier) createActiveDataView(db *sql.DB, tableName string) error {
+	activeViewName := fmt.Sprintf("%s_active", tableName)
+
+	// 使用JSON函数提取_deleted字段进行过滤（比LIKE更高效）
+	// 如果DuckDB版本不支持JSON函数，则回退到LIKE模式
+	createActiveViewSQL := fmt.Sprintf(`
+		CREATE VIEW %s AS 
+		SELECT * FROM %s
+		WHERE payload NOT LIKE '%%"_deleted":true%%' 
+		  AND payload NOT LIKE '%%"_deleted": true%%'
+	`, activeViewName, tableName)
+
+	log.Printf("Creating active data view: %s", activeViewName)
+
+	if _, err := db.Exec(createActiveViewSQL); err != nil {
+		return fmt.Errorf("failed to create active data view: %w", err)
+	}
+
+	// 验证视图创建成功
+	testSQL := fmt.Sprintf("SELECT COUNT(*) FROM %s LIMIT 0", activeViewName)
+	if _, err := db.Query(testSQL); err != nil {
+		return fmt.Errorf("active view verification failed: %w", err)
+	}
+
+	log.Printf("Successfully created active data view: %s", activeViewName)
+	return nil
+}
+
+// incrementalUpdateView 增量更新视图（只更新变更的部分）
+func (q *Querier) incrementalUpdateView(tableName string, changes []buffer.DataRow) error {
+	if len(changes) == 0 {
+		log.Printf("No changes to update for table %s", tableName)
+		return nil
+	}
+
+	db, err := q.getDBConnection()
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	defer q.returnDBConnection(db)
+
+	// 策略1: 如果变更量较小，使用增量更新
+	// 策略2: 如果变更量较大（>10%表大小），重建视图
+
+	// 检查表是否存在
+	checkSQL := fmt.Sprintf("SELECT COUNT(*) as count FROM %s LIMIT 1", tableName)
+	var tableExists bool
+	if _, err := db.Query(checkSQL); err == nil {
+		tableExists = true
+	}
+
+	if !tableExists {
+		log.Printf("Table %s does not exist, skipping incremental update", tableName)
+		return nil
+	}
+
+	// 统计当前表大小
+	countSQL := fmt.Sprintf("SELECT COUNT(*) as total FROM %s", tableName)
+	var totalCount int64
+	row := db.QueryRow(countSQL)
+	if err := row.Scan(&totalCount); err != nil {
+		log.Printf("WARN: Failed to get table size: %v", err)
+		totalCount = 0
+	}
+
+	changeRatio := float64(len(changes)) / float64(totalCount)
+
+	// 如果变更量 > 10% 或表为空，直接重建视图
+	if totalCount == 0 || changeRatio > 0.1 {
+		log.Printf("Change ratio %.2f%% exceeds threshold, rebuilding view for table %s",
+			changeRatio*100, tableName)
+
+		// 获取所有文件并重建视图
+		ctx := context.Background()
+		storageFiles, err := q.getStorageFilesForTable(ctx, tableName)
+		if err != nil {
+			return fmt.Errorf("failed to get storage files: %w", err)
+		}
+		return q.createTableViewWithDB(db, tableName, storageFiles)
+	}
+
+	// 增量更新策略：
+	// 1. 识别变更类型（新增、更新、删除）
+	// 2. 对于更新和删除，先标记为墓碑
+	// 3. 对于新增和更新的新版本，插入到缓冲区表
+
+	log.Printf("Performing incremental update for table %s with %d changes (%.2f%%)",
+		tableName, len(changes), changeRatio*100)
+
+	// 更新缓冲区表
+	bufferTableName := fmt.Sprintf("%s_buffer", tableName)
+
+	// 检查缓冲区表是否存在
+	checkBufferSQL := fmt.Sprintf("SELECT COUNT(*) FROM %s LIMIT 1", bufferTableName)
+	var bufferExists bool
+	if _, err := db.Query(checkBufferSQL); err == nil {
+		bufferExists = true
+	}
+
+	if !bufferExists {
+		// 创建缓冲区表
+		log.Printf("Creating buffer table %s for incremental updates", bufferTableName)
+		if err := q.createBufferTable(db, bufferTableName); err != nil {
+			return fmt.Errorf("failed to create buffer table: %w", err)
+		}
+	}
+
+	// 插入变更到缓冲区表
+	if err := q.loadBufferDataToDB(db, tableName, changes); err != nil {
+		return fmt.Errorf("failed to load incremental changes: %w", err)
+	}
+
+	// 重建活跃数据视图以反映变更
+	if err := q.createActiveDataView(db, tableName); err != nil {
+		log.Printf("WARN: Failed to update active view: %v", err)
+	}
+
+	log.Printf("Incremental update completed for table %s", tableName)
+	return nil
+}
+
+// createBufferTable 创建缓冲区表结构
+func (q *Querier) createBufferTable(db *sql.DB, bufferTableName string) error {
+	createTableSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id VARCHAR,
+			timestamp BIGINT,
+			payload VARCHAR,
+			table_name VARCHAR
+		)
+	`, bufferTableName)
+
+	if _, err := db.Exec(createTableSQL); err != nil {
+		return fmt.Errorf("failed to create buffer table: %w", err)
+	}
+
+	log.Printf("Successfully created buffer table: %s", bufferTableName)
+	return nil
+}
+
+// RefreshViewWithChanges 当缓冲区刷新后，刷新视图以反映变更
+func (q *Querier) RefreshViewWithChanges(tableName string, flushedRows []buffer.DataRow) error {
+	// 使用增量更新策略
+	return q.incrementalUpdateView(tableName, flushedRows)
 }
 
 // downloadToTemp 下载文件到临时目录

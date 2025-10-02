@@ -541,9 +541,10 @@ func (s *Server) writeData(c *gin.Context) {
 // queryData 处理数据查询请求
 func (s *Server) queryData(c *gin.Context) {
 	var req struct {
-		SQL    string `json:"sql" binding:"required"`
-		Limit  int32  `json:"limit,omitempty"`
-		Cursor string `json:"cursor,omitempty"`
+		SQL            string `json:"sql" binding:"required"`
+		Limit          int32  `json:"limit,omitempty"`
+		Cursor         string `json:"cursor,omitempty"`
+		IncludeDeleted bool   `json:"include_deleted,omitempty"` // 是否包含已删除记录（墓碑），默认false
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -552,9 +553,10 @@ func (s *Server) queryData(c *gin.Context) {
 	}
 
 	protoReq := &miniodbv1.QueryDataRequest{
-		Sql:    req.SQL,
-		Limit:  req.Limit,
-		Cursor: req.Cursor,
+		Sql:            req.SQL,
+		Limit:          req.Limit,
+		Cursor:         req.Cursor,
+		IncludeDeleted: req.IncludeDeleted,
 	}
 
 	// 调用统一服务
@@ -614,24 +616,57 @@ func (s *Server) updateData(c *gin.Context) {
 
 // deleteData 处理数据删除请求
 func (s *Server) deleteData(c *gin.Context) {
-	var req struct {
-		Table string   `json:"table" binding:"required"`
-		IDs   []string `json:"ids" binding:"required"`
+	// 支持两种方式：查询参数或JSON body
+	var table, deleteID string
+	var ids []string
+
+	// 方式1：从查询参数获取（兼容性）
+	tableParam := c.Query("table")
+	idParam := c.Query("id")
+
+	if tableParam != "" && idParam != "" {
+		// 使用查询参数
+		table = tableParam
+		deleteID = idParam
+	} else {
+		// 方式2：从JSON body获取
+		var req struct {
+			Table string   `json:"table" binding:"required"`
+			IDs   []string `json:"ids,omitempty"`
+			ID    string   `json:"id,omitempty"`
+		}
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing required parameters. Use ?table=xxx&id=xxx or JSON body"})
+			return
+		}
+
+		table = req.Table
+		ids = req.IDs
+
+		// 支持单个ID或ID列表
+		if req.ID != "" {
+			deleteID = req.ID
+		} else if len(ids) > 0 {
+			deleteID = ids[0]
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ID is required"})
+			return
+		}
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	// 验证参数
+	if table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Table name is required"})
+		return
+	}
+	if deleteID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID is required"})
 		return
 	}
 
-	// 处理批量删除：目前API只支持单个ID，这里取第一个
-	var deleteID string
-	if len(req.IDs) > 0 {
-		deleteID = req.IDs[0]
-	}
-
 	protoReq := &miniodbv1.DeleteDataRequest{
-		Table: req.Table,
+		Table: table,
 		Id:    deleteID,
 	}
 

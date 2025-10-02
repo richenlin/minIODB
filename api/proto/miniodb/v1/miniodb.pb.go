@@ -7,13 +7,14 @@
 package miniodb
 
 import (
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
+
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
 )
 
 const (
@@ -269,12 +270,13 @@ func (x *WriteDataResponse) GetNodeId() string {
 
 // 查询数据请求
 type QueryDataRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Sql           string                 `protobuf:"bytes,1,opt,name=sql,proto3" json:"sql,omitempty"`       // SQL查询语句
-	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`  // 返回记录数限制
-	Cursor        string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"` // 分页游标
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Sql            string                 `protobuf:"bytes,1,opt,name=sql,proto3" json:"sql,omitempty"`                                              // SQL查询语句
+	Limit          int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`                                         // 返回记录数限制
+	Cursor         string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`                                        // 分页游标
+	IncludeDeleted bool                   `protobuf:"varint,4,opt,name=include_deleted,json=includeDeleted,proto3" json:"include_deleted,omitempty"` // 是否包含已删除的记录（墓碑记录），默认false
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *QueryDataRequest) Reset() {
@@ -326,6 +328,13 @@ func (x *QueryDataRequest) GetCursor() string {
 		return x.Cursor
 	}
 	return ""
+}
+
+func (x *QueryDataRequest) GetIncludeDeleted() bool {
+	if x != nil {
+		return x.IncludeDeleted
+	}
+	return false
 }
 
 // 查询数据响应

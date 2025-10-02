@@ -103,9 +103,9 @@ services:
     container_name: miniodb-app
     restart: unless-stopped
     ports:
-      - "8080:8080"   # gRPC API端口
-      - "8081:8081"   # REST API端口
-      - "9090:9090"   # Prometheus监控端口
+      - "28080:8080"   # gRPC API端口
+      - "28081:8081"   # REST API端口
+      - "29090:9090"   # Prometheus监控端口
     environment:
       # 应用配置
       - MINIODB_ENV=${MINIODB_ENV:-production}

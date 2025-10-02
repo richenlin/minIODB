@@ -82,6 +82,7 @@ message QueryDataRequest {
   string sql = 1;                      // SQL查询语句
   int32 limit = 2;                     // 返回记录数限制
   string cursor = 3;                   // 分页游标
+  bool include_deleted = 4;            // 是否包含已删除的记录（墓碑记录），默认false
 }
 
 // 查询数据响应

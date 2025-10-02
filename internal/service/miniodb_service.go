@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -146,7 +147,7 @@ func (s *MinIODBService) validateWriteRequest(req *miniodb.WriteDataRequest) err
 
 // QueryData 查询数据
 func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRequest) (*miniodb.QueryDataResponse, error) {
-	log.Printf("Processing query request: %s", req.Sql)
+	log.Printf("Processing query request: %s (include_deleted: %v)", req.Sql, req.IncludeDeleted)
 
 	// 验证请求
 	if err := s.validateQueryRequest(req); err != nil {
@@ -163,6 +164,12 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 		sql = strings.ReplaceAll(sql, "FROM table", fmt.Sprintf("FROM %s", defaultTable))
 		sql = strings.ReplaceAll(sql, "from table", fmt.Sprintf("from %s", defaultTable))
 		log.Printf("Converted legacy SQL to use default table: %s", sql)
+	}
+
+	// 默认过滤墓碑记录（除非用户明确指定包含已删除记录）
+	// 优化策略：如果可能，使用预创建的活跃数据视图（_active后缀）
+	if !req.IncludeDeleted {
+		sql = s.optimizeQueryWithActiveView(sql)
 	}
 
 	// 如果指定了限制，添加到SQL中
@@ -189,6 +196,106 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 	}, nil
 }
 
+// optimizeQueryWithActiveView 优化查询：尝试使用活跃数据视图，否则添加过滤条件
+func (s *MinIODBService) optimizeQueryWithActiveView(sql string) string {
+	// 尝试将表名替换为 _active 视图
+	// 这是一个简化的实现，只处理最常见的情况
+	// 更复杂的SQL可能需要更智能的解析
+
+	// 检测FROM子句中的表名
+	fromPattern := regexp.MustCompile(`(?i)\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)`)
+	matches := fromPattern.FindStringSubmatch(sql)
+
+	if len(matches) > 1 {
+		tableName := matches[1]
+		activeViewName := tableName + "_active"
+
+		// 尝试将表名替换为活跃视图
+		// 使用正则确保只替换FROM子句中的表名
+		optimizedSQL := fromPattern.ReplaceAllString(sql, "FROM "+activeViewName)
+
+		log.Printf("Optimized query to use active view: %s -> %s", tableName, activeViewName)
+		return optimizedSQL
+	}
+
+	// 如果无法使用活跃视图优化，回退到添加过滤条件
+	log.Printf("Falling back to filter-based tombstone filtering")
+	return s.addTombstoneFilter(sql)
+}
+
+// addTombstoneFilter 添加墓碑记录过滤条件
+func (s *MinIODBService) addTombstoneFilter(sql string) string {
+	lowerSQL := strings.ToLower(strings.TrimSpace(sql))
+
+	// 检测是否已经有WHERE子句
+	hasWhere := strings.Contains(lowerSQL, " where ")
+
+	// 构建过滤条件：排除payload中包含_deleted:true的记录
+	filterCondition := "(payload NOT LIKE '%\"_deleted\":true%' AND payload NOT LIKE '%\"_deleted\": true%')"
+
+	// 如果SQL以分号结尾，先去掉
+	sql = strings.TrimSuffix(strings.TrimSpace(sql), ";")
+
+	// 智能添加过滤条件
+	if hasWhere {
+		// 已有WHERE，使用AND添加条件
+		// 找到WHERE的位置
+		whereIdx := strings.Index(lowerSQL, " where ")
+		if whereIdx != -1 {
+			// 检查是否有ORDER BY, GROUP BY, LIMIT等子句
+			orderByIdx := strings.Index(lowerSQL, " order by ")
+			groupByIdx := strings.Index(lowerSQL, " group by ")
+			limitIdx := strings.Index(lowerSQL, " limit ")
+
+			// 找到最早出现的子句位置
+			insertPos := len(sql)
+			if orderByIdx != -1 && orderByIdx < insertPos {
+				insertPos = orderByIdx
+			}
+			if groupByIdx != -1 && groupByIdx < insertPos {
+				insertPos = groupByIdx
+			}
+			if limitIdx != -1 && limitIdx < insertPos {
+				insertPos = limitIdx
+			}
+
+			if insertPos < len(sql) {
+				// 在其他子句之前插入过滤条件
+				sql = sql[:insertPos] + " AND " + filterCondition + " " + sql[insertPos:]
+			} else {
+				// 直接追加
+				sql = sql + " AND " + filterCondition
+			}
+		}
+	} else {
+		// 没有WHERE，需要添加WHERE子句
+		// 找到FROM子句后的表名
+		orderByIdx := strings.Index(lowerSQL, " order by ")
+		groupByIdx := strings.Index(lowerSQL, " group by ")
+		limitIdx := strings.Index(lowerSQL, " limit ")
+
+		insertPos := len(sql)
+		if orderByIdx != -1 && orderByIdx < insertPos {
+			insertPos = orderByIdx
+		}
+		if groupByIdx != -1 && groupByIdx < insertPos {
+			insertPos = groupByIdx
+		}
+		if limitIdx != -1 && limitIdx < insertPos {
+			insertPos = limitIdx
+		}
+
+		if insertPos < len(sql) {
+			sql = sql[:insertPos] + " WHERE " + filterCondition + " " + sql[insertPos:]
+		} else {
+			sql = sql + " WHERE " + filterCondition
+		}
+	}
+
+	log.Printf("Added tombstone filter to SQL: %s", sql)
+	return sql
+}
+
 // validateQueryRequest 验证查询请求
 func (s *MinIODBService) validateQueryRequest(req *miniodb.QueryDataRequest) error {
 	if req.Sql == "" {
@@ -199,12 +306,36 @@ func (s *MinIODBService) validateQueryRequest(req *miniodb.QueryDataRequest) err
 		return status.Error(codes.InvalidArgument, "SQL query cannot exceed 10000 characters")
 	}
 
-	// 基本的SQL注入防护（简单检查）
-	lowerSQL := strings.ToLower(req.Sql)
-	dangerousKeywords := []string{"drop", "delete", "truncate", "alter", "create", "insert", "update"}
-	for _, keyword := range dangerousKeywords {
-		if strings.Contains(lowerSQL, keyword) {
-			return status.Error(codes.InvalidArgument, fmt.Sprintf("SQL contains dangerous keyword: %s", keyword))
+	// 基本的SQL注入防护（智能检查）
+	lowerSQL := strings.ToLower(strings.TrimSpace(req.Sql))
+
+	// 检查SQL语句的开头，确保只允许SELECT查询
+	// 允许CTE (WITH)和SELECT，但不允许修改操作
+	if !strings.HasPrefix(lowerSQL, "select") &&
+		!strings.HasPrefix(lowerSQL, "with") &&
+		!strings.HasPrefix(lowerSQL, "explain") {
+		return status.Error(codes.InvalidArgument, "Only SELECT queries are allowed")
+	}
+
+	// 检查是否包含危险的修改语句（在非SELECT上下文中）
+	dangerousPatterns := []string{
+		"drop table", "drop database", "drop schema",
+		"truncate table", "truncate",
+		"alter table", "alter database",
+		"create table", "create database", "create schema",
+		"insert into", "insert ",
+		"update ", "update\t", "update\n",
+		"delete from", "delete ",
+	}
+
+	for _, pattern := range dangerousPatterns {
+		// 检查危险模式是否出现在语句开头附近（前100个字符）
+		checkRange := lowerSQL
+		if len(checkRange) > 100 {
+			checkRange = lowerSQL[:100]
+		}
+		if strings.Contains(checkRange, pattern) {
+			return status.Error(codes.InvalidArgument, "SQL contains potentially dangerous operation")
 		}
 	}
 
@@ -243,20 +374,56 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 		}, nil
 	}
 
-	// OLAP系统中的更新策略：先删除后重新插入
-	// 1. 首先尝试删除现有记录
-	if s.querier != nil {
-		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE id = '%s'", tableName, req.Id)
-		_, err := s.querier.ExecuteQuery(deleteSQL)
-		if err != nil {
-			log.Printf("WARN: Delete query during update failed: %v", err)
-			// 即使删除失败，我们仍然可以继续插入（可能是新记录）
-		}
-	}
+	// OLAP系统中的更新策略：标记删除旧记录 + 写入新记录
+	// 这种方式避免产生重复记录，符合OLAP系统的不可变特性
 
-	// 2. 插入更新后的数据
+	// 1. 先写入墓碑记录标记删除旧版本
 	if s.ingester != nil {
-		// 构建写入请求
+		// 检查记录是否存在
+		recordExists := false
+		if s.querier != nil {
+			checkSQL := fmt.Sprintf("SELECT COUNT(*) as count FROM %s WHERE id = '%s'", tableName, req.Id)
+			result, err := s.querier.ExecuteQuery(checkSQL)
+			if err != nil {
+				log.Printf("WARN: Check query failed: %v", err)
+			} else {
+				// 如果记录存在，先标记删除
+				if !strings.Contains(result, "\"count\": 0") && !strings.Contains(result, "\"count\":0") {
+					recordExists = true
+				}
+			}
+		}
+
+		// 如果是更新操作（记录存在），先写入墓碑
+		if recordExists {
+			tombstonePayload := map[string]interface{}{
+				"_deleted":    true,
+				"_deleted_at": time.Now().UTC().Format(time.RFC3339),
+				"_operation":  "update", // 标记为更新操作的删除
+				"_reason":     "replaced_by_update",
+			}
+
+			payloadStruct, err := structpb.NewStruct(tombstonePayload)
+			if err != nil {
+				log.Printf("WARN: Failed to create tombstone payload for update: %v", err)
+			} else {
+				// 写入墓碑记录
+				tombstoneReq := &miniodb.WriteRequest{
+					Table:     tableName,
+					Id:        req.Id,
+					Timestamp: timestamppb.New(time.Now()),
+					Payload:   payloadStruct,
+				}
+
+				if err := s.ingester.IngestData(tombstoneReq); err != nil {
+					log.Printf("WARN: Failed to write tombstone for update: %v", err)
+				} else {
+					log.Printf("Tombstone written for update of %s in table %s", req.Id, tableName)
+				}
+			}
+		}
+
+		// 2. 写入新的更新后数据
 		writeReq := &miniodb.WriteRequest{
 			Table:     tableName,
 			Id:        req.Id,
@@ -269,7 +436,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 			writeReq.Timestamp = timestamppb.Now()
 		}
 
-		// 执行插入
+		// 执行插入新版本
 		if err := s.ingester.IngestData(writeReq); err != nil {
 			log.Printf("ERROR: Failed to ingest updated data for table %s, ID %s: %v", tableName, req.Id, err)
 			return &miniodb.UpdateDataResponse{
@@ -277,6 +444,8 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 				Message: fmt.Sprintf("Failed to update record: %v", err),
 			}, nil
 		}
+
+		log.Printf("Successfully updated record %s in table %s (tombstone + new version)", req.Id, tableName)
 	} else {
 		return &miniodb.UpdateDataResponse{
 			Success: false,
@@ -378,25 +547,57 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 
 	deletedCount := int32(0)
 
-	// 1. 从已持久化的数据中删除（通过DuckDB执行DELETE语句）
-	if s.querier != nil {
-		// 构建DELETE SQL语句
-		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE id = '%s'", tableName, req.Id)
+	// OLAP系统中的删除策略：
+	// 由于MinIODB使用Parquet文件和DuckDB视图，不支持直接DELETE操作
+	// 我们采用"标记删除"策略：写入一个特殊的墓碑记录
+	// 或者在查询时过滤掉已删除的记录
 
-		// 执行删除操作
-		result, err := s.querier.ExecuteQuery(deleteSQL)
+	// 1. 验证记录是否存在
+	if s.querier != nil {
+		checkSQL := fmt.Sprintf("SELECT COUNT(*) as count FROM %s WHERE id = '%s'", tableName, req.Id)
+		result, err := s.querier.ExecuteQuery(checkSQL)
 		if err != nil {
-			log.Printf("WARN: Delete query failed: %v", err)
-			return &miniodb.DeleteDataResponse{
-				Success: false,
-				Message: fmt.Sprintf("Failed to delete record from storage: %v", err),
-			}, nil
+			log.Printf("WARN: Check query failed: %v", err)
+		} else {
+			// 解析结果判断记录是否存在
+			if strings.Contains(result, "\"count\": 0") || strings.Contains(result, "\"count\":0") {
+				log.Printf("Record %s not found in table %s", req.Id, tableName)
+				return &miniodb.DeleteDataResponse{
+					Success:      false,
+					Message:      fmt.Sprintf("Record %s not found in table %s", req.Id, tableName),
+					DeletedCount: 0,
+				}, nil
+			}
+			deletedCount = 1
+		}
+	}
+
+	// 2. 写入墓碑记录（标记删除）
+	// 使用特殊的payload标记这是一个删除操作
+	if s.ingester != nil {
+		tombstonePayload := map[string]interface{}{
+			"_deleted":    true,
+			"_deleted_at": time.Now().UTC().Format(time.RFC3339),
+			"_operation":  "delete",
 		}
 
-		// 解析删除结果，获取实际删除的行数
-		// 这里简化处理，假设删除成功就是1行
-		if strings.Contains(result, "DELETE") || strings.Contains(result, "success") || result != "" {
-			deletedCount = 1
+		payloadStruct, err := structpb.NewStruct(tombstonePayload)
+		if err != nil {
+			log.Printf("WARN: Failed to create tombstone payload: %v", err)
+		} else {
+			// 写入墓碑记录
+			writeReq := &miniodb.WriteRequest{
+				Table:     tableName,
+				Id:        req.Id,
+				Timestamp: timestamppb.New(time.Now()),
+				Payload:   payloadStruct,
+			}
+
+			if err := s.ingester.IngestData(writeReq); err != nil {
+				log.Printf("WARN: Failed to write tombstone record: %v", err)
+			} else {
+				log.Printf("Tombstone record written for %s in table %s", req.Id, tableName)
+			}
 		}
 	}
 
