@@ -178,7 +178,7 @@ func main() {
 	log.Println("Initializing services...")
 
 	// 创建MinIODB服务
-	miniodbService, err := service.NewMinIODBService(cfg, ingesterService, querierService, redisPool, metadataManager)
+	miniodbService, err := service.NewMinIODBService(cfg, ingesterService, querierService, redisPool, metadataManager, primaryMinio.GetClient())
 	if err != nil {
 		log.Fatalf("Failed to create MinIODB service: %v", err)
 	}

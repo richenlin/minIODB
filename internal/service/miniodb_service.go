@@ -17,6 +17,7 @@ import (
 	"minIODB/internal/pool"
 	"minIODB/internal/query"
 
+	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -36,9 +37,9 @@ type MinIODBService struct {
 
 // NewMinIODBService 创建新的MinIODBService实例
 func NewMinIODBService(cfg *config.Config, ingester *ingest.Ingester, querier *query.Querier,
-	redisPool *pool.RedisPool, metadataMgr *metadata.Manager) (*MinIODBService, error) {
+	redisPool *pool.RedisPool, metadataMgr *metadata.Manager, primaryMinio *minio.Client) (*MinIODBService, error) {
 
-	tableManager := NewTableManager(redisPool, nil, nil, cfg)
+	tableManager := NewTableManager(redisPool, primaryMinio, nil, cfg)
 
 	return &MinIODBService{
 		cfg:          cfg,
@@ -151,6 +152,9 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 	if err := s.validateQueryRequest(req); err != nil {
 		return nil, err
 	}
+
+	// 优化：不再自动刷新，而是在querier中实现混合查询（缓冲区+MinIO）
+	// 这样可以避免每次查询都刷新，提高性能
 
 	// 处理向后兼容：将旧的"table"关键字替换为默认表名
 	sql := req.Sql
@@ -1235,9 +1239,11 @@ func (s *MinIODBService) GetMetadataStatus(ctx context.Context, req *miniodb.Get
 
 // HealthCheck 健康检查
 func (s *MinIODBService) HealthCheck(ctx context.Context) error {
-	// 检查Redis连接池
-	if err := s.redisPool.HealthCheck(ctx); err != nil {
-		return fmt.Errorf("redis health check failed: %w", err)
+	// 检查Redis连接池（如果启用）
+	if s.redisPool != nil {
+		if err := s.redisPool.HealthCheck(ctx); err != nil {
+			return fmt.Errorf("redis health check failed: %w", err)
+		}
 	}
 
 	// 检查配置是否有效
@@ -1543,6 +1549,41 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 		len(performanceMetrics), len(resourceUsage), systemInfo["service_health"])
 
 	return response, nil
+}
+
+// FlushTable 手动刷新表数据到存储
+func (s *MinIODBService) FlushTable(ctx context.Context, req *FlushTableRequest) (*FlushTableResponse, error) {
+	if req.TableName == "" {
+		return &FlushTableResponse{
+			Success: false,
+			Message: "table name is required",
+		}, fmt.Errorf("table name is required")
+	}
+
+	log.Printf("Flushing table: %s", req.TableName)
+
+	// 调用ingester的FlushBuffer方法
+	if s.ingester == nil {
+		return &FlushTableResponse{
+			Success: false,
+			Message: "ingester not initialized",
+		}, fmt.Errorf("ingester not initialized")
+	}
+
+	err := s.ingester.FlushBuffer()
+	if err != nil {
+		log.Printf("ERROR: Failed to flush buffer: %v", err)
+		return &FlushTableResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to flush buffer: %v", err),
+		}, err
+	}
+
+	return &FlushTableResponse{
+		Success:        true,
+		Message:        fmt.Sprintf("Table %s flushed successfully", req.TableName),
+		RecordsFlushed: 0, // 实际刷新的记录数，当前实现无法精确统计
+	}, nil
 }
 
 // Close 关闭服务

@@ -1,0 +1,147 @@
+services:
+  # MinIO - 单节点模式唯一依赖的存储服务
+  minio:
+    image: minio/minio:latest
+    container_name: miniodb-minio-single
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # S3 API端口
+      - "9001:9001"   # Web控制台端口
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - MINIO_BROWSER_REDIRECT_URL=http://localhost:9001
+      - MINIO_SERVER_URL=http://localhost:9000
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - miniodb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIODB - 单节点模式核心应用服务
+  miniodb:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    image: miniodb:latest
+    container_name: miniodb-app-single
+    restart: unless-stopped
+    ports:
+      - "18080:8080"   # gRPC API端口
+      - "18081:8081"   # REST API端口
+      - "19090:9090"   # Prometheus监控端口
+    environment:
+      # 应用配置
+      - MINIODB_ENV=${MINIODB_ENV:-development}
+      - MINIODB_LOG_LEVEL=${MINIODB_LOG_LEVEL:-info}
+      
+      # 单节点模式：禁用Redis
+      - REDIS_ENABLED=false
+      
+      # MinIO主存储配置
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-miniodb-data}
+      - MINIO_USE_SSL=false
+      
+      # 服务器配置
+      - GRPC_PORT=8080
+      - REST_PORT=8081
+      - METRICS_PORT=9090
+      - NODE_ID=miniodb-single-node
+      
+      # 认证配置
+      - AUTH_MODE=${AUTH_MODE:-jwt}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_EXPIRATION=${JWT_EXPIRATION:-24h}
+      
+      # 缓冲区配置
+      - BUFFER_SIZE=${BUFFER_SIZE:-1000}
+      - BUFFER_TIMEOUT=${BUFFER_TIMEOUT:-30s}
+      - BATCH_SIZE=${BATCH_SIZE:-100}
+    volumes:
+      - ./config/config.single.yaml:/app/config/config.yaml:ro
+      - miniodb_logs:/app/logs
+    networks:
+      - miniodb-network
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIO Client - 用于初始化存储桶
+  minio-init:
+    image: minio/mc:latest
+    container_name: miniodb-minio-init-single
+    restart: "no"
+    networks:
+      - miniodb-network
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-miniodb-data}
+    entrypoint: |
+      /bin/sh -c "
+      echo 'Waiting for MinIO to be ready...'
+      sleep 5
+      
+      echo 'Configuring MinIO client...'
+      mc alias set minio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD}
+      
+      echo 'Creating bucket: $${MINIO_BUCKET}...'
+      mc mb --ignore-existing minio/$${MINIO_BUCKET}
+      
+      echo 'Setting bucket policy to public...'
+      mc anonymous set download minio/$${MINIO_BUCKET}
+      
+      echo 'MinIO initialization completed successfully!'
+      "
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# 数据卷定义
+volumes:
+  minio_data:
+    driver: local
+  
+  miniodb_logs:
+    driver: local
+
+# 网络定义
+networks:
+  miniodb-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+

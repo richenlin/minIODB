@@ -453,6 +453,7 @@ func (s *Server) setupRoutes() {
 	securedRoutes.GET("/tables", s.listTables)
 	securedRoutes.GET("/tables/:name", s.getTable)
 	securedRoutes.DELETE("/tables/:name", s.deleteTable)
+	securedRoutes.POST("/tables/:name/flush", s.flushTable) // 手动刷新表数据
 
 	// 元数据管理
 	securedRoutes.POST("/metadata/backup", s.backupMetadata)
@@ -862,6 +863,37 @@ func (s *Server) deleteTable(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// flushTable 处理手动刷新表数据请求
+func (s *Server) flushTable(c *gin.Context) {
+	tableName := c.Param("name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Table name is required"})
+		return
+	}
+
+	log.Printf("Manual flush requested for table: %s", tableName)
+
+	// 调用服务层的刷新方法
+	resp, err := s.miniodbService.FlushTable(c.Request.Context(), &service.FlushTableRequest{
+		TableName: tableName,
+	})
+	if err != nil {
+		log.Printf("ERROR: Failed to flush table %s: %v", tableName, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	log.Printf("Table %s flushed successfully, records flushed: %d", tableName, resp.RecordsFlushed)
+	c.JSON(http.StatusOK, gin.H{
+		"success":         resp.Success,
+		"message":         resp.Message,
+		"records_flushed": resp.RecordsFlushed,
+	})
 }
 
 // backupMetadata 处理备份元数据请求

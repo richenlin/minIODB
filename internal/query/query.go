@@ -390,10 +390,6 @@ func (q *Querier) createTableView(tableName string, files []string) error {
 
 // createTableViewWithDB 在指定的DuckDB连接中创建表视图
 func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []string) error {
-	if len(files) == 0 {
-		return nil
-	}
-
 	// 删除可能存在的旧视图
 	dropViewSQL := fmt.Sprintf("DROP VIEW IF EXISTS %s", tableName)
 	log.Printf("Executing DROP VIEW SQL: %s", dropViewSQL)
@@ -403,27 +399,69 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 		log.Printf("Successfully dropped existing view (if any) for table %s", tableName)
 	}
 
-	// 构建文件列表
-	var filePaths []string
-	for _, file := range files {
-		filePaths = append(filePaths, fmt.Sprintf("'%s'", file))
+	// 检查是否存在缓冲区表
+	bufferTableName := fmt.Sprintf("%s_buffer", tableName)
+	hasBufferTable := false
+
+	// 验证缓冲区表是否存在
+	checkBufferSQL := fmt.Sprintf("SELECT COUNT(*) FROM %s LIMIT 1", bufferTableName)
+	if _, err := db.Query(checkBufferSQL); err == nil {
+		hasBufferTable = true
+		log.Printf("Buffer table %s exists and will be included in view", bufferTableName)
 	}
 
-	// 创建新视图，支持多个Parquet文件
-	createViewSQL := fmt.Sprintf(
-		"CREATE VIEW %s AS SELECT * FROM read_parquet([%s])",
-		tableName,
-		strings.Join(filePaths, ", "),
-	)
+	// 如果既没有文件也没有缓冲区表，直接返回
+	if len(files) == 0 && !hasBufferTable {
+		log.Printf("No files or buffer data for table %s, skipping view creation", tableName)
+		return nil
+	}
 
-	log.Printf("Creating view for table %s with %d files using provided DB connection", tableName, len(files))
-	log.Printf("Executing CREATE VIEW SQL: %s", createViewSQL)
+	// 构建视图SQL
+	var viewSQL string
+
+	if len(files) > 0 && hasBufferTable {
+		// 混合查询：合并Parquet文件和缓冲区数据
+		var filePaths []string
+		for _, file := range files {
+			filePaths = append(filePaths, fmt.Sprintf("'%s'", file))
+		}
+
+		// 使用UNION ALL合并两个数据源
+		viewSQL = fmt.Sprintf(`
+			CREATE VIEW %s AS 
+			SELECT id, timestamp, payload, "table" FROM read_parquet([%s])
+			UNION ALL
+			SELECT id, timestamp, payload, table_name AS "table" FROM %s_buffer
+		`, tableName, strings.Join(filePaths, ", "), tableName)
+
+		log.Printf("Creating hybrid view for table %s (files + buffer)", tableName)
+	} else if len(files) > 0 {
+		// 只有Parquet文件
+		var filePaths []string
+		for _, file := range files {
+			filePaths = append(filePaths, fmt.Sprintf("'%s'", file))
+		}
+		viewSQL = fmt.Sprintf(
+			"CREATE VIEW %s AS SELECT * FROM read_parquet([%s])",
+			tableName,
+			strings.Join(filePaths, ", "),
+		)
+		log.Printf("Creating file-only view for table %s with %d files", tableName, len(files))
+	} else {
+		// 只有缓冲区数据
+		viewSQL = fmt.Sprintf(
+			"CREATE VIEW %s AS SELECT id, timestamp, payload, table_name AS \"table\" FROM %s_buffer",
+			tableName, tableName,
+		)
+		log.Printf("Creating buffer-only view for table %s", tableName)
+	}
+
+	log.Printf("Executing CREATE VIEW SQL: %s", viewSQL)
 
 	// 执行SQL并详细记录结果
-	if _, err := db.Exec(createViewSQL); err != nil {
-		log.Printf("ERROR: Failed to create view for table %s with SQL: %s", tableName, createViewSQL)
+	if _, err := db.Exec(viewSQL); err != nil {
+		log.Printf("ERROR: Failed to create view for table %s", tableName)
 		log.Printf("ERROR: SQL execution error: %v", err)
-		log.Printf("ERROR: File paths involved: %v", files)
 		return fmt.Errorf("failed to create view for table %s: %w", tableName, err)
 	}
 
@@ -950,6 +988,18 @@ func (q *Querier) prepareTableDataWithCacheAndDB(ctx context.Context, db *sql.DB
 	// 1. 获取缓冲区数据文件
 	bufferFiles := q.getBufferFilesForTable(tableName)
 
+	// 1.5 优化：直接从缓冲区加载数据到DuckDB（混合查询）
+	bufferRows, err := q.getBufferDataRows(tableName)
+	if err != nil {
+		log.Printf("WARN: failed to get buffer data rows for table %s: %v", tableName, err)
+	} else if len(bufferRows) > 0 {
+		log.Printf("Loading %d rows from buffer for table %s", len(bufferRows), tableName)
+		// 将缓冲区数据直接插入到临时表
+		if err := q.loadBufferDataToDB(db, tableName, bufferRows); err != nil {
+			log.Printf("WARN: failed to load buffer data to DB: %v", err)
+		}
+	}
+
 	// 2. 获取存储的数据文件（使用文件缓存）
 	storageFiles, err := q.getStorageFilesWithCache(ctx, tableName)
 	if err != nil {
@@ -958,12 +1008,77 @@ func (q *Querier) prepareTableDataWithCacheAndDB(ctx context.Context, db *sql.DB
 
 	// 3. 创建或更新DuckDB视图（使用传入的数据库连接）
 	allFiles := append(bufferFiles, storageFiles...)
-	if len(allFiles) == 0 {
-		log.Printf("No data files found for table: %s", tableName)
+	if len(allFiles) == 0 && len(bufferRows) == 0 {
+		log.Printf("No data files or buffer data found for table: %s", tableName)
 		return nil
 	}
 
 	return q.createTableViewWithDB(db, tableName, allFiles)
+}
+
+// getBufferDataRows 从缓冲区获取指定表的数据行（用于混合查询）
+func (q *Querier) getBufferDataRows(tableName string) ([]buffer.DataRow, error) {
+	if q.buffer == nil {
+		return []buffer.DataRow{}, nil
+	}
+
+	// 获取该表的所有缓冲区键
+	keys := q.buffer.GetTableKeys(tableName)
+	if len(keys) == 0 {
+		return []buffer.DataRow{}, nil
+	}
+
+	// 收集所有数据行
+	var allRows []buffer.DataRow
+	for _, key := range keys {
+		rows := q.buffer.GetBufferData(key)
+		allRows = append(allRows, rows...)
+	}
+
+	log.Printf("Retrieved %d buffer rows for table %s from %d keys", len(allRows), tableName, len(keys))
+	return allRows, nil
+}
+
+// loadBufferDataToDB 将缓冲区数据加载到DuckDB（用于混合查询）
+func (q *Querier) loadBufferDataToDB(db *sql.DB, tableName string, rows []buffer.DataRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// 创建临时内存表（如果不存在）
+	createTableSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s_buffer (
+			id VARCHAR,
+			timestamp BIGINT,
+			payload VARCHAR,
+			table_name VARCHAR
+		)
+	`, tableName)
+
+	if _, err := db.Exec(createTableSQL); err != nil {
+		return fmt.Errorf("failed to create buffer table: %w", err)
+	}
+
+	// 批量插入数据
+	insertSQL := fmt.Sprintf(`
+		INSERT INTO %s_buffer (id, timestamp, payload, table_name) VALUES (?, ?, ?, ?)
+	`, tableName)
+
+	stmt, err := db.Prepare(insertSQL)
+	if err != nil {
+		return fmt.Errorf("failed to prepare insert statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, row := range rows {
+		if _, err := stmt.Exec(row.ID, row.Timestamp, row.Payload, row.Table); err != nil {
+			log.Printf("WARN: failed to insert buffer row: %v", err)
+			continue
+		}
+	}
+
+	log.Printf("Loaded %d buffer rows into DuckDB table %s_buffer", len(rows), tableName)
+	return nil
 }
 
 // optimizeQueryWithIndex 使用索引系统优化查询

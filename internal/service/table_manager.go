@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -101,10 +102,10 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 		}
 	}
 
-	// 如果Redis连接池为空，跳过Redis操作
+	// 如果Redis连接池为空，在MinIO中创建元数据标记文件
 	if tm.redisPool == nil {
-		log.Printf("Redis disabled, skipping Redis operations for table creation: %s", tableName)
-		return nil
+		log.Printf("Redis disabled, creating metadata marker in MinIO for table: %s", tableName)
+		return tm.createTableMetadataInMinIO(ctx, tableName, tableConfig)
 	}
 
 	redisClient := tm.redisPool.GetClient()
@@ -227,10 +228,10 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 
 // ListTables 列出表
 func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*TableManagerInfo, error) {
-	// 如果Redis连接池为空，返回空列表
+	// 如果Redis连接池为空，使用MinIO发现表
 	if tm.redisPool == nil {
-		log.Printf("Redis disabled, returning empty table list")
-		return []*TableManagerInfo{}, nil
+		log.Printf("Redis disabled, discovering tables from MinIO")
+		return tm.listTablesFromMinIO(ctx, pattern)
 	}
 
 	redisClient := tm.redisPool.GetClient()
@@ -257,6 +258,105 @@ func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*Tabl
 		tables = append(tables, tableInfo)
 	}
 
+	return tables, nil
+}
+
+// createTableMetadataInMinIO 在MinIO中创建表元数据标记文件（单节点模式）
+func (tm *TableManager) createTableMetadataInMinIO(ctx context.Context, tableName string, tableConfig *config.TableConfig) error {
+	if tm.primaryMinio == nil {
+		return fmt.Errorf("MinIO client not initialized")
+	}
+
+	bucket := tm.cfg.MinIO.Bucket
+
+	// 创建元数据对象的路径: {table}/.metadata
+	metadataKey := fmt.Sprintf("%s/.metadata", tableName)
+
+	// 构建元数据JSON
+	metadata := map[string]interface{}{
+		"table_name": tableName,
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+		"status":     "active",
+		"config": map[string]interface{}{
+			"buffer_size":            tableConfig.BufferSize,
+			"flush_interval_seconds": int(tableConfig.FlushInterval.Seconds()),
+			"retention_days":         tableConfig.RetentionDays,
+			"backup_enabled":         tableConfig.BackupEnabled,
+			"properties":             tableConfig.Properties,
+		},
+	}
+
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	// 上传元数据文件到MinIO
+	_, err = tm.primaryMinio.PutObject(
+		ctx,
+		bucket,
+		metadataKey,
+		strings.NewReader(string(metadataJSON)),
+		int64(len(metadataJSON)),
+		minio.PutObjectOptions{
+			ContentType: "application/json",
+		},
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to create metadata marker in MinIO: %w", err)
+	}
+
+	log.Printf("Created metadata marker for table %s in MinIO: %s", tableName, metadataKey)
+	return nil
+}
+
+// listTablesFromMinIO 从MinIO发现表（单节点模式）
+func (tm *TableManager) listTablesFromMinIO(ctx context.Context, pattern string) ([]*TableManagerInfo, error) {
+	if tm.primaryMinio == nil {
+		return []*TableManagerInfo{}, nil
+	}
+
+	bucket := tm.cfg.MinIO.Bucket
+
+	// 列出bucket中的所有前缀（每个前缀代表一个表）
+	objectCh := tm.primaryMinio.ListObjects(ctx, bucket, minio.ListObjectsOptions{
+		Prefix:    "",
+		Recursive: false,
+	})
+
+	tableMap := make(map[string]bool)
+	for object := range objectCh {
+		if object.Err != nil {
+			log.Printf("WARN: error listing objects: %v", object.Err)
+			continue
+		}
+
+		// 提取表名（第一级目录）
+		parts := strings.Split(strings.TrimPrefix(object.Key, "/"), "/")
+		if len(parts) > 0 && parts[0] != "" {
+			tableName := parts[0]
+			if pattern == "" || tm.matchPattern(tableName, pattern) {
+				tableMap[tableName] = true
+			}
+		}
+	}
+
+	// 转换为TableManagerInfo列表
+	var tables []*TableManagerInfo
+	for tableName := range tableMap {
+		// 使用默认配置
+		defaultConfig := tm.cfg.Tables.DefaultConfig
+		tables = append(tables, &TableManagerInfo{
+			Name:      tableName,
+			Config:    &defaultConfig,
+			CreatedAt: "",
+			LastWrite: "",
+			Status:    "active",
+		})
+	}
+
+	log.Printf("Discovered %d tables from MinIO", len(tables))
 	return tables, nil
 }
 
@@ -289,13 +389,36 @@ func (tm *TableManager) DescribeTable(ctx context.Context, tableName string) (*T
 
 // TableExists 检查表是否存在
 func (tm *TableManager) TableExists(ctx context.Context, tableName string) (bool, error) {
-	// 如果Redis连接池为空，假设表不存在
+	// 如果Redis连接池为空，检查MinIO中是否存在该表的数据
 	if tm.redisPool == nil {
-		return false, nil
+		return tm.tableExistsInMinIO(ctx, tableName)
 	}
 
 	redisClient := tm.redisPool.GetClient()
 	return redisClient.SIsMember(ctx, "tables:list", tableName).Result()
+}
+
+// tableExistsInMinIO 检查MinIO中表是否存在（单节点模式）
+func (tm *TableManager) tableExistsInMinIO(ctx context.Context, tableName string) (bool, error) {
+	if tm.primaryMinio == nil {
+		return false, nil
+	}
+
+	bucket := tm.cfg.MinIO.Bucket
+	prefix := tableName + "/"
+
+	// 列出该前缀下的对象，如果有任何对象则表存在
+	objectCh := tm.primaryMinio.ListObjects(ctx, bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		MaxKeys:   1,
+		Recursive: false,
+	})
+
+	for range objectCh {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // EnsureTableExists 确保表存在，如果不存在则自动创建（如果启用了自动创建）

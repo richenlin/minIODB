@@ -1,0 +1,68 @@
+# 忽略不必要的文件，加快构建速度并避免上下文错误
+
+# Git相关
+.git
+.gitignore
+.gitattributes
+
+# IDE和编辑器
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 构建产物
+bin/
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 日志文件
+*.log
+logs/
+
+# 测试文件
+*_test.go
+testdata/
+coverage.txt
+*.out
+
+# 文档
+docs/
+*.md
+!README.md
+
+# 部署相关数据目录
+deploy/docker/data/
+deploy/docker/certs/
+deploy/ansible/
+deploy/k8s/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 依赖和缓存
+vendor/
+node_modules/
+.cache/
+
+# 环境变量文件
+.env
+.env.*
+*.env
+
+# 配置文件（生产环境）
+config.local.yaml
+config.prod.yaml
+
+# 示例和测试
+examples/
+test/
+

@@ -738,6 +738,22 @@ func (cb *ConcurrentBuffer) GetTableBufferKeys(tableName string) []string {
 	return cb.GetTableKeys(tableName)
 }
 
+// GetBufferData 获取指定键的缓冲区数据（用于混合查询）
+func (cb *ConcurrentBuffer) GetBufferData(key string) []DataRow {
+	cb.mutex.RLock()
+	defer cb.mutex.RUnlock()
+
+	rows, exists := cb.buffer[key]
+	if !exists {
+		return []DataRow{}
+	}
+
+	// 返回副本以避免并发问题
+	result := make([]DataRow, len(rows))
+	copy(result, rows)
+	return result
+}
+
 // AddDataPoint 添加数据点到缓冲区（兼容bufferManager接口）
 func (cb *ConcurrentBuffer) AddDataPoint(id string, data []byte, timestamp time.Time) {
 	row := DataRow{

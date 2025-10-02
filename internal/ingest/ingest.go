@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"fmt"
+	"strings"
 
 	olapv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/buffer"
@@ -61,4 +62,48 @@ func (i *Ingester) GetBufferStats() *buffer.ConcurrentBufferStats {
 		return nil
 	}
 	return i.buffer.GetStats()
+}
+
+// GetBufferedData 获取指定表的缓冲区数据（用于混合查询）
+func (i *Ingester) GetBufferedData(tableName string) []buffer.DataRow {
+	if i.buffer == nil {
+		return []buffer.DataRow{}
+	}
+
+	// 获取该表的所有缓冲区键
+	keys := i.buffer.GetTableKeys(tableName)
+
+	// 收集所有数据行
+	var allRows []buffer.DataRow
+	for _, key := range keys {
+		rows := i.buffer.GetBufferData(key)
+		allRows = append(allRows, rows...)
+	}
+
+	return allRows
+}
+
+// GetAllBufferedTables 获取缓冲区中所有表名
+func (i *Ingester) GetAllBufferedTables() []string {
+	if i.buffer == nil {
+		return []string{}
+	}
+
+	tableMap := make(map[string]bool)
+	keys := i.buffer.GetAllKeys()
+
+	for _, key := range keys {
+		// 键格式：table/id/date
+		parts := strings.Split(key, "/")
+		if len(parts) > 0 {
+			tableMap[parts[0]] = true
+		}
+	}
+
+	tables := make([]string, 0, len(tableMap))
+	for table := range tableMap {
+		tables = append(tables, table)
+	}
+
+	return tables
 }

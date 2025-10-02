@@ -662,7 +662,7 @@ func (c *Config) setDefaults() {
 		},
 		Pools: PoolsConfig{
 			Redis: EnhancedRedisConfig{
-				Enabled:         true,
+				Enabled:         false, // 默认禁用，支持单节点模式
 				Mode:            "standalone",
 				Addr:            "localhost:6379",
 				Password:        "",
@@ -712,7 +712,7 @@ func (c *Config) setDefaults() {
 
 	// Redis默认配置（保持向后兼容）
 	c.Redis = RedisConfig{
-		Enabled:      true,
+		Enabled:      false, // 默认禁用，支持单节点模式
 		Mode:         "standalone",
 		Addr:         "localhost:6379",
 		Password:     "",
@@ -1014,6 +1014,12 @@ func (c *Config) setDefaults() {
 
 // overrideWithEnv 使用环境变量覆盖配置
 func (c *Config) overrideWithEnv() {
+	// Redis启用标志环境变量覆盖
+	if redisEnabled := os.Getenv("REDIS_ENABLED"); redisEnabled != "" {
+		c.Redis.Enabled = (redisEnabled == "true" || redisEnabled == "1")
+		c.Network.Pools.Redis.Enabled = c.Redis.Enabled
+	}
+
 	// Redis配置环境变量覆盖 (同时更新新旧配置以确保兼容性)
 	if redisHost := os.Getenv("REDIS_HOST"); redisHost != "" {
 		redisPort := os.Getenv("REDIS_PORT")

@@ -33,10 +33,10 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN go build -o miniodb cmd/server/main.go
+RUN go build -o miniodb cmd/main.go
 
-# 使用Ubuntu作为运行时镜像
-FROM ubuntu:22.04
+# 使用Debian作为运行时镜像（与构建器保持一致的GLIBC版本）
+FROM debian:trixie-slim
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y \
@@ -80,4 +80,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8081/v1/health || exit 1
 
 # 设置启动命令
-ENTRYPOINT ["/app/miniodb"] 
+ENTRYPOINT ["/app/miniodb", "/app/config/config.yaml"] 
