@@ -113,7 +113,7 @@ func TestNewQueryCoordinator(t *testing.T) {
 		},
 	}
 
-	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg, nil)
 
 	assert.NotNil(t, qc)
 	assert.Equal(t, redisPool, qc.redisPool)
@@ -133,7 +133,7 @@ func TestQueryCoordinator_ExecuteDistributedQuery(t *testing.T) {
 			Mode:    "standalone",
 		},
 	}
-	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg, nil)
 
 	// 这个测试主要验证方法存在且可以调用
 	// 由于没有真实的分布式环境，可能会失败，但这是预期的
@@ -157,7 +157,7 @@ func TestQueryCoordinator_aggregateQueryResults_basic(t *testing.T) {
 		},
 	}
 
-	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg, nil)
 
 	// 测试结果聚合
 	results := []QueryResult{
@@ -181,7 +181,7 @@ func TestQueryCoordinator_GetQueryStats(t *testing.T) {
 			Mode:    "standalone",
 		},
 	}
-	qc := NewQueryCoordinator(redisPool, registry, &testLocalQuerier{}, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, &testLocalQuerier{}, cfg, nil)
 
 	stats := qc.GetQueryStats()
 	assert.NotNil(t, stats)

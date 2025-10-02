@@ -67,7 +67,7 @@ func createTestQueryCoordinator() *QueryCoordinator {
 	registry := &discovery.ServiceRegistry{}
 	localQuerier := &MockLocalQuerier{}
 
-	return NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	return NewQueryCoordinator(redisPool, registry, localQuerier, cfg, nil)
 }
 
 func TestQueryCoordinator_extractTablesFromSQL(t *testing.T) {
