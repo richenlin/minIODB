@@ -94,6 +94,11 @@ type ConcurrentBuffer struct {
 
 	// 内存优化器（新增）
 	memoryOptimizer *storage.MemoryOptimizer
+
+	// 自适应刷新策略
+	queryCount    int64 // 查询计数
+	lastQueryTime int64 // 最后查询时间（纳秒）
+	adaptiveFlush bool  // 是否启用自适应刷新
 }
 
 // ConcurrentBufferStats 并发缓冲区统计信息
@@ -126,16 +131,17 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 	}
 
 	cb := &ConcurrentBuffer{
-		config:       config,
-		appConfig:    appConfig,
-		poolManager:  poolManager,
-		backupBucket: backupBucket,
-		nodeID:       nodeID,
-		buffer:       make(map[string][]DataRow),
-		taskQueue:    make(chan *FlushTask, config.TaskQueueSize),
-		workers:      make([]*Worker, config.WorkerPoolSize),
-		shutdown:     make(chan struct{}),
-		stats:        &ConcurrentBufferStats{},
+		config:        config,
+		appConfig:     appConfig,
+		poolManager:   poolManager,
+		backupBucket:  backupBucket,
+		nodeID:        nodeID,
+		buffer:        make(map[string][]DataRow),
+		taskQueue:     make(chan *FlushTask, config.TaskQueueSize),
+		workers:       make([]*Worker, config.WorkerPoolSize),
+		shutdown:      make(chan struct{}),
+		stats:         &ConcurrentBufferStats{},
+		adaptiveFlush: true, // 启用自适应刷新
 	}
 
 	// 初始化内存优化器（如果配置启用）
@@ -743,6 +749,13 @@ func (cb *ConcurrentBuffer) GetBufferData(key string) []DataRow {
 	cb.mutex.RLock()
 	defer cb.mutex.RUnlock()
 
+	// 记录查询活动
+	atomic.AddInt64(&cb.queryCount, 1)
+	atomic.StoreInt64(&cb.lastQueryTime, time.Now().UnixNano())
+
+	// 触发自适应刷新检查
+	go cb.checkAdaptiveFlush()
+
 	rows, exists := cb.buffer[key]
 	if !exists {
 		return []DataRow{}
@@ -752,6 +765,48 @@ func (cb *ConcurrentBuffer) GetBufferData(key string) []DataRow {
 	result := make([]DataRow, len(rows))
 	copy(result, rows)
 	return result
+}
+
+// checkAdaptiveFlush 检查是否需要自适应刷新（优化3）
+func (cb *ConcurrentBuffer) checkAdaptiveFlush() {
+	if !cb.adaptiveFlush {
+		return
+	}
+
+	// 获取统计信息
+	pendingWrites := atomic.LoadInt64(&cb.stats.PendingWrites)
+	queryCount := atomic.LoadInt64(&cb.queryCount)
+
+	// 自适应策略：
+	// 1. 如果缓冲区有大量待写入数据（>80%）且查询频繁（>10次/分钟），触发刷新
+	// 2. 如果缓冲区接近满（>90%），立即刷新
+
+	bufferUtilization := float64(pendingWrites) / float64(cb.config.BufferSize)
+
+	// 计算查询频率（最近1分钟）
+	lastQueryTime := atomic.LoadInt64(&cb.lastQueryTime)
+	timeSinceLastQuery := time.Since(time.Unix(0, lastQueryTime))
+	queryFrequent := queryCount > 10 && timeSinceLastQuery < time.Minute
+
+	shouldFlush := false
+	reason := ""
+
+	if bufferUtilization > 0.9 {
+		shouldFlush = true
+		reason = "buffer nearly full (>90%)"
+	} else if bufferUtilization > 0.8 && queryFrequent {
+		shouldFlush = true
+		reason = "high buffer utilization (>80%) with frequent queries"
+	}
+
+	if shouldFlush {
+		log.Printf("Adaptive flush triggered: %s (utilization: %.2f%%, queries: %d)",
+			reason, bufferUtilization*100, queryCount)
+		cb.flushAllBuffers()
+
+		// 重置查询计数
+		atomic.StoreInt64(&cb.queryCount, 0)
+	}
 }
 
 // AddDataPoint 添加数据点到缓冲区（兼容bufferManager接口）

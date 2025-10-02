@@ -44,6 +44,13 @@ type QueryStats struct {
 	FileCacheHits  int64            `json:"file_cache_hits"`
 	TablesQueried  map[string]int64 `json:"tables_queried"`
 	QueryTypes     map[string]int64 `json:"query_types"`
+
+	// 混合查询性能指标
+	HybridQueries  int64         `json:"hybrid_queries"`   // 混合查询次数
+	BufferHits     int64         `json:"buffer_hits"`      // 缓冲区命中次数
+	BufferRows     int64         `json:"buffer_rows"`      // 缓冲区返回行数
+	AvgMergeTime   time.Duration `json:"avg_merge_time"`   // 平均合并延迟
+	TotalMergeTime time.Duration `json:"total_merge_time"` // 总合并时间
 }
 
 // Querier 增强的查询处理器
@@ -426,15 +433,18 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 			filePaths = append(filePaths, fmt.Sprintf("'%s'", file))
 		}
 
-		// 使用UNION ALL合并两个数据源
+		// 使用UNION去重合并两个数据源（防止数据重复）
 		viewSQL = fmt.Sprintf(`
 			CREATE VIEW %s AS 
-			SELECT id, timestamp, payload, "table" FROM read_parquet([%s])
-			UNION ALL
-			SELECT id, timestamp, payload, table_name AS "table" FROM %s_buffer
+			SELECT DISTINCT id, timestamp, payload, "table" 
+			FROM (
+				SELECT id, timestamp, payload, "table" FROM read_parquet([%s])
+				UNION ALL
+				SELECT id, timestamp, payload, table_name AS "table" FROM %s_buffer
+			) combined
 		`, tableName, strings.Join(filePaths, ", "), tableName)
 
-		log.Printf("Creating hybrid view for table %s (files + buffer)", tableName)
+		log.Printf("Creating hybrid view for table %s (files + buffer) with deduplication", tableName)
 	} else if len(files) > 0 {
 		// 只有Parquet文件
 		var filePaths []string
@@ -942,6 +952,13 @@ func (q *Querier) GetQueryStats() *QueryStats {
 		FileCacheHits:  q.queryStats.FileCacheHits,
 		TablesQueried:  make(map[string]int64),
 		QueryTypes:     make(map[string]int64),
+
+		// 混合查询性能指标
+		HybridQueries:  q.queryStats.HybridQueries,
+		BufferHits:     q.queryStats.BufferHits,
+		BufferRows:     q.queryStats.BufferRows,
+		AvgMergeTime:   q.queryStats.AvgMergeTime,
+		TotalMergeTime: q.queryStats.TotalMergeTime,
 	}
 
 	// 复制map
@@ -988,7 +1005,7 @@ func (q *Querier) prepareTableDataWithCacheAndDB(ctx context.Context, db *sql.DB
 	// 1. 获取缓冲区数据文件
 	bufferFiles := q.getBufferFilesForTable(tableName)
 
-	// 1.5 优化：直接从缓冲区加载数据到DuckDB（混合查询）
+	// 1.5 直接从缓冲区加载数据到DuckDB（混合查询）
 	bufferRows, err := q.getBufferDataRows(tableName)
 	if err != nil {
 		log.Printf("WARN: failed to get buffer data rows for table %s: %v", tableName, err)
@@ -1022,6 +1039,8 @@ func (q *Querier) getBufferDataRows(tableName string) ([]buffer.DataRow, error) 
 		return []buffer.DataRow{}, nil
 	}
 
+	startTime := time.Now()
+
 	// 获取该表的所有缓冲区键
 	keys := q.buffer.GetTableKeys(tableName)
 	if len(keys) == 0 {
@@ -1035,7 +1054,16 @@ func (q *Querier) getBufferDataRows(tableName string) ([]buffer.DataRow, error) 
 		allRows = append(allRows, rows...)
 	}
 
-	log.Printf("Retrieved %d buffer rows for table %s from %d keys", len(allRows), tableName, len(keys))
+	// 更新统计指标
+	if len(allRows) > 0 {
+		q.statsLock.Lock()
+		q.queryStats.BufferHits++
+		q.queryStats.BufferRows += int64(len(allRows))
+		q.statsLock.Unlock()
+	}
+
+	log.Printf("Retrieved %d buffer rows for table %s from %d keys in %v",
+		len(allRows), tableName, len(keys), time.Since(startTime))
 	return allRows, nil
 }
 
@@ -1044,6 +1072,8 @@ func (q *Querier) loadBufferDataToDB(db *sql.DB, tableName string, rows []buffer
 	if len(rows) == 0 {
 		return nil
 	}
+
+	startTime := time.Now()
 
 	// 创建临时内存表（如果不存在）
 	createTableSQL := fmt.Sprintf(`
@@ -1077,7 +1107,17 @@ func (q *Querier) loadBufferDataToDB(db *sql.DB, tableName string, rows []buffer
 		}
 	}
 
-	log.Printf("Loaded %d buffer rows into DuckDB table %s_buffer", len(rows), tableName)
+	// 记录合并延迟
+	mergeTime := time.Since(startTime)
+	q.statsLock.Lock()
+	q.queryStats.HybridQueries++
+	q.queryStats.TotalMergeTime += mergeTime
+	if q.queryStats.HybridQueries > 0 {
+		q.queryStats.AvgMergeTime = q.queryStats.TotalMergeTime / time.Duration(q.queryStats.HybridQueries)
+	}
+	q.statsLock.Unlock()
+
+	log.Printf("Loaded %d buffer rows into DuckDB table %s_buffer in %v", len(rows), tableName, mergeTime)
 	return nil
 }
 

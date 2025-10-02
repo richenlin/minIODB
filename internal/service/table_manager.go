@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"minIODB/internal/config"
@@ -22,6 +23,11 @@ type TableManager struct {
 	primaryMinio *minio.Client
 	backupMinio  *minio.Client
 	cfg          *config.Config
+
+	// 元数据缓存（减少MinIO访问）
+	metadataCache      map[string]*TableManagerInfo
+	metadataCacheMutex sync.RWMutex
+	metadataCacheTTL   time.Duration
 }
 
 // TableManagerInfo 表管理器表信息
@@ -45,10 +51,12 @@ type TableManagerStats struct {
 // NewTableManager 创建表管理器
 func NewTableManager(redisPool *pool.RedisPool, primaryMinio *minio.Client, backupMinio *minio.Client, cfg *config.Config) *TableManager {
 	return &TableManager{
-		redisPool:    redisPool,
-		primaryMinio: primaryMinio,
-		backupMinio:  backupMinio,
-		cfg:          cfg,
+		redisPool:        redisPool,
+		primaryMinio:     primaryMinio,
+		backupMinio:      backupMinio,
+		cfg:              cfg,
+		metadataCache:    make(map[string]*TableManagerInfo),
+		metadataCacheTTL: 5 * time.Minute, // 缓存5分钟
 	}
 }
 
@@ -311,6 +319,33 @@ func (tm *TableManager) createTableMetadataInMinIO(ctx context.Context, tableNam
 	return nil
 }
 
+// getCachedTableInfo 从缓存获取表信息（优化2）
+func (tm *TableManager) getCachedTableInfo(tableName string) (*TableManagerInfo, bool) {
+	tm.metadataCacheMutex.RLock()
+	defer tm.metadataCacheMutex.RUnlock()
+
+	info, exists := tm.metadataCache[tableName]
+	return info, exists
+}
+
+// setCachedTableInfo 设置表信息缓存（优化2）
+func (tm *TableManager) setCachedTableInfo(tableName string, info *TableManagerInfo) {
+	tm.metadataCacheMutex.Lock()
+	defer tm.metadataCacheMutex.Unlock()
+
+	tm.metadataCache[tableName] = info
+	log.Printf("Cached metadata for table %s", tableName)
+}
+
+// invalidateCachedTableInfo 使表缓存失效（优化2）
+func (tm *TableManager) invalidateCachedTableInfo(tableName string) {
+	tm.metadataCacheMutex.Lock()
+	defer tm.metadataCacheMutex.Unlock()
+
+	delete(tm.metadataCache, tableName)
+	log.Printf("Invalidated cache for table %s", tableName)
+}
+
 // listTablesFromMinIO 从MinIO发现表（单节点模式）
 func (tm *TableManager) listTablesFromMinIO(ctx context.Context, pattern string) ([]*TableManagerInfo, error) {
 	if tm.primaryMinio == nil {
@@ -345,18 +380,27 @@ func (tm *TableManager) listTablesFromMinIO(ctx context.Context, pattern string)
 	// 转换为TableManagerInfo列表
 	var tables []*TableManagerInfo
 	for tableName := range tableMap {
-		// 使用默认配置
+		// 先检查缓存
+		if cachedInfo, exists := tm.getCachedTableInfo(tableName); exists {
+			tables = append(tables, cachedInfo)
+			continue
+		}
+
+		// 缓存未命中，使用默认配置并缓存
 		defaultConfig := tm.cfg.Tables.DefaultConfig
-		tables = append(tables, &TableManagerInfo{
+		info := &TableManagerInfo{
 			Name:      tableName,
 			Config:    &defaultConfig,
 			CreatedAt: "",
 			LastWrite: "",
 			Status:    "active",
-		})
+		}
+
+		tm.setCachedTableInfo(tableName, info)
+		tables = append(tables, info)
 	}
 
-	log.Printf("Discovered %d tables from MinIO", len(tables))
+	log.Printf("Discovered %d tables from MinIO (%d from cache)", len(tables), len(tableMap)-len(tables))
 	return tables, nil
 }
 

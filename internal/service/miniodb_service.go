@@ -153,7 +153,7 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 		return nil, err
 	}
 
-	// 优化：不再自动刷新，而是在querier中实现混合查询（缓冲区+MinIO）
+	// 不再自动刷新，而是在querier中实现混合查询（缓冲区+MinIO）
 	// 这样可以避免每次查询都刷新，提高性能
 
 	// 处理向后兼容：将旧的"table"关键字替换为默认表名
