@@ -3,7 +3,6 @@ package rest
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,11 +11,13 @@ import (
 	miniodbv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/config"
 	"minIODB/internal/coordinator"
+	"minIODB/internal/logger"
 	"minIODB/internal/metadata"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -299,7 +300,7 @@ type ValidateMetadataBackupResponse struct {
 }
 
 // NewServer 创建新的REST服务器
-func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Server {
+func NewServer(ctx context.Context, miniodbService *service.MinIODBService, cfg *config.Config) *Server {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
@@ -317,7 +318,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 
 	authManager, err := security.NewAuthManager(authConfig)
 	if err != nil {
-		log.Printf("Warning: Failed to initialize auth manager: %v, security features will be limited", err)
+		logger.LogInfo(ctx, "Warning: Failed to initialize auth manager: %v, security features will be limited", zap.Error(err))
 	}
 
 	// 创建安全中间件
@@ -355,14 +356,13 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 		}
 
 		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
-		log.Printf("REST smart rate limiter initialized with %d tiers and %d path rules",
-			len(smartRateLimitConfig.Tiers), len(smartRateLimitConfig.PathLimits))
+		logger.LogInfo(ctx, "REST smart rate limiter initialized with %d tiers and %d path rules", zap.Int("tiers", len(smartRateLimitConfig.Tiers)), zap.Int("path_rules", len(smartRateLimitConfig.PathLimits)))
 	} else {
 		// 使用默认配置但禁用
 		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
 		defaultConfig.Enabled = false
 		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
-		log.Println("REST smart rate limiter disabled")
+		logger.LogInfo(ctx, "REST smart rate limiter disabled")
 	}
 
 	server := &Server{
@@ -374,16 +374,16 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 		smartRateLimiter:   smartRateLimiter,
 	}
 
-	server.setupMiddleware()
-	server.setupRoutes()
+	server.setupMiddleware(ctx)
+	server.setupRoutes(ctx)
 
-	log.Printf("REST server initialized with authentication mode: %s", cfg.Security.Mode)
+	logger.LogInfo(ctx, "REST server initialized with authentication mode: %s", zap.String("mode", cfg.Security.Mode))
 
 	return server
 }
 
 // setupMiddleware 设置中间件
-func (s *Server) setupMiddleware() {
+func (s *Server) setupMiddleware(ctx context.Context) {
 	// 基础中间件
 	s.router.Use(gin.Logger())
 	s.router.Use(gin.Recovery())
@@ -396,13 +396,13 @@ func (s *Server) setupMiddleware() {
 	// 智能限流中间件（优先使用）
 	if s.cfg.Security.SmartRateLimit.Enabled && s.smartRateLimiter != nil {
 		s.router.Use(s.smartRateLimiter.Middleware())
-		log.Println("Smart rate limiter middleware enabled for REST API")
+		logger.LogInfo(ctx, "Smart rate limiter middleware enabled for REST API")
 	} else if s.cfg.Security.RateLimit.Enabled {
 		// 传统限流中间件（向后兼容）
 		s.router.Use(s.securityMiddleware.RateLimiter(s.cfg.Security.RateLimit.RequestsPerMinute))
-		log.Println("Traditional rate limiter middleware enabled for REST API")
+		logger.LogInfo(ctx, "Traditional rate limiter middleware enabled for REST API")
 	} else {
-		log.Println("Rate limiting disabled for REST API")
+		logger.LogInfo(ctx, "Rate limiting disabled for REST API")
 	}
 }
 
@@ -418,7 +418,7 @@ func (s *Server) SetMetadataManager(manager *metadata.Manager) {
 }
 
 // setupRoutes 设置路由
-func (s *Server) setupRoutes() {
+func (s *Server) setupRoutes(ctx context.Context) {
 	api := s.router.Group("/v1")
 
 	// 认证路由 - 不需要JWT验证
@@ -435,11 +435,11 @@ func (s *Server) setupRoutes() {
 	// 需要JWT验证的路由
 	securedRoutes := api.Group("")
 	if s.authManager != nil && s.authManager.IsEnabled() {
-		log.Println("JWT authentication enabled for REST API")
+		logger.LogInfo(ctx, "JWT authentication enabled for REST API")
 		// 使用简单的JWT验证中间件
 		securedRoutes.Use(s.jwtAuthMiddleware())
 	} else {
-		log.Println("JWT authentication disabled for REST API")
+		logger.LogInfo(ctx, "JWT authentication disabled for REST API")
 	}
 
 	// 数据操作
@@ -806,7 +806,7 @@ func (s *Server) revokeToken(c *gin.Context) {
 		return
 	}
 
-	log.Printf("INFO: Token revoked via REST API: %s", req.Token[:10]+"...")
+	logger.LogInfo(c.Request.Context(), "Token revoked via REST API: %s", zap.String("token", req.Token[:10]+"..."))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -908,14 +908,15 @@ func (s *Server) flushTable(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Manual flush requested for table: %s", tableName)
+	ctx := c.Request.Context()
+	logger.LogInfo(ctx, "Manual flush requested for table: %s", zap.String("table", tableName))
 
 	// 调用服务层的刷新方法
-	resp, err := s.miniodbService.FlushTable(c.Request.Context(), &service.FlushTableRequest{
+	resp, err := s.miniodbService.FlushTable(ctx, &service.FlushTableRequest{
 		TableName: tableName,
 	})
 	if err != nil {
-		log.Printf("ERROR: Failed to flush table %s: %v", tableName, err)
+		logger.LogError(ctx, err, "Failed to flush table", zap.String("table", tableName))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error":   err.Error(),
@@ -923,7 +924,7 @@ func (s *Server) flushTable(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Table %s flushed successfully, records flushed: %d", tableName, resp.RecordsFlushed)
+	logger.LogInfo(ctx, "Table %s flushed successfully, records flushed: %d", zap.String("table", tableName), zap.Int("records_flushed", int(resp.RecordsFlushed)))
 	c.JSON(http.StatusOK, gin.H{
 		"success":         resp.Success,
 		"message":         resp.Message,
@@ -1051,7 +1052,7 @@ func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
 }
 
 // Start 启动服务器
-func (s *Server) Start(port string) error {
+func (s *Server) Start(ctx context.Context, port string) error {
 	// 获取REST网络配置
 	restNetworkConfig := getRESTNetworkConfig(s.cfg)
 
@@ -1066,12 +1067,8 @@ func (s *Server) Start(port string) error {
 		MaxHeaderBytes:    restNetworkConfig.MaxHeaderBytes,    // 1MB
 	}
 
-	log.Printf("REST server starting on %s with optimized network config", port)
-	log.Printf("REST server timeouts - Read: %v, Write: %v, Idle: %v, ReadHeader: %v",
-		restNetworkConfig.ReadTimeout,
-		restNetworkConfig.WriteTimeout,
-		restNetworkConfig.IdleTimeout,
-		restNetworkConfig.ReadHeaderTimeout)
+	logger.LogInfo(ctx, "REST server starting on %s with optimized network config", zap.String("port", port))
+	logger.LogInfo(ctx, "REST server timeouts - Read: %v, Write: %v, Idle: %v, ReadHeader: %v", zap.Duration("read_timeout", restNetworkConfig.ReadTimeout), zap.Duration("write_timeout", restNetworkConfig.WriteTimeout), zap.Duration("idle_timeout", restNetworkConfig.IdleTimeout), zap.Duration("read_header_timeout", restNetworkConfig.ReadHeaderTimeout))
 
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start REST server: %w", err)
@@ -1082,7 +1079,7 @@ func (s *Server) Start(port string) error {
 
 // Stop 停止服务器
 func (s *Server) Stop(ctx context.Context) error {
-	log.Println("Stopping REST server...")
+	logger.LogInfo(ctx, "Stopping REST server...")
 	if s.server != nil {
 		// 获取优雅关闭超时配置
 		restNetworkConfig := getRESTNetworkConfig(s.cfg)
@@ -1091,7 +1088,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(ctx, restNetworkConfig.ShutdownTimeout)
 		defer cancel()
 
-		log.Printf("REST server graceful shutdown timeout: %v", restNetworkConfig.ShutdownTimeout)
+		logger.LogInfo(ctx, "REST server graceful shutdown timeout: %v", zap.Duration("shutdown_timeout", restNetworkConfig.ShutdownTimeout))
 		return s.server.Shutdown(shutdownCtx)
 	}
 	return nil

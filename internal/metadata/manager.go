@@ -50,7 +50,7 @@ type Manager struct {
 }
 
 // NewManager 创建新的元数据管理器
-func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, config *Config) *Manager {
+func NewManager(ctx context.Context, storage storage.Storage, cacheStorage storage.CacheStorage, config *Config) *Manager {
 	logger := log.New(os.Stdout, "[MetadataManager] ", log.LstdFlags)
 
 	// 生成或获取节点ID
@@ -65,7 +65,7 @@ func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, conf
 	}
 
 	// 初始化备份管理器
-	manager.backupManager = NewBackupManager(storage, nodeID, config.Backup)
+	manager.backupManager = NewBackupManager(ctx, storage, nodeID, config.Backup)
 
 	// 初始化恢复管理器
 	manager.recoveryManager = NewRecoveryManager(storage, nodeID, config.Recovery.Bucket)
@@ -86,17 +86,17 @@ func generateNodeID() string {
 }
 
 // Start 启动元数据管理器
-func (m *Manager) Start() error {
+func (m *Manager) Start(ctx context.Context) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	m.logger.Println("Starting metadata manager")
 
 	// 执行启动时同步检查（不阻塞启动过程）
-	go m.performStartupSync()
+	go m.performStartupSync(ctx)
 
 	// 启动备份管理器
-	if err := m.backupManager.Start(); err != nil {
+	if err := m.backupManager.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start backup manager: %w", err)
 	}
 
@@ -105,8 +105,8 @@ func (m *Manager) Start() error {
 }
 
 // performStartupSync 执行启动时的同步检查（增强版）
-func (m *Manager) performStartupSync() {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // 增加超时时间
+func (m *Manager) performStartupSync(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second) // 增加超时时间
 	defer cancel()
 
 	m.logger.Printf("Starting enhanced startup synchronization check")
@@ -116,11 +116,11 @@ func (m *Manager) performStartupSync() {
 	lockAcquired, err := m.acquireDistributedLock(ctx, lockKey, 30*time.Second)
 	if err != nil {
 		m.logger.Printf("Failed to acquire sync lock: %v", err)
-		return
+		return err
 	}
 	if !lockAcquired {
 		m.logger.Printf("Another node is performing sync, skipping")
-		return
+		return err
 	}
 	defer m.releaseDistributedLock(ctx, lockKey)
 
@@ -128,7 +128,7 @@ func (m *Manager) performStartupSync() {
 	versionInfo, err := m.getEnhancedVersionInfo(ctx)
 	if err != nil {
 		m.logger.Printf("Failed to get version info: %v", err)
-		return
+		return err
 	}
 
 	m.logger.Printf("Version info - Redis: %s, Latest Backup: %s, Status: %s",
@@ -169,6 +169,7 @@ func (m *Manager) performStartupSync() {
 	}
 
 	m.logger.Printf("Enhanced startup synchronization check completed")
+	return nil
 }
 
 // VersionInfo 增强的版本信息
@@ -576,7 +577,7 @@ func (m *Manager) performConsistencyCheck(ctx context.Context, latestBackup *Bac
 // getCurrentMetadata 获取当前元数据
 func (m *Manager) getCurrentMetadata(ctx context.Context) ([]*MetadataEntry, error) {
 	// 调用备份管理器的公共方法来收集元数据
-	return m.backupManager.CollectMetadata()
+	return m.backupManager.CollectMetadata(ctx)
 }
 
 // compareMetadata 比较两组元数据
@@ -624,14 +625,14 @@ func (m *Manager) compareValues(v1, v2 interface{}) bool {
 }
 
 // Stop 停止元数据管理器
-func (m *Manager) Stop() error {
+func (m *Manager) Stop(ctx context.Context) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	m.logger.Println("Stopping metadata manager")
 
 	// 停止备份管理器
-	if err := m.backupManager.Stop(); err != nil {
+	if err := m.backupManager.Stop(ctx); err != nil {
 		m.logger.Printf("Error stopping backup manager: %v", err)
 	}
 
@@ -645,7 +646,7 @@ func (m *Manager) ManualBackup(ctx context.Context) error {
 	defer m.mutex.RUnlock()
 
 	m.logger.Println("Starting manual backup")
-	return m.backupManager.performBackup()
+	return m.backupManager.performBackup(ctx)
 }
 
 // ListBackups 列出备份
@@ -767,7 +768,7 @@ func (m *Manager) TriggerBackup(ctx context.Context) error {
 	}
 
 	m.logger.Println("Triggering manual backup")
-	return m.backupManager.performBackup()
+	return m.backupManager.performBackup(ctx)
 }
 
 // GetStatus 获取管理器状态
@@ -844,7 +845,7 @@ func (m *Manager) performSafeBackup(ctx context.Context, versionInfo *VersionInf
 	}
 
 	// 执行备份
-	if err := m.backupManager.performBackup(); err != nil {
+	if err := m.backupManager.performBackup(ctx); err != nil {
 		return fmt.Errorf("backup execution failed: %w", err)
 	}
 

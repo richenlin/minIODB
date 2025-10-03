@@ -3,12 +3,14 @@ package storage
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
+
+	"go.uber.org/zap"
 )
 
 // StorageEngine 存储引擎优化器 - 第四阶段集成器
@@ -210,7 +212,7 @@ type Threshold struct {
 }
 
 // NewStorageEngine 创建存储引擎优化器
-func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *StorageEngine {
+func NewStorageEngine(ctx context.Context, appConfig *config.Config, redisPool *pool.RedisPool) *StorageEngine {
 	// 创建默认配置
 	engineConfig := NewDefaultEngineConfig()
 
@@ -225,8 +227,8 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 	optimizer := &StorageEngine{
 		parquetOptimizer: NewParquet(),
 		shardOptimizer:   shardOptimizer,
-		indexSystem:      NewIndexSystem(redisPool),
-		memoryOptimizer: NewMemoryOptimizer(&MemoryConfig{
+		indexSystem:      NewIndexSystem(ctx, redisPool),
+		memoryOptimizer: NewMemoryOptimizer(ctx, &MemoryConfig{
 			MaxMemoryUsage:  engineConfig.MemoryConfig.MaxMemoryUsage,
 			PoolSizes:       engineConfig.MemoryConfig.MemoryPoolSizes,
 			GCInterval:      engineConfig.MemoryConfig.GCInterval,
@@ -245,21 +247,21 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 
 	// 启动自动优化（如果启用）
 	if engineConfig.AutoOptimization {
-		optimizer.StartAutoOptimization()
+		optimizer.StartAutoOptimization(ctx)
 	}
 
 	// 启动性能监控（如果启用）
 	if engineConfig.EnableMonitoring {
-		optimizer.monitor.Start()
+		optimizer.monitor.Start(ctx)
 	}
 
 	// 启动重平衡监控（如果启用）
 	if engineConfig.AutoOptimization {
-		optimizer.rebalanceMonitor.Start(context.Background())
-		log.Println("Rebalance monitor started")
+		optimizer.rebalanceMonitor.Start(ctx)
+		logger.LogInfo(ctx, "Rebalance monitor started")
 	}
 
-	log.Println("Storage Engine Optimizer initialized successfully")
+	logger.LogInfo(ctx, "Storage Engine Optimizer initialized successfully")
 	return optimizer
 }
 
@@ -332,7 +334,7 @@ func NewPerformanceMonitor() *PerformanceMonitor {
 }
 
 // StartAutoOptimization 启动自动优化
-func (seo *StorageEngine) StartAutoOptimization() error {
+func (seo *StorageEngine) StartAutoOptimization(ctx context.Context) error {
 	seo.mutex.Lock()
 	defer seo.mutex.Unlock()
 
@@ -343,14 +345,14 @@ func (seo *StorageEngine) StartAutoOptimization() error {
 	seo.isRunning = true
 
 	// 启动调度器
-	seo.scheduler.Start(seo)
+	seo.scheduler.Start(ctx, seo)
 
-	log.Printf("Auto optimization started with interval: %v", seo.config.OptimizeInterval)
+	logger.LogInfo(ctx, "Auto optimization started with interval: %v", zap.Duration("interval", seo.config.OptimizeInterval))
 	return nil
 }
 
 // StopAutoOptimization 停止自动优化
-func (seo *StorageEngine) StopAutoOptimization() error {
+func (seo *StorageEngine) StopAutoOptimization(ctx context.Context) error {
 	seo.mutex.Lock()
 	defer seo.mutex.Unlock()
 
@@ -359,40 +361,40 @@ func (seo *StorageEngine) StopAutoOptimization() error {
 	}
 
 	seo.isRunning = false
-	seo.scheduler.Stop()
+	seo.scheduler.Stop(ctx)
 
-	log.Println("Auto optimization stopped")
+	logger.LogInfo(ctx, "Auto optimization stopped")
 	return nil
 }
 
 // Stop 停止存储引擎（新增）
-func (seo *StorageEngine) Stop() error {
-	log.Println("Stopping storage engine optimizer...")
+func (seo *StorageEngine) Stop(ctx context.Context) error {
+	logger.LogInfo(ctx, "Stopping storage engine optimizer...")
 
 	// 停止自动优化
 	if seo.isRunning {
-		if err := seo.StopAutoOptimization(); err != nil {
-			log.Printf("WARN: failed to stop auto optimization: %v", err)
+		if err := seo.StopAutoOptimization(ctx); err != nil {
+			logger.LogInfo(ctx, "WARN: failed to stop auto optimization: %v", zap.Error(err))
 		}
 	}
 
 	// 停止性能监控
 	if seo.monitor != nil {
-		seo.monitor.Stop()
+		seo.monitor.Stop(ctx)
 	}
 
 	// 停止重平衡监控
 	if seo.rebalanceMonitor != nil {
-		seo.rebalanceMonitor.Stop()
+		seo.rebalanceMonitor.Stop(ctx)
 	}
 
-	log.Println("Storage engine optimizer stopped successfully")
+	logger.LogInfo(ctx, "Storage engine optimizer stopped successfully")
 	return nil
 }
 
 // OptimizeStorage 执行存储优化
 func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *OptimizationOptions) (*OptimizationResult, error) {
-	log.Println("Starting comprehensive storage optimization...")
+	logger.LogInfo(ctx, "Starting comprehensive storage optimization...")
 
 	startTime := time.Now()
 	result := &OptimizationResult{
@@ -403,41 +405,41 @@ func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *Optimiza
 	// 1. Parquet存储优化
 	if options == nil || options.EnableParquetOptimization {
 		if err := seo.optimizeParquetStorage(ctx, result); err != nil {
-			log.Printf("Parquet optimization failed: %v", err)
+			logger.LogError(ctx, err, "Parquet optimization failed")
 		} else {
-			log.Println("✅ Parquet storage optimization completed")
+			logger.LogInfo(ctx, "✅ Parquet storage optimization completed")
 		}
 	}
 
 	// 2. 智能分片优化
 	if options == nil || options.EnableShardOptimization {
 		if err := seo.optimizeSharding(ctx, result); err != nil {
-			log.Printf("Shard optimization failed: %v", err)
+			logger.LogError(ctx, err, "Shard optimization failed")
 		} else {
-			log.Println("✅ Sharding optimization completed")
+			logger.LogInfo(ctx, "✅ Sharding optimization completed")
 		}
 	}
 
 	// 3. 索引系统优化
 	if options == nil || options.EnableIndexOptimization {
 		if err := seo.optimizeIndexes(ctx, result); err != nil {
-			log.Printf("Index optimization failed: %v", err)
+			logger.LogError(ctx, err, "Index optimization failed")
 		} else {
-			log.Println("✅ Index optimization completed")
+			logger.LogInfo(ctx, "✅ Index optimization completed")
 		}
 	}
 
 	// 4. 内存优化
 	if options == nil || options.EnableMemoryOptimization {
 		if err := seo.optimizeMemory(ctx, result); err != nil {
-			log.Printf("Memory optimization failed: %v", err)
+			logger.LogError(ctx, err, "Memory optimization failed")
 		} else {
-			log.Println("✅ Memory optimization completed")
+			logger.LogInfo(ctx, "✅ Memory optimization completed")
 		}
 	}
 
 	// 更新统计信息
-	seo.updateEngineStats(result)
+	seo.updateEngineStats(ctx, result)
 
 	duration := time.Since(startTime)
 	result.Success = true
@@ -448,10 +450,10 @@ func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *Optimiza
 	seo.stats.OptimizationTime = duration
 	seo.stats.mutex.Unlock()
 
-	log.Printf("🎉 Storage optimization completed successfully in %v", duration)
-	log.Printf("📈 Performance improvement: %.2f%%", result.PerformanceImprovement)
-	log.Printf("💾 Storage savings: %.2f MB", result.StorageSavings/(1024*1024))
-	log.Printf("🧠 Memory savings: %.2f MB", result.MemorySavings/(1024*1024))
+	logger.LogInfo(ctx, "🎉 Storage optimization completed successfully in %v", zap.Duration("duration", duration))
+	logger.LogInfo(ctx, "📈 Performance improvement: %.2f%%", zap.Float64("performance_improvement", result.PerformanceImprovement))
+	logger.LogInfo(ctx, "💾 Storage savings: %.2f MB", zap.Float64("storage_savings", result.StorageSavings/(1024*1024)))
+	logger.LogInfo(ctx, "🧠 Memory savings: %.2f MB", zap.Float64("memory_savings", result.MemorySavings/(1024*1024)))
 
 	return result, nil
 }
@@ -470,11 +472,11 @@ type OptimizationOptions struct {
 func (seo *StorageEngine) optimizeParquetStorage(ctx context.Context, result *OptimizationResult) error {
 	// 分析压缩性能
 	sampleData := make([]byte, 1024*1024) // 1MB样本数据
-	compressionResults := seo.parquetOptimizer.AnalyzeCompressionPerformance(sampleData)
+	compressionResults := seo.parquetOptimizer.AnalyzeCompressionPerformance(ctx, sampleData)
 
 	// 选择最优压缩策略
-	optimalStrategy := seo.parquetOptimizer.GetOptimalCompressionStrategy("analytical", 1.0)
-	log.Printf("Selected optimal compression strategy: %s", optimalStrategy.Name)
+	optimalStrategy := seo.parquetOptimizer.GetOptimalCompressionStrategy(ctx, "analytical", 1.0)
+	logger.LogInfo(ctx, "Selected optimal compression strategy: %s", zap.String("optimal_strategy", optimalStrategy.Name))
 
 	// 计算压缩收益
 	if bestResult, exists := compressionResults[optimalStrategy.Name]; exists {
@@ -492,10 +494,10 @@ func (seo *StorageEngine) optimizeParquetStorage(ctx context.Context, result *Op
 // optimizeSharding 优化分片
 func (seo *StorageEngine) optimizeSharding(ctx context.Context, result *OptimizationResult) error {
 	// 触发数据重平衡
-	seo.shardOptimizer.rebalancer.TriggerRebalance("performance optimization")
+	seo.shardOptimizer.rebalancer.TriggerRebalance(ctx, "performance optimization")
 
 	// 更新统计信息
-	seo.shardOptimizer.UpdateStats()
+	seo.shardOptimizer.UpdateStats(ctx)
 	shardStats := seo.shardOptimizer.GetStats()
 
 	result.ShardsRebalanced = int(shardStats.TotalShards)
@@ -560,7 +562,7 @@ func (seo *StorageEngine) optimizeMemory(ctx context.Context, result *Optimizati
 }
 
 // updateEngineStats 更新引擎统计
-func (seo *StorageEngine) updateEngineStats(result *OptimizationResult) {
+func (seo *StorageEngine) updateEngineStats(ctx context.Context, result *OptimizationResult) {
 	seo.stats.mutex.Lock()
 	defer seo.stats.mutex.Unlock()
 
@@ -571,7 +573,7 @@ func (seo *StorageEngine) updateEngineStats(result *OptimizationResult) {
 	seo.stats.CacheHitRate = result.Metrics["cache_hit_rate"]
 
 	// 更新组件统计
-	seo.stats.ParquetStats = seo.parquetOptimizer.GetStats()
+	seo.stats.ParquetStats = seo.parquetOptimizer.GetStats(ctx)
 	seo.stats.ShardStats = seo.shardOptimizer.GetStats()
 	seo.stats.IndexStats = seo.indexSystem.GetStats()
 	seo.stats.MemoryStats = seo.memoryOptimizer.GetStats()
@@ -628,7 +630,7 @@ func (seo *StorageEngine) initStats() {
 }
 
 // GetEngineStats 获取引擎统计信息
-func (seo *StorageEngine) GetEngineStats() *EngineStats {
+func (seo *StorageEngine) GetEngineStats(ctx context.Context) *EngineStats {
 	seo.stats.mutex.RLock()
 	defer seo.stats.mutex.RUnlock()
 
@@ -637,7 +639,7 @@ func (seo *StorageEngine) GetEngineStats() *EngineStats {
 
 	// 复制组件统计（需要深拷贝）
 	if seo.stats.ParquetStats != nil {
-		statsCopy.ParquetStats = seo.parquetOptimizer.GetStats()
+		statsCopy.ParquetStats = seo.parquetOptimizer.GetStats(ctx)
 	}
 	if seo.stats.ShardStats != nil {
 		statsCopy.ShardStats = seo.shardOptimizer.GetStats()
@@ -653,7 +655,7 @@ func (seo *StorageEngine) GetEngineStats() *EngineStats {
 }
 
 // Start 启动调度器
-func (os *OptimizationScheduler) Start(engine *StorageEngine) {
+func (os *OptimizationScheduler) Start(ctx context.Context, engine *StorageEngine) {
 	os.mutex.Lock()
 	defer os.mutex.Unlock()
 
@@ -672,18 +674,18 @@ func (os *OptimizationScheduler) Start(engine *StorageEngine) {
 			running:  true,
 		}
 		os.workers[i] = worker
-		go worker.run(os.taskQueue)
+		go worker.run(ctx, os.taskQueue)
 	}
 
 	// 启动调度定时器
 	os.scheduler = time.NewTicker(engine.config.OptimizeInterval)
-	go os.scheduleLoop(engine)
+	go os.scheduleLoop(ctx, engine)
 
-	log.Printf("Optimization scheduler started with %d workers", os.workerCount)
+	logger.LogInfo(ctx, "Optimization scheduler started with %d workers", zap.Int("worker_count", os.workerCount))
 }
 
 // Stop 停止调度器
-func (os *OptimizationScheduler) Stop() {
+func (os *OptimizationScheduler) Stop(ctx context.Context) {
 	os.mutex.Lock()
 	defer os.mutex.Unlock()
 
@@ -705,11 +707,11 @@ func (os *OptimizationScheduler) Stop() {
 		}
 	}
 
-	log.Println("Optimization scheduler stopped")
+	logger.LogInfo(ctx, "Optimization scheduler stopped")
 }
 
 // scheduleLoop 调度循环
-func (os *OptimizationScheduler) scheduleLoop(engine *StorageEngine) {
+func (os *OptimizationScheduler) scheduleLoop(ctx context.Context, engine *StorageEngine) {
 	for range os.scheduler.C {
 		if !os.isRunning {
 			break
@@ -731,39 +733,38 @@ func (os *OptimizationScheduler) scheduleLoop(engine *StorageEngine) {
 
 		select {
 		case os.taskQueue <- task:
-			log.Printf("Scheduled auto optimization task: %s", task.ID)
+			logger.LogInfo(ctx, "Scheduled auto optimization task: %s", zap.String("id", task.ID))
 		default:
-			log.Println("Task queue full, skipping auto optimization")
+			logger.LogInfo(ctx, "Task queue full, skipping auto optimization")
 		}
 	}
 }
 
 // run 工作器运行
-func (ow *OptimizationWorker) run(taskQueue <-chan *OptimizationTask) {
-	log.Printf("Optimization worker %d started", ow.id)
+func (ow *OptimizationWorker) run(ctx context.Context, taskQueue <-chan *OptimizationTask) {
+	logger.LogInfo(ctx, "Optimization worker %d started", zap.Int("id", ow.id))
 
 	for {
 		select {
 		case task := <-taskQueue:
 			if task != nil {
-				ow.processTask(task)
+				ow.processTask(ctx, task)
 			}
 		case <-ow.stopChan:
 			ow.running = false
-			log.Printf("Optimization worker %d stopped", ow.id)
+			logger.LogInfo(ctx, "Optimization worker %d stopped", zap.Int("id", ow.id))
 			return
 		}
 	}
 }
 
 // processTask 处理优化任务
-func (ow *OptimizationWorker) processTask(task *OptimizationTask) {
-	log.Printf("Worker %d processing task: %s", ow.id, task.ID)
+func (ow *OptimizationWorker) processTask(ctx context.Context, task *OptimizationTask) {
+	logger.LogInfo(ctx, "Worker %d processing task: %s", zap.Int("id", ow.id), zap.String("id", task.ID))
 
 	task.Status = "running"
 	task.StartTime = time.Now()
 
-	ctx := context.Background()
 	options := &OptimizationOptions{
 		EnableParquetOptimization: true,
 		EnableShardOptimization:   true,
@@ -780,17 +781,17 @@ func (ow *OptimizationWorker) processTask(task *OptimizationTask) {
 	if err != nil {
 		task.Status = "failed"
 		task.Error = err.Error()
-		log.Printf("Worker %d task failed: %s - %v", ow.id, task.ID, err)
+		logger.LogInfo(ctx, "Worker %d task failed: %s - %v", zap.Int("id", ow.id), zap.String("id", task.ID), zap.Error(err))
 	} else {
 		task.Status = "completed"
 		task.Result = result
 		task.Progress = 1.0
-		log.Printf("Worker %d task completed: %s in %v", ow.id, task.ID, task.Duration)
+		logger.LogInfo(ctx, "Worker %d task completed: %s in %v", zap.Int("id", ow.id), zap.String("id", task.ID), zap.Duration("duration", task.Duration))
 	}
 }
 
 // Start 启动性能监控
-func (pm *PerformanceMonitor) Start() {
+func (pm *PerformanceMonitor) Start(ctx context.Context) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
@@ -801,11 +802,11 @@ func (pm *PerformanceMonitor) Start() {
 	pm.isMonitoring = true
 	go pm.monitorLoop()
 
-	log.Printf("Performance monitor started with interval: %v", pm.monitorInterval)
+	logger.LogInfo(ctx, "Performance monitor started with interval: %v", zap.Duration("interval", pm.monitorInterval))
 }
 
 // Stop 停止性能监控
-func (pm *PerformanceMonitor) Stop() {
+func (pm *PerformanceMonitor) Stop(ctx context.Context) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
@@ -816,7 +817,7 @@ func (pm *PerformanceMonitor) Stop() {
 	pm.isMonitoring = false
 	close(pm.stopChan)
 
-	log.Println("Performance monitor stopped")
+	logger.LogInfo(ctx, "Performance monitor stopped")
 }
 
 // monitorLoop 监控循环

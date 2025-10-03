@@ -1,0 +1,38 @@
+# MinIODB 简化配置文件
+# 这是一个最小化的配置文件，仅包含必需的配置项
+# 其他配置项将使用合理的默认值
+
+# 服务器配置
+server:
+  grpc_port: ":8080"      # gRPC服务端口
+  rest_port: ":8081"      # REST API端口
+  node_id: "miniodb-1"    # 节点ID
+
+# Redis配置（可选）
+# 设置 enabled: false 可以启用单节点模式（无需Redis）
+# 设置 enabled: true 可以启用分布式模式（需要Redis）
+redis:
+  enabled: false          # 默认禁用Redis，使用单节点模式
+  addr: "localhost:6379"  # Redis地址（启用时需要）
+  password: ""            # Redis密码（如果有）
+
+# MinIO配置（必需）
+minio:
+  endpoint: "localhost:9000"        # MinIO服务地址
+  access_key_id: "minioadmin"       # MinIO访问密钥
+  secret_access_key: "minioadmin"   # MinIO密钥
+  use_ssl: false                    # 是否使用SSL
+  bucket: "miniodb-data"            # 数据存储桶名称
+
+# 日志配置
+log:
+  level: "info"           # 日志级别: debug, info, warn, error
+  format: "json"          # 日志格式: json, text
+  output: "stdout"        # 日志输出: stdout, file, both
+
+# 监控配置（可选）
+monitoring:
+  enabled: true           # 是否启用监控
+  port: ":8082"          # 监控端口
+  path: "/metrics"       # Prometheus指标路径
+

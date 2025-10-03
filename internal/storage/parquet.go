@@ -1,46 +1,48 @@
 package storage
 
 import (
-	"log"
+	"context"
+	"minIODB/internal/logger"
 	"sync"
 	"time"
 
 	"github.com/xitongsys/parquet-go/parquet"
+	"go.uber.org/zap"
 )
 
 // Parquetet存储优化器
 type Parquet struct {
 	compressionStrategies map[string]CompressionStrategy
 	partitionStrategies   map[string]PartitionStrategy
-	metadataIndex        *ParquetMetadataIndex
-	stats                *ParquetStats
-	mutex                sync.RWMutex
+	metadataIndex         *ParquetMetadataIndex
+	stats                 *ParquetStats
+	mutex                 sync.RWMutex
 }
 
 // CompressionStrategy 压缩策略
 type CompressionStrategy struct {
-	Name        string  `json:"name"`
+	Name        string                   `json:"name"`
 	Codec       parquet.CompressionCodec `json:"codec"`
-	Description string  `json:"description"`
-	Ratio       float64 `json:"compression_ratio"`  // 压缩比
-	Speed       float64 `json:"compression_speed"`  // 压缩速度 (MB/s)
-	CPUCost     float64 `json:"cpu_cost"`          // CPU成本 (1-10)
-	UseCase     string  `json:"use_case"`          // 适用场景
+	Description string                   `json:"description"`
+	Ratio       float64                  `json:"compression_ratio"` // 压缩比
+	Speed       float64                  `json:"compression_speed"` // 压缩速度 (MB/s)
+	CPUCost     float64                  `json:"cpu_cost"`          // CPU成本 (1-10)
+	UseCase     string                   `json:"use_case"`          // 适用场景
 }
 
 // PartitionStrategy 分区策略
 type PartitionStrategy struct {
-	Name            string                 `json:"name"`
-	RowGroupSize    int64                  `json:"row_group_size"`
-	PageSize        int64                  `json:"page_size"`
-	DictPageSize    int64                  `json:"dict_page_size"`
-	EnableDict      bool                   `json:"enable_dictionary"`
-	EnableStats     bool                   `json:"enable_statistics"`
-	Predicates      []string               `json:"predicates"`        // 谓词下推支持
-	SortColumns     []string               `json:"sort_columns"`      // 排序列
-	BloomColumns    []string               `json:"bloom_columns"`     // BloomFilter列
-	MinMaxColumns   []string               `json:"minmax_columns"`    // MinMax索引列
-	OptimizationHint string                `json:"optimization_hint"` // 优化提示
+	Name             string   `json:"name"`
+	RowGroupSize     int64    `json:"row_group_size"`
+	PageSize         int64    `json:"page_size"`
+	DictPageSize     int64    `json:"dict_page_size"`
+	EnableDict       bool     `json:"enable_dictionary"`
+	EnableStats      bool     `json:"enable_statistics"`
+	Predicates       []string `json:"predicates"`        // 谓词下推支持
+	SortColumns      []string `json:"sort_columns"`      // 排序列
+	BloomColumns     []string `json:"bloom_columns"`     // BloomFilter列
+	MinMaxColumns    []string `json:"minmax_columns"`    // MinMax索引列
+	OptimizationHint string   `json:"optimization_hint"` // 优化提示
 }
 
 // ParquetMetadataIndex Parquet元数据索引
@@ -54,92 +56,92 @@ type ParquetMetadataIndex struct {
 
 // FileMetadata 文件元数据
 type FileMetadata struct {
-	FilePath        string            `json:"file_path"`
-	FileSize        int64             `json:"file_size"`
-	RowCount        int64             `json:"row_count"`
-	RowGroupCount   int               `json:"row_group_count"`
-	CompressionType string            `json:"compression_type"`
-	CreatedAt       time.Time         `json:"created_at"`
-	Schema          string            `json:"schema"`
+	FilePath        string                 `json:"file_path"`
+	FileSize        int64                  `json:"file_size"`
+	RowCount        int64                  `json:"row_count"`
+	RowGroupCount   int                    `json:"row_group_count"`
+	CompressionType string                 `json:"compression_type"`
+	CreatedAt       time.Time              `json:"created_at"`
+	Schema          string                 `json:"schema"`
 	MinValues       map[string]interface{} `json:"min_values"`
 	MaxValues       map[string]interface{} `json:"max_values"`
-	NullCounts      map[string]int64  `json:"null_counts"`
-	BloomFilters    map[string]bool   `json:"bloom_filters"`
-	SortOrder       []string          `json:"sort_order"`
-	Partitions      map[string]string `json:"partitions"`
+	NullCounts      map[string]int64       `json:"null_counts"`
+	BloomFilters    map[string]bool        `json:"bloom_filters"`
+	SortOrder       []string               `json:"sort_order"`
+	Partitions      map[string]string      `json:"partitions"`
 }
 
 // ColumnMetadata 列元数据
 type ColumnMetadata struct {
-	ColumnName      string      `json:"column_name"`
-	DataType        string      `json:"data_type"`
-	Encoding        string      `json:"encoding"`
-	CompressionType string      `json:"compression_type"`
-	DistinctCount   int64       `json:"distinct_count"`
-	MinValue        interface{} `json:"min_value"`
-	MaxValue        interface{} `json:"max_value"`
-	NullCount       int64       `json:"null_count"`
-	TotalSize       int64       `json:"total_size"`
-	UncompressedSize int64      `json:"uncompressed_size"`
-	HasBloomFilter  bool        `json:"has_bloom_filter"`
-	HasDictionary   bool        `json:"has_dictionary"`
-	Cardinality     float64     `json:"cardinality"`     // 基数
-	Selectivity     float64     `json:"selectivity"`     // 选择性
-	IndexType       string      `json:"index_type"`      // 索引类型
+	ColumnName       string      `json:"column_name"`
+	DataType         string      `json:"data_type"`
+	Encoding         string      `json:"encoding"`
+	CompressionType  string      `json:"compression_type"`
+	DistinctCount    int64       `json:"distinct_count"`
+	MinValue         interface{} `json:"min_value"`
+	MaxValue         interface{} `json:"max_value"`
+	NullCount        int64       `json:"null_count"`
+	TotalSize        int64       `json:"total_size"`
+	UncompressedSize int64       `json:"uncompressed_size"`
+	HasBloomFilter   bool        `json:"has_bloom_filter"`
+	HasDictionary    bool        `json:"has_dictionary"`
+	Cardinality      float64     `json:"cardinality"` // 基数
+	Selectivity      float64     `json:"selectivity"` // 选择性
+	IndexType        string      `json:"index_type"`  // 索引类型
 }
 
 // SchemaMetadata 模式元数据
 type SchemaMetadata struct {
-	SchemaName    string             `json:"schema_name"`
-	Version       string             `json:"version"`
-	ColumnCount   int                `json:"column_count"`
-	PrimaryKeys   []string           `json:"primary_keys"`
-	PartitionKeys []string           `json:"partition_keys"`
-	SortKeys      []string           `json:"sort_keys"`
-	Columns       []*ColumnMetadata  `json:"columns"`
+	SchemaName    string                   `json:"schema_name"`
+	Version       string                   `json:"version"`
+	ColumnCount   int                      `json:"column_count"`
+	PrimaryKeys   []string                 `json:"primary_keys"`
+	PartitionKeys []string                 `json:"partition_keys"`
+	SortKeys      []string                 `json:"sort_keys"`
+	Columns       []*ColumnMetadata        `json:"columns"`
 	Indexes       map[string]IndexMetadata `json:"indexes"`
-	Constraints   []string           `json:"constraints"`
-	Properties    map[string]string  `json:"properties"`
+	Constraints   []string                 `json:"constraints"`
+	Properties    map[string]string        `json:"properties"`
 }
 
 // CompressionData 压缩数据统计
 type CompressionData struct {
-	Algorithm        string    `json:"algorithm"`
-	OriginalSize     int64     `json:"original_size"`
-	CompressedSize   int64     `json:"compressed_size"`
-	CompressionRatio float64   `json:"compression_ratio"`
-	CompressionTime  time.Duration `json:"compression_time"`
+	Algorithm         string        `json:"algorithm"`
+	OriginalSize      int64         `json:"original_size"`
+	CompressedSize    int64         `json:"compressed_size"`
+	CompressionRatio  float64       `json:"compression_ratio"`
+	CompressionTime   time.Duration `json:"compression_time"`
 	DecompressionTime time.Duration `json:"decompression_time"`
-	CPUUsage         float64   `json:"cpu_usage"`
-	MemoryUsage      int64     `json:"memory_usage"`
-	Timestamp        time.Time `json:"timestamp"`
+	CPUUsage          float64       `json:"cpu_usage"`
+	MemoryUsage       int64         `json:"memory_usage"`
+	Timestamp         time.Time     `json:"timestamp"`
 }
 
 // IndexMetadata 索引元数据
 type IndexMetadata struct {
-	IndexName   string   `json:"index_name"`
-	IndexType   string   `json:"index_type"`  // bloom, minmax, bitmap, inverted
-	Columns     []string `json:"columns"`
-	Size        int64    `json:"size"`
-	Selectivity float64  `json:"selectivity"`
-	HitRate     float64  `json:"hit_rate"`
+	IndexName   string    `json:"index_name"`
+	IndexType   string    `json:"index_type"` // bloom, minmax, bitmap, inverted
+	Columns     []string  `json:"columns"`
+	Size        int64     `json:"size"`
+	Selectivity float64   `json:"selectivity"`
+	HitRate     float64   `json:"hit_rate"`
 	CreateTime  time.Time `json:"create_time"`
 	UpdateTime  time.Time `json:"update_time"`
 }
 
 // ParquetStats Parquet统计信息
 type ParquetStats struct {
-	TotalFiles         int64   `json:"total_files"`
-	TotalSize          int64   `json:"total_size"`
-	TotalRows          int64   `json:"total_rows"`
-	AvgCompressionRatio float64 `json:"avg_compression_ratio"`
-	AvgQueryTime       time.Duration `json:"avg_query_time"`
-	OptimalStrategy    string  `json:"optimal_strategy"`
-	HotColumns         []string `json:"hot_columns"`
-	ColdColumns        []string `json:"cold_columns"`
-	FragmentationRatio float64 `json:"fragmentation_ratio"`
-	LastOptimized      time.Time `json:"last_optimized"`
-	mutex              sync.RWMutex
+	TotalFiles          int64         `json:"total_files"`
+	TotalSize           int64         `json:"total_size"`
+	TotalRows           int64         `json:"total_rows"`
+	AvgCompressionRatio float64       `json:"avg_compression_ratio"`
+	AvgQueryTime        time.Duration `json:"avg_query_time"`
+	OptimalStrategy     string        `json:"optimal_strategy"`
+	HotColumns          []string      `json:"hot_columns"`
+	ColdColumns         []string      `json:"cold_columns"`
+	FragmentationRatio  float64       `json:"fragmentation_ratio"`
+	LastOptimized       time.Time     `json:"last_optimized"`
+	mutex               sync.RWMutex
 }
 
 // NewParquet 创建Parquet优化器
@@ -147,7 +149,7 @@ func NewParquet() *Parquet {
 	optimizer := &Parquet{
 		compressionStrategies: make(map[string]CompressionStrategy),
 		partitionStrategies:   make(map[string]PartitionStrategy),
-		metadataIndex:        &ParquetMetadataIndex{
+		metadataIndex: &ParquetMetadataIndex{
 			FilesIndex:      make(map[string]*FileMetadata),
 			ColumnsIndex:    make(map[string]*ColumnMetadata),
 			SchemaIndex:     make(map[string]*SchemaMetadata),
@@ -161,7 +163,7 @@ func NewParquet() *Parquet {
 
 	// 初始化压缩策略
 	optimizer.initCompressionStrategies()
-	
+
 	// 初始化分区策略
 	optimizer.initPartitionStrategies()
 
@@ -245,51 +247,51 @@ func (po *Parquet) initCompressionStrategies() {
 func (po *Parquet) initPartitionStrategies() {
 	strategies := []PartitionStrategy{
 		{
-			Name:            "small_files",
-			RowGroupSize:    32 * 1024 * 1024,   // 32MB
-			PageSize:        64 * 1024,          // 64KB
-			DictPageSize:    1024 * 1024,        // 1MB
-			EnableDict:      true,
-			EnableStats:     true,
+			Name:             "small_files",
+			RowGroupSize:     32 * 1024 * 1024, // 32MB
+			PageSize:         64 * 1024,        // 64KB
+			DictPageSize:     1024 * 1024,      // 1MB
+			EnableDict:       true,
+			EnableStats:      true,
 			OptimizationHint: "适用于小文件，快速查询",
 		},
 		{
-			Name:            "large_files",
-			RowGroupSize:    256 * 1024 * 1024,  // 256MB
-			PageSize:        1024 * 1024,        // 1MB
-			DictPageSize:    4 * 1024 * 1024,    // 4MB
-			EnableDict:      true,
-			EnableStats:     true,
+			Name:             "large_files",
+			RowGroupSize:     256 * 1024 * 1024, // 256MB
+			PageSize:         1024 * 1024,       // 1MB
+			DictPageSize:     4 * 1024 * 1024,   // 4MB
+			EnableDict:       true,
+			EnableStats:      true,
 			OptimizationHint: "适用于大文件，批处理查询",
 		},
 		{
-			Name:            "analytical",
-			RowGroupSize:    128 * 1024 * 1024,  // 128MB
-			PageSize:        256 * 1024,         // 256KB
-			DictPageSize:    2 * 1024 * 1024,    // 2MB
-			EnableDict:      true,
-			EnableStats:     true,
-			BloomColumns:    []string{"id", "user_id", "status"},
-			MinMaxColumns:   []string{"timestamp", "amount", "price"},
-			SortColumns:     []string{"timestamp", "user_id"},
+			Name:             "analytical",
+			RowGroupSize:     128 * 1024 * 1024, // 128MB
+			PageSize:         256 * 1024,        // 256KB
+			DictPageSize:     2 * 1024 * 1024,   // 2MB
+			EnableDict:       true,
+			EnableStats:      true,
+			BloomColumns:     []string{"id", "user_id", "status"},
+			MinMaxColumns:    []string{"timestamp", "amount", "price"},
+			SortColumns:      []string{"timestamp", "user_id"},
 			OptimizationHint: "适用于分析查询，OLAP工作负载",
 		},
 		{
-			Name:            "streaming",
-			RowGroupSize:    16 * 1024 * 1024,   // 16MB
-			PageSize:        32 * 1024,          // 32KB
-			DictPageSize:    512 * 1024,         // 512KB
-			EnableDict:      false,
-			EnableStats:     true,
+			Name:             "streaming",
+			RowGroupSize:     16 * 1024 * 1024, // 16MB
+			PageSize:         32 * 1024,        // 32KB
+			DictPageSize:     512 * 1024,       // 512KB
+			EnableDict:       false,
+			EnableStats:      true,
 			OptimizationHint: "适用于流式数据，实时摄取",
 		},
 		{
-			Name:            "compression_optimized",
-			RowGroupSize:    64 * 1024 * 1024,   // 64MB
-			PageSize:        128 * 1024,         // 128KB
-			DictPageSize:    1024 * 1024,        // 1MB
-			EnableDict:      true,
-			EnableStats:     true,
+			Name:             "compression_optimized",
+			RowGroupSize:     64 * 1024 * 1024, // 64MB
+			PageSize:         128 * 1024,       // 128KB
+			DictPageSize:     1024 * 1024,      // 1MB
+			EnableDict:       true,
+			EnableStats:      true,
 			OptimizationHint: "优化压缩比，适用于长期存储",
 		},
 	}
@@ -300,7 +302,7 @@ func (po *Parquet) initPartitionStrategies() {
 }
 
 // OptimizeWriteStrategy 优化写入策略
-func (po *Parquet) OptimizeWriteStrategy(dataSize int64, dataType string, useCase string) (*PartitionStrategy, *CompressionStrategy) {
+func (po *Parquet) OptimizeWriteStrategy(ctx context.Context, dataSize int64, dataType string, useCase string) (*PartitionStrategy, *CompressionStrategy) {
 	po.mutex.RLock()
 	defer po.mutex.RUnlock()
 
@@ -337,8 +339,7 @@ func (po *Parquet) OptimizeWriteStrategy(dataSize int64, dataType string, useCas
 		compressionStrategy = &strategy
 	}
 
-	log.Printf("Selected strategies - Partition: %s, Compression: %s for use case: %s, size: %d bytes",
-		partitionStrategy.Name, compressionStrategy.Name, useCase, dataSize)
+	logger.LogInfo(ctx, "Selected strategies - Partition: %s, Compression: %s for use case: %s, size: %d bytes", zap.String("partition_strategy", partitionStrategy.Name), zap.String("compression_strategy", compressionStrategy.Name), zap.String("use_case", useCase), zap.Int64("data_size", dataSize))
 
 	return partitionStrategy, compressionStrategy
 }
@@ -346,22 +347,22 @@ func (po *Parquet) OptimizeWriteStrategy(dataSize int64, dataType string, useCas
 // CreateOptimizedWriter 创建优化的Parquet写入器
 // MockParquetWriter 模拟Parquet写入器
 type MockParquetWriter struct {
-	FilePath         string
-	PartitionStrategy *PartitionStrategy
+	FilePath            string
+	PartitionStrategy   *PartitionStrategy
 	CompressionStrategy *CompressionStrategy
 }
 
-func (po *Parquet) CreateOptimizedWriter(filePath string, schema interface{}, partitionStrategy *PartitionStrategy, compressionStrategy *CompressionStrategy) (*MockParquetWriter, error) {
-	log.Printf("Creating optimized Parquet writer for file: %s", filePath)
-	log.Printf("Using compression: %s, row group size: %d", compressionStrategy.Name, partitionStrategy.RowGroupSize)
+func (po *Parquet) CreateOptimizedWriter(ctx context.Context, filePath string, schema interface{}, partitionStrategy *PartitionStrategy, compressionStrategy *CompressionStrategy) (*MockParquetWriter, error) {
+	logger.LogInfo(ctx, "Creating optimized Parquet writer for file: %s", zap.String("file_path", filePath))
+	logger.LogInfo(ctx, "Using compression: %s, row group size: %d", zap.String("compression_strategy", compressionStrategy.Name), zap.Int64("row_group_size", partitionStrategy.RowGroupSize))
 
 	// 记录元数据
 	po.recordFileMetadata(filePath, partitionStrategy, compressionStrategy)
 
 	// 返回模拟的写入器（实际应用中应返回真实的ParquetWriter）
 	return &MockParquetWriter{
-		FilePath:         filePath,
-		PartitionStrategy: partitionStrategy,
+		FilePath:            filePath,
+		PartitionStrategy:   partitionStrategy,
 		CompressionStrategy: compressionStrategy,
 	}, nil
 }
@@ -387,7 +388,7 @@ func (po *Parquet) recordFileMetadata(filePath string, partitionStrategy *Partit
 }
 
 // AnalyzeCompressionPerformance 分析压缩性能
-func (po *Parquet) AnalyzeCompressionPerformance(sampleData []byte) map[string]*CompressionData {
+func (po *Parquet) AnalyzeCompressionPerformance(ctx context.Context, sampleData []byte) map[string]*CompressionData {
 	results := make(map[string]*CompressionData)
 
 	for name, strategy := range po.compressionStrategies {
@@ -396,11 +397,11 @@ func (po *Parquet) AnalyzeCompressionPerformance(sampleData []byte) map[string]*
 		}
 
 		_ = time.Now() // startTime for timing measurement
-		
+
 		// 模拟压缩性能（实际实现需要调用压缩库）
 		compressionRatio := strategy.Ratio + (float64(len(sampleData))/1024.0)*0.001 // 简化计算
 		compressionTime := time.Duration(float64(len(sampleData))/strategy.Speed) * time.Microsecond
-		
+
 		endTime := time.Now()
 
 		results[name] = &CompressionData{
@@ -410,9 +411,9 @@ func (po *Parquet) AnalyzeCompressionPerformance(sampleData []byte) map[string]*
 			CompressionRatio:  compressionRatio,
 			CompressionTime:   compressionTime,
 			DecompressionTime: compressionTime / 2, // 解压通常更快
-			CPUUsage:         strategy.CPUCost,
-			MemoryUsage:      int64(len(sampleData)) / 4, // 估算内存使用
-			Timestamp:        endTime,
+			CPUUsage:          strategy.CPUCost,
+			MemoryUsage:       int64(len(sampleData)) / 4, // 估算内存使用
+			Timestamp:         endTime,
 		}
 	}
 
@@ -427,7 +428,7 @@ func (po *Parquet) AnalyzeCompressionPerformance(sampleData []byte) map[string]*
 }
 
 // GetOptimalCompressionStrategy 获取最优压缩策略
-func (po *Parquet) GetOptimalCompressionStrategy(workloadType string, priorityFactor float64) *CompressionStrategy {
+func (po *Parquet) GetOptimalCompressionStrategy(ctx context.Context, workloadType string, priorityFactor float64) *CompressionStrategy {
 	po.mutex.RLock()
 	defer po.mutex.RUnlock()
 
@@ -435,7 +436,7 @@ func (po *Parquet) GetOptimalCompressionStrategy(workloadType string, priorityFa
 	var bestScore float64
 
 	for _, strategy := range po.compressionStrategies {
-		score := po.calculateCompressionScore(strategy, workloadType, priorityFactor)
+		score := po.calculateCompressionScore(ctx, strategy, workloadType, priorityFactor)
 		if bestStrategy == nil || score > bestScore {
 			bestScore = score
 			strategyValue := strategy
@@ -443,14 +444,12 @@ func (po *Parquet) GetOptimalCompressionStrategy(workloadType string, priorityFa
 		}
 	}
 
-	log.Printf("Selected optimal compression strategy: %s (score: %.2f) for workload: %s",
-		bestStrategy.Name, bestScore, workloadType)
-
+	logger.LogInfo(ctx, "Selected optimal compression strategy: %s (score: %.2f) for workload: %s", zap.String("strategy", bestStrategy.Name), zap.Float64("score", bestScore), zap.String("workload", workloadType))
 	return bestStrategy
 }
 
 // calculateCompressionScore 计算压缩策略得分
-func (po *Parquet) calculateCompressionScore(strategy CompressionStrategy, workloadType string, priorityFactor float64) float64 {
+func (po *Parquet) calculateCompressionScore(ctx context.Context, strategy CompressionStrategy, workloadType string, priorityFactor float64) float64 {
 	var score float64
 
 	switch workloadType {
@@ -478,56 +477,56 @@ func (po *Parquet) calculateCompressionScore(strategy CompressionStrategy, workl
 }
 
 // GetMetadataIndex 获取元数据索引
-func (po *Parquet) GetMetadataIndex() *ParquetMetadataIndex {
+func (po *Parquet) GetMetadataIndex(ctx context.Context) *ParquetMetadataIndex {
 	return po.metadataIndex
 }
 
 // GetStats 获取统计信息
-func (po *Parquet) GetStats() *ParquetStats {
+func (po *Parquet) GetStats(ctx context.Context) *ParquetStats {
 	po.stats.mutex.RLock()
 	defer po.stats.mutex.RUnlock()
-	
+
 	// 创建副本以避免并发访问问题
 	statsCopy := *po.stats
 	statsCopy.HotColumns = make([]string, len(po.stats.HotColumns))
 	copy(statsCopy.HotColumns, po.stats.HotColumns)
 	statsCopy.ColdColumns = make([]string, len(po.stats.ColdColumns))
 	copy(statsCopy.ColdColumns, po.stats.ColdColumns)
-	
+
 	return &statsCopy
 }
 
 // UpdateStats 更新统计信息
-func (po *Parquet) UpdateStats(fileSize int64, rowCount int64, compressionRatio float64, queryTime time.Duration) {
+func (po *Parquet) UpdateStats(ctx context.Context, fileSize int64, rowCount int64, compressionRatio float64, queryTime time.Duration) {
 	po.stats.mutex.Lock()
 	defer po.stats.mutex.Unlock()
 
 	po.stats.TotalFiles++
 	po.stats.TotalSize += fileSize
 	po.stats.TotalRows += rowCount
-	
+
 	// 更新平均压缩比
 	if po.stats.TotalFiles == 1 {
 		po.stats.AvgCompressionRatio = compressionRatio
 	} else {
 		po.stats.AvgCompressionRatio = (po.stats.AvgCompressionRatio*float64(po.stats.TotalFiles-1) + compressionRatio) / float64(po.stats.TotalFiles)
 	}
-	
+
 	// 更新平均查询时间
 	if po.stats.TotalFiles == 1 {
 		po.stats.AvgQueryTime = queryTime
 	} else {
 		po.stats.AvgQueryTime = (po.stats.AvgQueryTime*time.Duration(po.stats.TotalFiles-1) + queryTime) / time.Duration(po.stats.TotalFiles)
 	}
-	
+
 	po.stats.LastOptimized = time.Now()
 }
 
 // GetCompressionStrategies 获取所有压缩策略
-func (po *Parquet) GetCompressionStrategies() map[string]CompressionStrategy {
+func (po *Parquet) GetCompressionStrategies(ctx context.Context) map[string]CompressionStrategy {
 	po.mutex.RLock()
 	defer po.mutex.RUnlock()
-	
+
 	strategies := make(map[string]CompressionStrategy)
 	for name, strategy := range po.compressionStrategies {
 		strategies[name] = strategy
@@ -535,14 +534,14 @@ func (po *Parquet) GetCompressionStrategies() map[string]CompressionStrategy {
 	return strategies
 }
 
-// GetPartitionStrategies 获取所有分区策略  
-func (po *Parquet) GetPartitionStrategies() map[string]PartitionStrategy {
+// GetPartitionStrategies 获取所有分区策略
+func (po *Parquet) GetPartitionStrategies(ctx context.Context) map[string]PartitionStrategy {
 	po.mutex.RLock()
 	defer po.mutex.RUnlock()
-	
+
 	strategies := make(map[string]PartitionStrategy)
 	for name, strategy := range po.partitionStrategies {
 		strategies[name] = strategy
 	}
 	return strategies
-} 
+}

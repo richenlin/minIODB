@@ -3,23 +3,24 @@ package recovery
 import (
 	"context"
 	"fmt"
-	"log"
 	"runtime"
 	"sync"
 	"time"
 
 	"minIODB/internal/errors"
 	"minIODB/internal/metrics"
+
+	"go.uber.org/zap"
 )
 
 // RecoveryHandler 恢复处理器
 type RecoveryHandler struct {
 	component string
-	logger    *log.Logger
+	logger    *zap.Logger
 }
 
 // NewRecoveryHandler 创建恢复处理器
-func NewRecoveryHandler(component string, logger *log.Logger) *RecoveryHandler {
+func NewRecoveryHandler(component string, logger *zap.Logger) *RecoveryHandler {
 	return &RecoveryHandler{
 		component: component,
 		logger:    logger,
@@ -38,7 +39,7 @@ func (h *RecoveryHandler) Recover() {
 			h.component, r, string(stack[:length]))
 
 		if h.logger != nil {
-			h.logger.Printf("PANIC: %s", panicMsg)
+			h.logger.Error("PANIC: %s", zap.String("panic_msg", panicMsg))
 		}
 
 		// 更新指标
@@ -68,7 +69,7 @@ type HealthChecker struct {
 	mutex    sync.RWMutex
 	interval time.Duration
 	timeout  time.Duration
-	logger   *log.Logger
+	logger   *zap.Logger
 }
 
 // HealthCheck 健康检查接口
@@ -87,7 +88,7 @@ type HealthStatus struct {
 }
 
 // NewHealthChecker 创建健康检查器
-func NewHealthChecker(interval, timeout time.Duration, logger *log.Logger) *HealthChecker {
+func NewHealthChecker(interval, timeout time.Duration, logger *zap.Logger) *HealthChecker {
 	return &HealthChecker{
 		checks:   make(map[string]HealthCheck),
 		interval: interval,
@@ -183,8 +184,7 @@ func (hc *HealthChecker) logResults(results []HealthStatus) {
 
 	for _, result := range results {
 		if result.Status != "healthy" {
-			hc.logger.Printf("Health check failed: %s - %s (took %v)",
-				result.Name, result.Error, result.Duration)
+			hc.logger.Error("Health check failed: %s - %s (took %v)", zap.String("name", result.Name), zap.String("error", result.Error), zap.Duration("duration", result.Duration))
 		}
 	}
 }
@@ -241,7 +241,7 @@ func (shc *ServiceHealthCheck) Check(ctx context.Context) error {
 type AutoRecovery struct {
 	strategies map[string]RecoveryStrategy
 	mutex      sync.RWMutex
-	logger     *log.Logger
+	logger     *zap.Logger
 }
 
 // RecoveryStrategy 恢复策略接口
@@ -251,7 +251,7 @@ type RecoveryStrategy interface {
 }
 
 // NewAutoRecovery 创建自动恢复器
-func NewAutoRecovery(logger *log.Logger) *AutoRecovery {
+func NewAutoRecovery(logger *zap.Logger) *AutoRecovery {
 	return &AutoRecovery{
 		strategies: make(map[string]RecoveryStrategy),
 		logger:     logger,
@@ -273,12 +273,12 @@ func (ar *AutoRecovery) TryRecover(ctx context.Context, err error) error {
 	for name, strategy := range ar.strategies {
 		if strategy.CanRecover(err) {
 			if ar.logger != nil {
-				ar.logger.Printf("Attempting recovery with strategy: %s", name)
+				ar.logger.Info("Attempting recovery with strategy: %s", zap.String("name", name))
 			}
 
 			if recoveryErr := strategy.Recover(ctx, err); recoveryErr == nil {
 				if ar.logger != nil {
-					ar.logger.Printf("Recovery successful with strategy: %s", name)
+					ar.logger.Info("Recovery successful with strategy: %s", zap.String("name", name))
 				}
 				return nil
 			}
@@ -332,11 +332,11 @@ func (crs *ConnectionRecoveryStrategy) Recover(ctx context.Context, err error) e
 type GracefulShutdown struct {
 	shutdownFuncs []func(context.Context) error
 	timeout       time.Duration
-	logger        *log.Logger
+	logger        *zap.Logger
 }
 
 // NewGracefulShutdown 创建优雅关闭器
-func NewGracefulShutdown(timeout time.Duration, logger *log.Logger) *GracefulShutdown {
+func NewGracefulShutdown(timeout time.Duration, logger *zap.Logger) *GracefulShutdown {
 	return &GracefulShutdown{
 		timeout: timeout,
 		logger:  logger,

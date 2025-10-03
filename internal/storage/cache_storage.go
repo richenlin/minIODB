@@ -280,7 +280,7 @@ func (c *CacheStorageImpl) GetClient() interface{} {
 }
 
 // Close 关闭连接
-func (c *CacheStorageImpl) Close() error {
+func (c *CacheStorageImpl) Close(ctx context.Context) error {
 	// 连接池由PoolManager管理，这里不需要手动关闭
 	return nil
 }

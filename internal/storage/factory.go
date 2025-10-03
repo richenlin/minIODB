@@ -3,10 +3,10 @@ package storage
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
 )
 
@@ -17,7 +17,7 @@ type StorageFactoryImpl struct {
 }
 
 // NewStorageFactory 创建新的存储工厂
-func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
+func NewStorageFactory(ctx context.Context, cfg *config.Config) (StorageFactory, error) {
 	// 创建连接池管理器配置
 	poolConfig := &pool.PoolManagerConfig{
 		MinIO:               getEnhancedMinIOPoolConfig(cfg),
@@ -63,7 +63,7 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 	}
 
 	// 创建连接池管理器
-	poolManager, err := pool.NewPoolManager(poolConfig)
+	poolManager, err := pool.NewPoolManager(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pool manager: %w", err)
 	}
@@ -74,9 +74,9 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 	}
 
 	if cfg.Redis.Enabled {
-		log.Println("Storage factory initialized with Redis and MinIO connection pools")
+		logger.LogInfo(ctx, "Storage factory initialized with Redis and MinIO connection pools")
 	} else {
-		log.Println("Storage factory initialized with MinIO connection pool only (Redis disabled)")
+		logger.LogInfo(ctx, "Storage factory initialized with MinIO connection pool only (Redis disabled)")
 	}
 	return factory, nil
 }
@@ -119,9 +119,9 @@ func (f *StorageFactoryImpl) GetPoolManager() *pool.PoolManager {
 }
 
 // Close 关闭工厂和所有连接
-func (f *StorageFactoryImpl) Close() error {
+func (f *StorageFactoryImpl) Close(ctx context.Context) error {
 	if f.poolManager != nil {
-		return f.poolManager.Close()
+		return f.poolManager.Close(ctx)
 	}
 	return nil
 }
@@ -134,21 +134,21 @@ type UnifiedStorageImpl struct {
 }
 
 // NewUnifiedStorage 创建统一存储实例（向后兼容）
-func NewUnifiedStorage(cfg *config.Config) (Storage, error) {
-	factory, err := NewStorageFactory(cfg)
+func NewUnifiedStorage(ctx context.Context, cfg *config.Config) (Storage, error) {
+	factory, err := NewStorageFactory(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	cacheStorage, err := factory.CreateCacheStorage()
 	if err != nil {
-		factory.Close()
+		factory.Close(ctx)
 		return nil, fmt.Errorf("failed to create cache storage: %w", err)
 	}
 
 	objectStorage, err := factory.CreateObjectStorage()
 	if err != nil {
-		factory.Close()
+		factory.Close(ctx)
 		return nil, fmt.Errorf("failed to create object storage: %w", err)
 	}
 
@@ -213,26 +213,26 @@ func (u *UnifiedStorageImpl) GetStats() map[string]interface{} {
 }
 
 // Close 关闭统一存储（解决模糊选择器问题）
-func (u *UnifiedStorageImpl) Close() error {
+func (u *UnifiedStorageImpl) Close(ctx context.Context) error {
 	var err error
 
 	// 关闭缓存存储
 	if u.CacheStorage != nil {
-		if closeErr := u.CacheStorage.Close(); closeErr != nil {
+		if closeErr := u.CacheStorage.Close(ctx); closeErr != nil {
 			err = closeErr
 		}
 	}
 
 	// 关闭对象存储
 	if u.ObjectStorage != nil {
-		if closeErr := u.ObjectStorage.Close(); closeErr != nil {
+		if closeErr := u.ObjectStorage.Close(ctx); closeErr != nil {
 			err = closeErr
 		}
 	}
 
 	// 关闭连接池管理器
 	if u.poolManager != nil {
-		if closeErr := u.poolManager.Close(); closeErr != nil {
+		if closeErr := u.poolManager.Close(ctx); closeErr != nil {
 			err = closeErr
 		}
 	}

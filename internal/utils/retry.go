@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"minIODB/internal/logger"
 	"minIODB/internal/metrics"
+
+	"go.uber.org/zap"
 )
 
 // RetryConfig 重试配置
@@ -64,7 +66,7 @@ func Retry(ctx context.Context, config RetryConfig, operation string, fn RetryFu
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
 		// 记录重试指标
 		retryMetrics := metrics.NewGRPCMetrics(fmt.Sprintf("retry_%s", operation))
-		
+
 		err := fn(ctx)
 		if err == nil {
 			retryMetrics.Finish("success")
@@ -72,11 +74,11 @@ func Retry(ctx context.Context, config RetryConfig, operation string, fn RetryFu
 		}
 
 		lastErr = err
-		
+
 		// 检查是否可重试
 		if !IsRetryable(err) {
 			retryMetrics.Finish("non_retryable_error")
-			log.Printf("Non-retryable error in %s (attempt %d/%d): %v", operation, attempt, config.MaxAttempts, err)
+			logger.LogInfo(ctx, "Non-retryable error in %s (attempt %d/%d): %v", zap.String("operation", operation), zap.Int("attempt", attempt), zap.Int("max_attempts", config.MaxAttempts), zap.Error(err))
 			return err
 		}
 
@@ -89,8 +91,8 @@ func Retry(ctx context.Context, config RetryConfig, operation string, fn RetryFu
 		// 如果不是最后一次尝试，则等待重试
 		if attempt < config.MaxAttempts {
 			retryMetrics.Finish("retry")
-			log.Printf("Retrying %s (attempt %d/%d) after %v: %v", operation, attempt, config.MaxAttempts, interval, err)
-			
+			logger.LogInfo(ctx, "Retrying %s (attempt %d/%d) after %v: %v", zap.String("operation", operation), zap.Int("attempt", attempt), zap.Int("max_attempts", config.MaxAttempts), zap.Duration("interval", interval), zap.Error(err))
+
 			select {
 			case <-time.After(interval):
 				// 计算下次重试间隔
@@ -112,7 +114,7 @@ func Retry(ctx context.Context, config RetryConfig, operation string, fn RetryFu
 		}
 	}
 
-	log.Printf("Max retry attempts exceeded for %s: %v", operation, lastErr)
+	logger.LogInfo(ctx, "Max retry attempts exceeded for %s: %v", zap.String("operation", operation), zap.Error(lastErr))
 	return fmt.Errorf("max retry attempts (%d) exceeded for %s: %w", config.MaxAttempts, operation, lastErr)
 }
 
@@ -127,11 +129,11 @@ const (
 
 // CircuitBreakerConfig 熔断器配置
 type CircuitBreakerConfig struct {
-	FailureThreshold   int           // 失败阈值
-	RecoveryTimeout    time.Duration // 恢复超时
-	SuccessThreshold   int           // 成功阈值（半开状态下）
-	RequestVolumeThreshold int       // 请求量阈值
-	SlidingWindowSize  time.Duration // 滑动窗口大小
+	FailureThreshold       int           // 失败阈值
+	RecoveryTimeout        time.Duration // 恢复超时
+	SuccessThreshold       int           // 成功阈值（半开状态下）
+	RequestVolumeThreshold int           // 请求量阈值
+	SlidingWindowSize      time.Duration // 滑动窗口大小
 }
 
 // DefaultCircuitBreakerConfig 默认熔断器配置
@@ -158,16 +160,16 @@ type CircuitBreaker struct {
 // NewCircuitBreaker 创建熔断器
 func NewCircuitBreaker(name string, config CircuitBreakerConfig) *CircuitBreaker {
 	return &CircuitBreaker{
-		config:       config,
-		state:        CircuitBreakerClosed,
-		name:         name,
+		config: config,
+		state:  CircuitBreakerClosed,
+		name:   name,
 	}
 }
 
 // Execute 执行操作
 func (cb *CircuitBreaker) Execute(ctx context.Context, fn RetryFunc) error {
 	cb.mu.Lock()
-	
+
 	// 检查熔断器状态
 	switch cb.state {
 	case CircuitBreakerOpen:
@@ -175,7 +177,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn RetryFunc) error {
 		if time.Since(cb.lastFailTime) > cb.config.RecoveryTimeout {
 			cb.state = CircuitBreakerHalfOpen
 			cb.successes = 0
-			log.Printf("Circuit breaker %s: transitioning to half-open state", cb.name)
+			logger.LogInfo(ctx, "Circuit breaker %s: transitioning to half-open state", zap.String("name", cb.name))
 		} else {
 			cb.mu.Unlock()
 			return fmt.Errorf("circuit breaker %s is open", cb.name)
@@ -185,48 +187,47 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn RetryFunc) error {
 	case CircuitBreakerClosed:
 		// 关闭状态，正常处理请求
 	}
-	
+
 	cb.requests++
 	cb.mu.Unlock()
 
 	// 执行操作
 	err := fn(ctx)
-	
+
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	
+
 	if err != nil {
-		cb.onFailure()
+		cb.onFailure(ctx)
 		return err
 	}
-	
-	cb.onSuccess()
+
+	cb.onSuccess(ctx)
 	return nil
 }
 
 // onFailure 处理失败
-func (cb *CircuitBreaker) onFailure() {
+func (cb *CircuitBreaker) onFailure(ctx context.Context) {
 	cb.failures++
 	cb.lastFailTime = time.Now()
-	
+
 	switch cb.state {
 	case CircuitBreakerClosed:
 		// 检查是否需要打开熔断器
-		if cb.requests >= cb.config.RequestVolumeThreshold && 
-		   cb.failures >= cb.config.FailureThreshold {
+		if cb.requests >= cb.config.RequestVolumeThreshold &&
+			cb.failures >= cb.config.FailureThreshold {
 			cb.state = CircuitBreakerOpen
-			log.Printf("Circuit breaker %s: opening due to %d failures out of %d requests", 
-				cb.name, cb.failures, cb.requests)
+			logger.LogInfo(ctx, "Circuit breaker %s: opening due to %d failures out of %d requests", zap.String("name", cb.name), zap.Int("failures", cb.failures), zap.Int("requests", cb.requests))
 		}
 	case CircuitBreakerHalfOpen:
 		// 半开状态下失败，直接打开
 		cb.state = CircuitBreakerOpen
-		log.Printf("Circuit breaker %s: opening from half-open state due to failure", cb.name)
+		logger.LogInfo(ctx, "Circuit breaker %s: opening from half-open state due to failure", zap.String("name", cb.name))
 	}
 }
 
 // onSuccess 处理成功
-func (cb *CircuitBreaker) onSuccess() {
+func (cb *CircuitBreaker) onSuccess(ctx context.Context) {
 	switch cb.state {
 	case CircuitBreakerHalfOpen:
 		cb.successes++
@@ -234,8 +235,7 @@ func (cb *CircuitBreaker) onSuccess() {
 			cb.state = CircuitBreakerClosed
 			cb.failures = 0
 			cb.requests = 0
-			log.Printf("Circuit breaker %s: closing from half-open state after %d successes", 
-				cb.name, cb.successes)
+			logger.LogInfo(ctx, "Circuit breaker %s: closing from half-open state after %d successes", zap.String("name", cb.name), zap.Int("successes", cb.successes))
 		}
 	case CircuitBreakerClosed:
 		// 重置失败计数器
@@ -256,11 +256,11 @@ func (cb *CircuitBreaker) GetState() CircuitBreakerState {
 func (cb *CircuitBreaker) GetStats() map[string]interface{} {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
-	
+
 	return map[string]interface{}{
 		"state":     cb.state,
 		"failures":  cb.failures,
 		"successes": cb.successes,
 		"requests":  cb.requests,
 	}
-} 
+}

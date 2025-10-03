@@ -4,15 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"runtime"
 	"sync"
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
 
 	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 )
 
 // HealthStatus 健康状态
@@ -297,17 +298,17 @@ func (hc *HealthChecker) StartHealthCheck(ctx context.Context, interval time.Dur
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	log.Printf("Starting health check with interval: %v", interval)
+	logger.LogInfo(ctx, "Starting health check with interval: %v", zap.Duration("interval", interval))
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Health check stopped")
+			logger.LogInfo(ctx, "Health check stopped")
 			return
 		case <-ticker.C:
 			health := hc.CheckHealth(ctx)
 			if health.Status == "unhealthy" {
-				log.Printf("Health check failed: %s", health.Status)
+				logger.LogInfo(ctx, "Health check failed: %s", zap.String("status", health.Status))
 				// 可以在这里添加告警逻辑
 			}
 		}

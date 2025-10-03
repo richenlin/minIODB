@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
 	"minIODB/pkg/consistenthash"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 const (
@@ -53,14 +54,14 @@ type HealthChecker struct {
 }
 
 // NewHealthChecker 创建健康检查器
-func NewHealthChecker(registry *ServiceRegistry) *HealthChecker {
+func NewHealthChecker(ctx context.Context, registry *ServiceRegistry) *HealthChecker {
 	return &HealthChecker{
 		registry: registry,
 	}
 }
 
 // Start 启动健康检查
-func (hc *HealthChecker) Start() {
+func (hc *HealthChecker) Start(ctx context.Context) {
 	// 简单的健康检查实现
 	ticker := time.NewTicker(DefaultHeartbeatInterval)
 	defer ticker.Stop()
@@ -70,8 +71,8 @@ func (hc *HealthChecker) Start() {
 		case <-ticker.C:
 			// 执行健康检查逻辑
 			if hc.registry.redisEnabled {
-				if err := hc.registry.sendHeartbeat(); err != nil {
-					log.Printf("Health check failed: %v", err)
+				if err := hc.registry.sendHeartbeat(ctx); err != nil {
+					logger.LogInfo(ctx, "Health check failed: %v", zap.Error(err))
 				}
 			}
 		case <-hc.registry.stopChan:
@@ -109,7 +110,7 @@ type ServiceRegistry struct {
 }
 
 // NewServiceRegistry 创建服务注册器
-func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string) (*ServiceRegistry, error) {
+func NewServiceRegistry(ctx context.Context, cfg config.Config, nodeID, grpcPort string) (*ServiceRegistry, error) {
 	// 检查Redis是否启用 - 优先使用Network.Pools.Redis配置
 	redisEnabled := cfg.Network.Pools.Redis.Enabled
 	if !redisEnabled {
@@ -170,7 +171,7 @@ func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string) (*ServiceReg
 		}
 
 		var err error
-		redisPool, err = pool.NewRedisPool(poolConfig)
+		redisPool, err = pool.NewRedisPool(ctx, poolConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Redis pool: %w", err)
 		}
@@ -195,19 +196,19 @@ func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string) (*ServiceReg
 	}
 
 	// 创建健康检查器
-	registry.healthChecker = NewHealthChecker(registry)
+	registry.healthChecker = NewHealthChecker(ctx, registry)
 
 	if redisEnabled {
-		log.Printf("Service registry initialized with Redis enabled (mode: %s)", redisConfig.Mode)
+		logger.LogInfo(ctx, "Service registry initialized with Redis enabled (mode: %s)", zap.String("mode", redisConfig.Mode))
 	} else {
-		log.Println("Service registry initialized with Redis disabled (single-node mode)")
+		logger.LogInfo(ctx, "Service registry initialized with Redis disabled (single-node mode)")
 	}
 
 	return registry, nil
 }
 
 // Start 启动服务注册
-func (sr *ServiceRegistry) Start() error {
+func (sr *ServiceRegistry) Start(ctx context.Context) error {
 	sr.mutex.Lock()
 	defer sr.mutex.Unlock()
 
@@ -216,29 +217,29 @@ func (sr *ServiceRegistry) Start() error {
 	}
 
 	if !sr.redisEnabled {
-		log.Println("Redis disabled, skipping service registration - running in single-node mode")
+		logger.LogInfo(ctx, "Redis disabled, skipping service registration - running in single-node mode")
 		sr.isRunning = true
 		return nil
 	}
 
 	// 只有在Redis启用时才进行服务注册
-	if err := sr.registerService(); err != nil {
+	if err := sr.registerService(ctx); err != nil {
 		return fmt.Errorf("failed to register service: %w", err)
 	}
 
 	// 启动健康检查
-	go sr.healthChecker.Start()
+	go sr.healthChecker.Start(ctx)
 
 	// 启动服务发现
-	go sr.startServiceDiscovery()
+	go sr.startServiceDiscovery(ctx)
 
 	sr.isRunning = true
-	log.Printf("Service registry started for node: %s", sr.nodeID)
+	logger.LogInfo(ctx, "Service registry started for node: %s", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
 // Stop 停止服务注册
-func (sr *ServiceRegistry) Stop() error {
+func (sr *ServiceRegistry) Stop(ctx context.Context) error {
 	sr.mutex.Lock()
 	defer sr.mutex.Unlock()
 
@@ -251,22 +252,22 @@ func (sr *ServiceRegistry) Stop() error {
 
 	if sr.redisEnabled && sr.redisPool != nil {
 		// 注销服务
-		if err := sr.unregisterService(); err != nil {
-			log.Printf("Failed to unregister service: %v", err)
+		if err := sr.unregisterService(ctx); err != nil {
+			logger.LogInfo(ctx, "Failed to unregister service: %v", zap.Error(err))
 		}
 
 		// 关闭Redis连接池
-		if err := sr.redisPool.Close(); err != nil {
-			log.Printf("Failed to close Redis pool: %v", err)
+		if err := sr.redisPool.Close(ctx); err != nil {
+			logger.LogInfo(ctx, "Failed to close Redis pool: %v", zap.Error(err))
 		}
 	}
 
-	log.Printf("Service registry stopped for node: %s", sr.nodeID)
+	logger.LogInfo(ctx, "Service registry stopped for node: %s", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
 // DiscoverNodes 发现节点
-func (sr *ServiceRegistry) DiscoverNodes() ([]*ServiceInfo, error) {
+func (sr *ServiceRegistry) DiscoverNodes(ctx context.Context) ([]*ServiceInfo, error) {
 	if !sr.redisEnabled {
 		// Redis禁用时，返回当前节点信息（单节点模式）
 		currentNode := &ServiceInfo{
@@ -281,16 +282,15 @@ func (sr *ServiceRegistry) DiscoverNodes() ([]*ServiceInfo, error) {
 	}
 
 	// Redis启用时，从Redis发现其他节点
-	return sr.discoverFromRedis()
+	return sr.discoverFromRedis(ctx)
 }
 
 // registerService 注册服务到Redis
-func (sr *ServiceRegistry) registerService() error {
+func (sr *ServiceRegistry) registerService(ctx context.Context) error {
 	if !sr.redisEnabled || sr.redisPool == nil {
 		return fmt.Errorf("Redis not enabled or pool not available")
 	}
 
-	ctx := context.Background()
 	client := sr.redisPool.GetRedisClient()
 
 	// 获取本机IP地址
@@ -327,41 +327,39 @@ func (sr *ServiceRegistry) registerService() error {
 		return fmt.Errorf("failed to set service health: %w", err)
 	}
 
-	log.Printf("Service registered: %s at %s:%s", sr.nodeID, address, sr.grpcPort)
+	logger.LogInfo(ctx, "Service registered: %s at %s:%s", zap.String("node_id", sr.nodeID), zap.String("address", address), zap.String("port", sr.grpcPort))
 	return nil
 }
 
 // unregisterService 从Redis注销服务
-func (sr *ServiceRegistry) unregisterService() error {
+func (sr *ServiceRegistry) unregisterService(ctx context.Context) error {
 	if !sr.redisEnabled || sr.redisPool == nil {
 		return nil
 	}
 
-	ctx := context.Background()
 	client := sr.redisPool.GetRedisClient()
 
 	// 从服务列表移除
 	if err := client.HDel(ctx, ServiceRegistryKey, sr.nodeID).Err(); err != nil {
-		log.Printf("WARN: failed to remove service from registry: %v", err)
+		logger.LogInfo(ctx, "WARN: failed to remove service from registry: %v", zap.Error(err))
 	}
 
 	// 删除健康状态
 	healthKey := fmt.Sprintf(NodeHealthKey, sr.nodeID)
 	if err := client.Del(ctx, healthKey).Err(); err != nil {
-		log.Printf("WARN: failed to remove service health: %v", err)
+		logger.LogInfo(ctx, "WARN: failed to remove service health: %v", zap.Error(err))
 	}
 
-	log.Printf("Service unregistered: %s", sr.nodeID)
+	logger.LogInfo(ctx, "Service unregistered: %s", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
 // discoverFromRedis 从Redis发现服务
-func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
+func (sr *ServiceRegistry) discoverFromRedis(ctx context.Context) ([]*ServiceInfo, error) {
 	if !sr.redisEnabled || sr.redisPool == nil {
 		return nil, fmt.Errorf("Redis not enabled or pool not available")
 	}
 
-	ctx := context.Background()
 	client := sr.redisPool.GetRedisClient()
 
 	// 获取所有注册的服务
@@ -375,7 +373,7 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 	for serviceID, serviceData := range serviceMap {
 		var service ServiceInfo
 		if err := json.Unmarshal([]byte(serviceData), &service); err != nil {
-			log.Printf("WARN: failed to unmarshal service data for %s: %v", serviceID, err)
+			logger.LogInfo(ctx, "WARN: failed to unmarshal service data for %s: %v", zap.String("service_id", serviceID), zap.Error(err))
 			continue
 		}
 
@@ -385,10 +383,10 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 		if err == redis.Nil {
 			// 服务不健康，从注册表移除
 			client.HDel(ctx, ServiceRegistryKey, serviceID)
-			log.Printf("Removed unhealthy service %s from registry", serviceID)
+			logger.LogInfo(ctx, "Removed unhealthy service %s from registry", zap.String("service_id", serviceID))
 			continue
 		} else if err != nil {
-			log.Printf("WARN: failed to check health for service %s: %v", serviceID, err)
+			logger.LogInfo(ctx, "WARN: failed to check health for service %s: %v", zap.String("service_id", serviceID), zap.Error(err))
 			continue
 		}
 
@@ -399,7 +397,7 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 }
 
 // startServiceDiscovery 启动服务发现
-func (sr *ServiceRegistry) startServiceDiscovery() {
+func (sr *ServiceRegistry) startServiceDiscovery(ctx context.Context) {
 	if !sr.redisEnabled {
 		return
 	}
@@ -411,13 +409,13 @@ func (sr *ServiceRegistry) startServiceDiscovery() {
 		select {
 		case <-ticker.C:
 			// 发送心跳
-			if err := sr.sendHeartbeat(); err != nil {
-				log.Printf("ERROR: heartbeat failed: %v", err)
+			if err := sr.sendHeartbeat(ctx); err != nil {
+				logger.LogInfo(ctx, "ERROR: heartbeat failed: %v", zap.Error(err))
 			}
 
 			// 更新服务列表
-			if err := sr.updateServiceList(); err != nil {
-				log.Printf("ERROR: failed to update service list: %v", err)
+			if err := sr.updateServiceList(ctx); err != nil {
+				logger.LogInfo(ctx, "ERROR: failed to update service list: %v", zap.Error(err))
 			}
 		case <-sr.stopChan:
 			return
@@ -426,12 +424,11 @@ func (sr *ServiceRegistry) startServiceDiscovery() {
 }
 
 // sendHeartbeat 发送心跳
-func (sr *ServiceRegistry) sendHeartbeat() error {
+func (sr *ServiceRegistry) sendHeartbeat(ctx context.Context) error {
 	if !sr.redisEnabled || sr.redisPool == nil {
 		return nil
 	}
 
-	ctx := context.Background()
 	client := sr.redisPool.GetRedisClient()
 
 	// 刷新健康状态TTL
@@ -444,8 +441,8 @@ func (sr *ServiceRegistry) sendHeartbeat() error {
 }
 
 // updateServiceList 更新服务列表
-func (sr *ServiceRegistry) updateServiceList() error {
-	services, err := sr.discoverFromRedis()
+func (sr *ServiceRegistry) updateServiceList(ctx context.Context) error {
+	services, err := sr.discoverFromRedis(ctx)
 	if err != nil {
 		return err
 	}
@@ -512,8 +509,8 @@ func (sr *ServiceRegistry) IsNodeHealthy(nodeID string) bool {
 }
 
 // GetHealthyNodes 获取健康的节点列表（向后兼容）
-func (sr *ServiceRegistry) GetHealthyNodes() ([]*NodeInfo, error) {
-	services, err := sr.DiscoverNodes()
+func (sr *ServiceRegistry) GetHealthyNodes(ctx context.Context) ([]*NodeInfo, error) {
+	services, err := sr.DiscoverNodes(ctx)
 	if err != nil {
 		return nil, err
 	}

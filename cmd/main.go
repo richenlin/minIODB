@@ -18,6 +18,7 @@ import (
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
 	"minIODB/internal/ingest"
+	"minIODB/internal/logger"
 	"minIODB/internal/metrics"
 	"minIODB/internal/monitoring"
 	"minIODB/internal/query"
@@ -37,37 +38,35 @@ func main() {
 	if len(os.Args) > 1 {
 		configPath = os.Args[1]
 	}
-
+	ctx := context.Background()
 	// 加载配置
-	cfg, err := config.LoadConfig(configPath)
+	cfg, err := config.LoadConfig(ctx, configPath)
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 初始化 logger
-	logger, err := zap.NewProduction()
 	if err != nil {
-		log.Fatalf("Failed to create logger: %v", err)
+		logger.LogFatal(ctx, "Failed to create logger: %v", zap.Error(err))
 	}
 	defer logger.Sync()
 
-	log.Println("Starting MinIODB server...")
+	logger.LogInfo(ctx, "Starting MinIODB server...")
 
 	// 创建上下文
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// 创建恢复处理器
-	recoveryHandler := recovery.NewRecoveryHandler("main", log.New(os.Stdout, "[RECOVERY] ", log.LstdFlags))
+	recoveryHandler := recovery.NewRecoveryHandler("main", logger.GetLogger())
 	defer recoveryHandler.Recover()
 
 	// 初始化存储层
-	storageInstance, err := storage.NewStorage(cfg)
+	storageInstance, err := storage.NewStorage(ctx, cfg)
 	if err != nil {
-		log.Fatalf("Failed to create storage instance: %v", err)
+		logger.LogFatal(ctx, "Failed to create storage instance: %v", zap.Error(err))
 	}
-	defer storageInstance.Close()
+	defer storageInstance.Close(ctx)
 
 	// 获取连接池管理器
 	poolManager := storageInstance.GetPoolManager()
@@ -75,35 +74,36 @@ func main() {
 	// 获取Redis连接池（支持高可用）
 	redisPool := poolManager.GetRedisPool()
 	if redisPool != nil {
-		log.Println("Redis connection pool initialized successfully")
+		logger.LogInfo(ctx, "Redis connection pool initialized successfully")
 	} else {
-		log.Println("Redis disabled - running in single-node mode")
+		logger.LogInfo(ctx, "Redis disabled - running in single-node mode")
 	}
 
 	// 初始化存储引擎优化器（如果配置启用）
 	var storageEngine *storage.StorageEngine
 	if cfg.StorageEngine.Enabled {
-		storageEngine = storage.NewStorageEngine(cfg, redisPool)
-		log.Println("Storage engine optimizer initialized successfully")
+		storageEngine = storage.NewStorageEngine(ctx, cfg, redisPool)
+		logger.LogInfo(ctx, "Storage engine optimizer initialized successfully")
 	} else {
-		log.Println("Storage engine optimizer disabled - using standard storage operations")
+		logger.LogInfo(ctx, "Storage engine optimizer disabled - using standard storage operations")
 	}
 
 	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO)
 	if err != nil {
-		log.Fatalf("Failed to create primary MinIO client: %v", err)
+		logger.LogFatal(ctx, "Failed to create primary MinIO client: %v", zap.Error(err))
 	}
 
 	var backupMinio storage.Uploader
 	if cfg.Backup.Enabled {
 		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.MinIO)
 		if err != nil {
-			log.Fatalf("Failed to create backup MinIO client: %v", err)
+			logger.LogFatal(ctx, "Failed to create backup MinIO client: %v", zap.Error(err))
 		}
 	}
 
 	// 初始化并发缓冲区
 	concurrentBuffer := buffer.NewConcurrentBuffer(
+		ctx,
 		poolManager,
 		cfg,
 		cfg.Backup.MinIO.Bucket,
@@ -116,33 +116,34 @@ func main() {
 	// 先创建索引系统（需要在querier之前创建）
 	var indexSystem *storage.IndexSystem
 	if redisPool != nil {
-		indexSystem = storage.NewIndexSystem(redisPool)
-		log.Println("Index system initialized successfully")
+		indexSystem = storage.NewIndexSystem(ctx, redisPool)
+		logger.LogInfo(ctx, "Index system initialized successfully")
 	} else {
-		log.Println("Index system disabled - Redis not available")
+		logger.LogInfo(ctx, "Index system disabled - Redis not available")
 	}
 
-	querierService, err := query.NewQuerier(redisPool, primaryMinio, cfg, concurrentBuffer, logger, indexSystem)
+	querierService, err := query.NewQuerier(ctx, redisPool, primaryMinio, cfg, concurrentBuffer, logger.GetLogger(), indexSystem)
 	if err != nil {
-		log.Fatalf("Failed to create querier service: %v", err)
+		logger.LogFatal(ctx, "Failed to create querier service: %v", zap.Error(err))
 	}
 
 	// 初始化服务注册与发现
-	serviceRegistry, err := discovery.NewServiceRegistry(*cfg, cfg.Server.NodeID, cfg.Server.GrpcPort)
+	serviceRegistry, err := discovery.NewServiceRegistry(ctx, *cfg, cfg.Server.NodeID, cfg.Server.GrpcPort)
 	if err != nil {
-		log.Fatalf("Failed to create service registry: %v", err)
+		logger.LogFatal(ctx, "Failed to create service registry: %v", zap.Error(err))
 	}
 
 	// 启动服务注册
-	if err := serviceRegistry.Start(); err != nil {
-		log.Fatalf("Failed to start service registry: %v", err)
+	if err := serviceRegistry.Start(ctx); err != nil {
+		logger.LogFatal(ctx, "Failed to start service registry: %v", zap.Error(err))
 	}
-	defer serviceRegistry.Stop()
+	defer serviceRegistry.Stop(ctx)
 
 	// 初始化协调器
 	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry)
 
 	queryCoord := coordinator.NewQueryCoordinator(
+		ctx,
 		redisPool, // 使用连接池
 		serviceRegistry,
 		querierService,
@@ -165,22 +166,22 @@ func main() {
 			},
 		}
 
-		metadataManager = metadata.NewManager(storageInstance, storageInstance, &metadataConfig)
+		metadataManager = metadata.NewManager(ctx, storageInstance, storageInstance, &metadataConfig)
 
-		if err := metadataManager.Start(); err != nil {
-			log.Printf("Failed to start metadata manager: %v", err)
+		if err := metadataManager.Start(ctx); err != nil {
+			logger.LogFatal(ctx, "Failed to start metadata manager: %v", zap.Error(err))
 		} else {
-			log.Println("Metadata manager started successfully")
+			logger.LogInfo(ctx, "Metadata manager started successfully")
 		}
 	}
 
 	// 初始化服务
-	log.Println("Initializing services...")
+	logger.LogInfo(ctx, "Initializing services...")
 
 	// 创建MinIODB服务
 	miniodbService, err := service.NewMinIODBService(cfg, ingesterService, querierService, redisPool, metadataManager, primaryMinio.GetClient())
 	if err != nil {
-		log.Fatalf("Failed to create MinIODB service: %v", err)
+		logger.LogFatal(ctx, "Failed to create MinIODB service: %v", zap.Error(err))
 	}
 
 	// 创建健康检查器
@@ -190,11 +191,11 @@ func main() {
 	go healthChecker.StartHealthCheck(ctx, 30*time.Second)
 
 	// 创建gRPC传输层
-	grpcServer := startGRPCServer(cfg, miniodbService, writeCoord,
+	grpcServer := startGRPCServer(ctx, cfg, miniodbService, writeCoord,
 		queryCoord, redisPool, primaryMinio, backupMinio, metadataManager)
 
 	// 启动REST服务器
-	restServer := startRESTServer(cfg, miniodbService, writeCoord,
+	restServer := startRESTServer(ctx, cfg, miniodbService, writeCoord,
 		queryCoord, redisPool, primaryMinio, backupMinio, metadataManager)
 
 	// 启动指标服务器和告警管理器
@@ -202,39 +203,39 @@ func main() {
 	var systemMonitor *metrics.SystemMonitor
 	var alertManager *monitoring.AlertManager
 	if cfg.Metrics.Enabled {
-		metricsServer = startMetricsServer(cfg)
+		metricsServer = startMetricsServer(ctx, cfg)
 		systemMonitor = metrics.NewSystemMonitor()
 		systemMonitor.Start()
 
 		// 启动告警管理器
-		alertManager = monitoring.NewAlertManager(5 * time.Minute) // 5分钟去重窗口
+		alertManager = monitoring.NewAlertManager(ctx, 5*time.Minute) // 5分钟去重窗口
 		alertManager.AddNotifier(&monitoring.LogNotifier{})
 		alertManager.Start(ctx)
-		log.Println("Alert manager started")
+		logger.LogInfo(ctx, "Alert manager started")
 	}
 
 	// 启动备份goroutine
 	if cfg.Backup.Enabled && backupMinio != nil {
-		go startBackupRoutine(primaryMinio, backupMinio, *cfg)
+		go startBackupRoutine(ctx, primaryMinio, backupMinio, *cfg)
 	}
 
-	log.Println("MinIODB server started successfully")
+	logger.LogInfo(ctx, "MinIODB server started successfully")
 
 	// 等待中断信号
 	waitForShutdown(ctx, cancel, grpcServer, restServer, metricsServer, systemMonitor, alertManager, metadataManager, storageEngine)
 
-	log.Println("MinIODB server stopped")
+	logger.LogInfo(ctx, "MinIODB server stopped")
 }
 
-func startGRPCServer(cfg *config.Config, miniodbService *service.MinIODBService,
+func startGRPCServer(ctx context.Context, cfg *config.Config, miniodbService *service.MinIODBService,
 	writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator,
 	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader,
 	metadataManager *metadata.Manager) *grpc.Server {
 
 	// 创建gRPC服务
-	grpcService, err := grpcTransport.NewServer(miniodbService, *cfg)
+	grpcService, err := grpcTransport.NewServer(ctx, miniodbService, *cfg)
 	if err != nil {
-		log.Fatalf("Failed to create gRPC service: %v", err)
+		logger.LogFatal(ctx, "Failed to create gRPC service: %v", zap.Error(err))
 	}
 
 	// 设置协调器
@@ -248,21 +249,21 @@ func startGRPCServer(cfg *config.Config, miniodbService *service.MinIODBService,
 	// 启动gRPC服务器
 	go func() {
 		log.Printf("Starting gRPC server on port %s", cfg.Server.GrpcPort)
-		if err := grpcService.Start(cfg.Server.GrpcPort); err != nil {
-			log.Fatalf("Failed to start gRPC server: %v", err)
+		if err := grpcService.Start(ctx, cfg.Server.GrpcPort); err != nil {
+			logger.LogFatal(ctx, "Failed to start gRPC server: %v", zap.Error(err))
 		}
 	}()
 
 	return nil // gRPC服务器在内部管理
 }
 
-func startRESTServer(cfg *config.Config, miniodbService *service.MinIODBService,
+func startRESTServer(ctx context.Context, cfg *config.Config, miniodbService *service.MinIODBService,
 	writeCoord *coordinator.WriteCoordinator, queryCoord *coordinator.QueryCoordinator,
 	redisPool *pool.RedisPool, primaryMinio, backupMinio storage.Uploader,
 	metadataManager *metadata.Manager) *http.Server {
 
 	// 创建REST服务
-	restServer := restTransport.NewServer(miniodbService, cfg)
+	restServer := restTransport.NewServer(ctx, miniodbService, cfg)
 
 	// 设置协调器
 	restServer.SetCoordinators(writeCoord, queryCoord)
@@ -274,21 +275,21 @@ func startRESTServer(cfg *config.Config, miniodbService *service.MinIODBService,
 
 	// 启动REST服务器
 	go func() {
-		log.Printf("Starting REST server on port %s", cfg.Server.RestPort)
+		logger.LogInfo(ctx, "Starting REST server on port %s", zap.String("port", cfg.Server.RestPort))
 		// 检查端口是否已经包含冒号
 		port := cfg.Server.RestPort
 		if port[0] != ':' {
 			port = ":" + port
 		}
-		if err := restServer.Start(port); err != nil {
-			log.Fatalf("Failed to start REST server: %v", err)
+		if err := restServer.Start(ctx, port); err != nil {
+			logger.LogFatal(ctx, "Failed to start REST server: %v", zap.Error(err))
 		}
 	}()
 
 	return nil
 }
 
-func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
+func startBackupRoutine(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
 	backupInterval := time.Duration(cfg.Backup.Interval) * time.Hour
 	if backupInterval == 0 {
 		backupInterval = 24 * time.Hour // 默认每24小时备份一次
@@ -298,7 +299,7 @@ func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.C
 	defer ticker.Stop()
 
 	for range ticker.C {
-		log.Println("Starting scheduled backup...")
+		logger.LogInfo(ctx, "Starting scheduled backup...")
 		// 这里实现备份逻辑
 	}
 }
@@ -314,13 +315,13 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
-	log.Println("Received shutdown signal")
+	logger.LogInfo(ctx, "Received shutdown signal")
 	cancel() // 取消上下文
 
 	// 停止告警管理器
 	if alertManager != nil {
-		alertManager.Stop()
-		log.Println("Alert manager stopped")
+		alertManager.Stop(ctx)
+		logger.LogInfo(ctx, "Alert manager stopped")
 	}
 
 	// 停止系统监视器
@@ -330,47 +331,47 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 
 	// 停止元数据管理器
 	if metadataManager != nil {
-		if err := metadataManager.Stop(); err != nil {
-			log.Printf("Error stopping metadata manager: %v", err)
+		if err := metadataManager.Stop(ctx); err != nil {
+			logger.LogError(ctx, err, "Error stopping metadata manager: %v")
 		}
 	}
 
 	// 停止存储引擎优化器
 	if storageEngine != nil {
-		log.Println("Stopping storage engine optimizer...")
-		if err := storageEngine.Stop(); err != nil {
-			log.Printf("Error stopping storage engine: %v", err)
+		logger.LogInfo(ctx, "Stopping storage engine optimizer...")
+		if err := storageEngine.Stop(ctx); err != nil {
+			logger.LogError(ctx, err, "Error stopping storage engine: %v")
 		}
 	}
 
 	// 停止gRPC服务器
 	if grpcServer != nil {
-		log.Println("Stopping gRPC server...")
+		logger.LogInfo(ctx, "Stopping gRPC server...")
 		grpcServer.GracefulStop()
 	}
 
 	// 停止REST服务器
 	if restServer != nil {
-		log.Println("Stopping REST server...")
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		logger.LogInfo(ctx, "Stopping REST server...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer shutdownCancel()
 		if err := restServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Error shutting down REST server: %v", err)
+			logger.LogError(ctx, err, "Error shutting down REST server: %v")
 		}
 	}
 
 	// 停止指标服务器
 	if metricsServer != nil {
-		log.Println("Stopping metrics server...")
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		logger.LogInfo(ctx, "Stopping metrics server...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer shutdownCancel()
 		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Error shutting down metrics server: %v", err)
+			logger.LogError(ctx, err, "Error shutting down metrics server: %v")
 		}
 	}
 }
 
-func startMetricsServer(cfg *config.Config) *http.Server {
+func startMetricsServer(ctx context.Context, cfg *config.Config) *http.Server {
 	// 创建metrics处理器
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -471,10 +472,10 @@ func startMetricsServer(cfg *config.Config) *http.Server {
 
 		// 写入所有metrics
 		for _, metric := range metrics {
-			w.Write([]byte(metric + "\n"))
+			_, _ = w.Write([]byte(metric + "\n"))
 		}
 
-		log.Printf("Metrics endpoint accessed, returned %d metric lines", len(metrics))
+		logger.LogInfo(ctx, fmt.Sprintf("Metrics endpoint accessed, returned %d metric lines", len(metrics)))
 	})
 
 	metricsServer := &http.Server{
@@ -483,9 +484,9 @@ func startMetricsServer(cfg *config.Config) *http.Server {
 	}
 
 	go func() {
-		log.Printf("Starting metrics server on port %s", cfg.Metrics.Port)
+		logger.LogInfo(ctx, fmt.Sprintf("Starting metrics server on port %s", cfg.Metrics.Port))
 		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start metrics server: %v", err)
+			logger.LogFatal(ctx, "Failed to start metrics server: %v", zap.Error(err))
 		}
 	}()
 

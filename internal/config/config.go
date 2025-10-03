@@ -1,12 +1,14 @@
 package config
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"minIODB/internal/logger"
 	"os"
 	"regexp"
 	"time"
 
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
 
@@ -576,12 +578,12 @@ func (c *Config) GetTableConfig(tableName string) *TableConfig {
 }
 
 // IsValidTableName 验证表名是否合法
-func (c *Config) IsValidTableName(tableName string) bool {
+func (c *Config) IsValidTableName(ctx context.Context, tableName string) bool {
 	if c.TableManagement.tableNameRegex == nil {
 		// 编译正则表达式
 		regex, err := regexp.Compile(c.TableManagement.TableNamePattern)
 		if err != nil {
-			log.Printf("WARN: invalid table name pattern: %v, using default", err)
+			logger.LogInfo(ctx, "WARN: invalid table name pattern: %v, using default", zap.Error(err))
 			regex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
 		}
 		c.TableManagement.tableNameRegex = regex
@@ -599,29 +601,37 @@ func (c *Config) GetDefaultTableName() string {
 }
 
 // LoadConfig 从文件加载配置
-func LoadConfig(configPath string) (*Config, error) {
+func LoadConfig(ctx context.Context, configPath string) (*Config, error) {
 	config := &Config{}
 
 	// 设置默认值
 	config.setDefaults()
 
-	if configPath != "" && fileExists(configPath) {
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
-		}
+	if configPath != "" {
+		if !fileExists(ctx, configPath) {
+			logger.LogInfo(ctx, "WARN: config file not found: %s, using default configuration", zap.String("config_path", configPath))
+		} else {
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read config file: %w", err)
+			}
 
-		if err := yaml.Unmarshal(data, config); err != nil {
-			return nil, fmt.Errorf("failed to parse config file: %w", err)
+			if err := yaml.Unmarshal(data, config); err != nil {
+				return nil, fmt.Errorf("failed to parse config file '%s': %w\nPlease check YAML syntax and field names", configPath, err)
+			}
+
+			logger.LogInfo(ctx, "INFO: loaded config from: %s", zap.String("config_path", configPath))
 		}
+	} else {
+		logger.LogInfo(ctx, "INFO: no config file specified, using default configuration")
 	}
 
 	// 使用环境变量覆盖配置
 	config.overrideWithEnv()
 
 	// 验证配置
-	if err := config.validate(); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
+	if err := config.validate(ctx); err != nil {
+		return nil, fmt.Errorf("config validation failed: %w\n\nTip: You can use 'config.simple.yaml' as a starting template", err)
 	}
 
 	return config, nil
@@ -1035,8 +1045,9 @@ func (c *Config) overrideWithEnv() {
 		c.Network.Pools.Redis.Password = redisPassword // 更新新的配置
 	}
 	if redisDB := os.Getenv("REDIS_DB"); redisDB != "" {
-		if db, err := fmt.Sscanf(redisDB, "%d", &c.Redis.DB); err == nil && db == 1 {
-			// DB值已设置
+		var db int
+		if n, err := fmt.Sscanf(redisDB, "%d", &db); err == nil && n == 1 {
+			c.Redis.DB = db
 		}
 		// 同时更新新配置
 		c.Network.Pools.Redis.DB = c.Redis.DB
@@ -1108,47 +1119,65 @@ func (c *Config) overrideWithEnv() {
 }
 
 // validate 验证配置
-func (c *Config) validate() error {
+func (c *Config) validate(ctx context.Context) error {
 	// 验证服务器配置
 	if c.Server.GrpcPort == "" {
-		return fmt.Errorf("grpc_port is required")
+		return fmt.Errorf("server.grpc_port is required (e.g., ':8080')")
 	}
 	if c.Server.RestPort == "" {
-		return fmt.Errorf("rest_port is required")
+		return fmt.Errorf("server.rest_port is required (e.g., ':8081')")
 	}
 
-	// 验证Redis配置
-	if c.Redis.Addr == "" {
-		return fmt.Errorf("redis addr is required")
+	// 验证Redis配置 - 仅在启用时验证
+	if c.Redis.Enabled || c.Network.Pools.Redis.Enabled {
+		redisAddr := c.Redis.Addr
+		if redisAddr == "" {
+			redisAddr = c.Network.Pools.Redis.Addr
+		}
+		// 检查是否为空
+		if redisAddr == "" {
+			return fmt.Errorf("redis.addr is required when Redis is enabled\nExample: redis.addr: 'localhost:6379'\nTip: Set redis.enabled: false for single-node mode")
+		}
 	}
 
-	// 验证MinIO配置
-	if c.MinIO.Endpoint == "" {
-		return fmt.Errorf("minio endpoint is required")
+	// 验证MinIO配置（必需）
+	minioEndpoint := c.MinIO.Endpoint
+	if minioEndpoint == "" {
+		minioEndpoint = c.Network.Pools.MinIO.Endpoint
 	}
-	if c.MinIO.Bucket == "" {
-		return fmt.Errorf("minio bucket is required")
+	// 空字符串或默认占位值都视为无效
+	if minioEndpoint == "" {
+		return fmt.Errorf("minio.endpoint is required\nExample: minio.endpoint: 'localhost:9000'")
+	}
+
+	minioBucket := c.MinIO.Bucket
+	if minioBucket == "" {
+		minioBucket = c.Network.Pools.MinIO.Bucket
+	}
+	// 空字符串或默认占位值都视为无效
+	if minioBucket == "" {
+		return fmt.Errorf("minio.bucket is required\nExample: minio.bucket: 'miniodb-data'")
 	}
 
 	// 验证表管理配置
 	if c.TableManagement.MaxTables <= 0 {
-		return fmt.Errorf("max_tables must be positive")
+		return fmt.Errorf("table_management.max_tables must be positive (current: %d)", c.TableManagement.MaxTables)
 	}
 	if c.TableManagement.TableNamePattern == "" {
-		return fmt.Errorf("table_name_pattern is required")
+		return fmt.Errorf("table_management.table_name_pattern is required")
 	}
 
 	// 验证默认表配置
 	if c.Tables.DefaultConfig.BufferSize <= 0 {
-		return fmt.Errorf("default buffer_size must be positive")
+		return fmt.Errorf("tables.default_config.buffer_size must be positive (current: %d)", c.Tables.DefaultConfig.BufferSize)
 	}
 	if c.Tables.DefaultConfig.FlushInterval <= 0 {
-		return fmt.Errorf("default flush_interval must be positive")
+		return fmt.Errorf("tables.default_config.flush_interval must be positive (current: %v)", c.Tables.DefaultConfig.FlushInterval)
 	}
 
 	// 如果有旧的buffer配置，将其映射到默认表配置
 	if c.Buffer.BufferSize > 0 || c.Buffer.FlushInterval > 0 {
-		log.Printf("INFO: migrating legacy buffer config to default table config")
+		logger.LogInfo(ctx, "INFO: migrating legacy buffer config to default table config")
 		if c.Buffer.BufferSize > 0 {
 			c.Tables.DefaultConfig.BufferSize = c.Buffer.BufferSize
 		}
@@ -1161,7 +1190,7 @@ func (c *Config) validate() error {
 }
 
 // fileExists 检查文件是否存在
-func fileExists(filename string) bool {
+func fileExists(ctx context.Context, filename string) bool {
 	info, err := os.Stat(filename)
 	if os.IsNotExist(err) {
 		return false

@@ -250,7 +250,7 @@ func (o *ObjectStorageImpl) GetStats() map[string]interface{} {
 }
 
 // Close 关闭连接
-func (o *ObjectStorageImpl) Close() error {
+func (o *ObjectStorageImpl) Close(ctx context.Context) error {
 	// 注意：这里不关闭poolManager，因为它可能被其他组件共享
 	// 实际的关闭操作应该由工厂或主应用程序负责
 	return nil

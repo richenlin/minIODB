@@ -2,9 +2,11 @@ package query
 
 import (
 	"context"
-	"log"
+	"minIODB/internal/logger"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // SmartCacheOptimizer 智能缓存优化器
@@ -79,7 +81,7 @@ func DefaultSmartCacheConfig() *SmartCacheConfig {
 }
 
 // NewSmartCacheOptimizer 创建智能缓存优化器
-func NewSmartCacheOptimizer(queryCache *QueryCache, config *SmartCacheConfig) *SmartCacheOptimizer {
+func NewSmartCacheOptimizer(ctx context.Context, queryCache *QueryCache, config *SmartCacheConfig) *SmartCacheOptimizer {
 	if config == nil {
 		config = DefaultSmartCacheConfig()
 	}
@@ -94,14 +96,14 @@ func NewSmartCacheOptimizer(queryCache *QueryCache, config *SmartCacheConfig) *S
 
 	// 启动后台任务
 	if config.EnablePrecompute {
-		go optimizer.precomputeLoop()
+		go optimizer.precomputeLoop(ctx)
 	}
 
 	return optimizer
 }
 
 // RecordQueryAccess 记录查询访问
-func (sco *SmartCacheOptimizer) RecordQueryAccess(query string, tables []string, latency time.Duration, resultSize int64) {
+func (sco *SmartCacheOptimizer) RecordQueryAccess(ctx context.Context, query string, tables []string, latency time.Duration, resultSize int64) {
 	sco.mutex.Lock()
 	defer sco.mutex.Unlock()
 
@@ -147,12 +149,11 @@ func (sco *SmartCacheOptimizer) RecordQueryAccess(query string, tables []string,
 		sco.stats.mutex.Unlock()
 	}
 
-	log.Printf("Query pattern updated: %s (count: %d, freq: %.2f/hour, predictable: %v)",
-		template[:min(50, len(template))], pattern.AccessCount, pattern.Frequency, pattern.IsPredictable)
+	logger.LogInfo(ctx, "Query pattern updated: %s (count: %d, freq: %.2f/hour, predictable: %v)", zap.String("query_template", template[:min(50, len(template))]), zap.Int64("access_count", pattern.AccessCount), zap.Float64("frequency", pattern.Frequency), zap.Bool("is_predictable", pattern.IsPredictable))
 }
 
 // CalculateOptimalTTL 计算最优TTL
-func (sco *SmartCacheOptimizer) CalculateOptimalTTL(query string) time.Duration {
+func (sco *SmartCacheOptimizer) CalculateOptimalTTL(ctx context.Context, query string) time.Duration {
 	if !sco.config.AdaptiveTTL {
 		return sco.queryCache.defaultTTL
 	}
@@ -195,7 +196,7 @@ func (sco *SmartCacheOptimizer) CalculateOptimalTTL(query string) time.Duration 
 }
 
 // GetPredictiveQueries 获取预测性查询（应该预计算的查询）
-func (sco *SmartCacheOptimizer) GetPredictiveQueries() []string {
+func (sco *SmartCacheOptimizer) GetPredictiveQueries(ctx context.Context) []string {
 	sco.mutex.RLock()
 	defer sco.mutex.RUnlock()
 
@@ -210,20 +211,20 @@ func (sco *SmartCacheOptimizer) GetPredictiveQueries() []string {
 }
 
 // precomputeLoop 预计算循环
-func (sco *SmartCacheOptimizer) precomputeLoop() {
+func (sco *SmartCacheOptimizer) precomputeLoop(ctx context.Context) {
 	ticker := time.NewTicker(sco.config.PrecomputeInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		sco.performPrecompute()
+		sco.performPrecompute(ctx)
 	}
 }
 
 // performPrecompute 执行预计算
-func (sco *SmartCacheOptimizer) performPrecompute() {
-	predictiveQueries := sco.GetPredictiveQueries()
+func (sco *SmartCacheOptimizer) performPrecompute(ctx context.Context) {
+	predictiveQueries := sco.GetPredictiveQueries(ctx)
 
-	log.Printf("Starting precompute for %d predictive queries", len(predictiveQueries))
+	logger.LogInfo(ctx, "Starting precompute for %d predictive queries", zap.Int("count", len(predictiveQueries)))
 
 	for _, query := range predictiveQueries {
 		// 这里应该触发实际的查询执行并缓存结果
@@ -240,7 +241,7 @@ func (sco *SmartCacheOptimizer) performPrecompute() {
 		sco.mutex.Unlock()
 	}
 
-	log.Printf("Precompute completed for %d queries", len(predictiveQueries))
+	logger.LogInfo(ctx, "Precompute completed for %d queries", zap.Int("count", len(predictiveQueries)))
 }
 
 // normalizeQuery 规范化查询（提取模板）
@@ -253,7 +254,7 @@ func (sco *SmartCacheOptimizer) normalizeQuery(query string) string {
 }
 
 // GetStats 获取统计信息
-func (sco *SmartCacheOptimizer) GetStats() *SmartCacheStats {
+func (sco *SmartCacheOptimizer) GetStats(ctx context.Context) *SmartCacheStats {
 	sco.stats.mutex.RLock()
 	defer sco.stats.mutex.RUnlock()
 
@@ -274,7 +275,7 @@ func (sco *SmartCacheOptimizer) WarmupCache(ctx context.Context, queries []strin
 		return nil
 	}
 
-	log.Printf("Starting cache warmup for %d queries", len(queries))
+	logger.LogInfo(ctx, "Starting cache warmup for %d queries", zap.Int("count", len(queries)))
 
 	for range queries {
 		// 这里应该执行查询并缓存
@@ -284,12 +285,12 @@ func (sco *SmartCacheOptimizer) WarmupCache(ctx context.Context, queries []strin
 		sco.stats.mutex.Unlock()
 	}
 
-	log.Printf("Cache warmup completed")
+	logger.LogInfo(ctx, "Cache warmup completed")
 	return nil
 }
 
 // GetQueryPatterns 获取查询模式
-func (sco *SmartCacheOptimizer) GetQueryPatterns() map[string]*QueryPattern {
+func (sco *SmartCacheOptimizer) GetQueryPatterns(ctx context.Context) map[string]*QueryPattern {
 	sco.mutex.RLock()
 	defer sco.mutex.RUnlock()
 

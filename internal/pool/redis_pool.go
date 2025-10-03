@@ -3,13 +3,14 @@ package pool
 import (
 	"context"
 	"fmt"
-	"log"
+	"minIODB/internal/logger"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // RedisMode Redis运行模式
@@ -127,7 +128,7 @@ type RedisPoolStats struct {
 }
 
 // NewRedisPool 创建新的Redis连接池
-func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
+func NewRedisPool(ctx context.Context, config *RedisPoolConfig) (*RedisPool, error) {
 	if config == nil {
 		config = DefaultRedisPoolConfig()
 	}
@@ -156,15 +157,15 @@ func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
 	}
 
 	// 执行健康检查
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	if err := pool.HealthCheck(ctx); err != nil {
-		pool.Close()
+		pool.Close(ctx)
 		return nil, fmt.Errorf("initial health check failed: %w", err)
 	}
 
-	log.Printf("Redis pool initialized in %s mode", config.Mode)
+	logger.LogInfo(ctx, "Redis pool initialized in %s mode", zap.String("mode", string(config.Mode)))
 	return pool, nil
 }
 
@@ -456,7 +457,7 @@ func (p *RedisPool) GetStats() *RedisPoolStats {
 }
 
 // UpdatePoolSize 动态更新连接池大小
-func (p *RedisPool) UpdatePoolSize(newSize int) error {
+func (p *RedisPool) UpdatePoolSize(ctx context.Context, newSize int) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -468,7 +469,7 @@ func (p *RedisPool) UpdatePoolSize(newSize int) error {
 
 	// 注意: go-redis不支持动态调整连接池大小
 	// 这里只更新配置，实际生效需要重新创建连接池
-	log.Printf("Pool size updated to %d (requires restart to take effect)", newSize)
+	logger.LogInfo(ctx, "Pool size updated to %d (requires restart to take effect)", zap.Int("new_size", newSize))
 	return nil
 }
 
@@ -483,7 +484,7 @@ func (p *RedisPool) GetConfig() *RedisPoolConfig {
 }
 
 // Close 关闭连接池
-func (p *RedisPool) Close() error {
+func (p *RedisPool) Close(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -513,7 +514,7 @@ func (p *RedisPool) Close() error {
 		return fmt.Errorf("failed to close Redis client: %w", err)
 	}
 
-	log.Printf("Redis pool (%s mode) closed successfully", p.config.Mode)
+	logger.LogInfo(ctx, "Redis pool (%s mode) closed successfully", zap.String("mode", string(p.config.Mode)))
 	return nil
 }
 
@@ -566,8 +567,7 @@ func (p *RedisPool) ExecuteWithRetry(ctx context.Context, operation func() error
 				backoff = p.config.MaxRetryBackoff
 			}
 
-			log.Printf("Redis operation failed (attempt %d/%d), retrying in %v: %v",
-				attempt+1, p.config.MaxRetries+1, backoff, err)
+			logger.LogInfo(ctx, "Redis operation failed (attempt %d/%d), retrying in %v: %v", zap.Int("attempt", attempt+1), zap.Int("max_retries", p.config.MaxRetries+1), zap.Duration("backoff", backoff), zap.Error(err))
 
 			select {
 			case <-ctx.Done():

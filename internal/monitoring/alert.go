@@ -3,11 +3,12 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	"log"
+	"minIODB/internal/logger"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 // AlertSeverity 告警严重级别
@@ -81,7 +82,7 @@ type MetricBuffer struct {
 
 // AlertNotifier 告警通知接口
 type AlertNotifier interface {
-	Notify(alert *Alert) error
+	Notify(ctx context.Context, alert *Alert) error
 }
 
 // Prometheus 告警指标
@@ -117,7 +118,7 @@ func init() {
 }
 
 // NewAlertManager 创建告警管理器
-func NewAlertManager(deduplicateWindow time.Duration) *AlertManager {
+func NewAlertManager(ctx context.Context, deduplicateWindow time.Duration) *AlertManager {
 	am := &AlertManager{
 		alerts:            make(map[string]*Alert),
 		alertHistory:      make([]*Alert, 0),
@@ -129,13 +130,13 @@ func NewAlertManager(deduplicateWindow time.Duration) *AlertManager {
 	}
 
 	// 添加默认告警规则
-	am.addDefaultRules()
+	am.addDefaultRules(ctx)
 
 	return am
 }
 
 // addDefaultRules 添加默认告警规则
-func (am *AlertManager) addDefaultRules() {
+func (am *AlertManager) addDefaultRules(ctx context.Context) {
 	defaultRules := []*AlertRule{
 		{
 			ID:               "high_memory_usage",
@@ -223,14 +224,14 @@ func (am *AlertManager) addDefaultRules() {
 
 // Start 启动告警管理器
 func (am *AlertManager) Start(ctx context.Context) {
-	log.Println("Starting alert manager...")
+	logger.LogInfo(ctx, "Starting alert manager...")
 	go am.evaluationLoop(ctx)
 }
 
 // Stop 停止告警管理器
-func (am *AlertManager) Stop() {
+func (am *AlertManager) Stop(ctx context.Context) {
 	close(am.stopChan)
-	log.Println("Alert manager stopped")
+	logger.LogInfo(ctx, "Alert manager stopped")
 }
 
 // evaluationLoop 评估循环
@@ -245,13 +246,13 @@ func (am *AlertManager) evaluationLoop(ctx context.Context) {
 		case <-am.stopChan:
 			return
 		case <-ticker.C:
-			am.evaluateRules()
+			am.evaluateRules(ctx)
 		}
 	}
 }
 
 // evaluateRules 评估告警规则
-func (am *AlertManager) evaluateRules() {
+func (am *AlertManager) evaluateRules(ctx context.Context) {
 	am.mutex.RLock()
 	rules := make([]*AlertRule, 0, len(am.rules))
 	for _, rule := range am.rules {
@@ -262,12 +263,12 @@ func (am *AlertManager) evaluateRules() {
 	am.mutex.RUnlock()
 
 	for _, rule := range rules {
-		am.evaluateRule(rule)
+		am.evaluateRule(ctx, rule)
 	}
 }
 
 // evaluateRule 评估单个规则
-func (am *AlertManager) evaluateRule(rule *AlertRule) {
+func (am *AlertManager) evaluateRule(ctx context.Context, rule *AlertRule) {
 	am.mutex.RLock()
 	buffer, exists := am.metrics[rule.Metric]
 	am.mutex.RUnlock()
@@ -308,14 +309,14 @@ func (am *AlertManager) evaluateRule(rule *AlertRule) {
 	}
 
 	if violated {
-		am.triggerAlert(rule, avgValue)
+		am.triggerAlert(ctx, rule, avgValue)
 	} else {
-		am.resolveAlert(rule.ID)
+		am.resolveAlert(ctx, rule.ID)
 	}
 }
 
 // RecordMetric 记录指标
-func (am *AlertManager) RecordMetric(metric string, value float64) {
+func (am *AlertManager) RecordMetric(ctx context.Context, metric string, value float64) {
 	am.mutex.Lock()
 	defer am.mutex.Unlock()
 
@@ -341,7 +342,7 @@ func (am *AlertManager) RecordMetric(metric string, value float64) {
 }
 
 // triggerAlert 触发告警
-func (am *AlertManager) triggerAlert(rule *AlertRule, value float64) {
+func (am *AlertManager) triggerAlert(ctx context.Context, rule *AlertRule, value float64) {
 	am.mutex.Lock()
 	defer am.mutex.Unlock()
 
@@ -380,13 +381,13 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, value float64) {
 	activeAlerts.WithLabelValues(string(alert.Severity), alert.Component).Inc()
 
 	// 发送通知
-	go am.notifyAlert(alert)
+	go am.notifyAlert(ctx, alert)
 
-	log.Printf("Alert triggered: [%s] %s - %s (value: %.2f)", alert.Severity, alert.Component, alert.Message, alert.Value)
+	logger.LogInfo(ctx, "Alert triggered: [%s] %s - %s (value: %.2f)", zap.String("severity", string(alert.Severity)), zap.String("component", alert.Component), zap.String("message", alert.Message), zap.Float64("value", alert.Value))
 }
 
 // resolveAlert 解决告警
-func (am *AlertManager) resolveAlert(ruleID string) {
+func (am *AlertManager) resolveAlert(ctx context.Context, ruleID string) {
 	am.mutex.Lock()
 	defer am.mutex.Unlock()
 
@@ -413,7 +414,7 @@ func (am *AlertManager) resolveAlert(ruleID string) {
 		duration := now.Sub(alert.FirstSeenAt).Seconds()
 		alertResolutionDuration.WithLabelValues(string(alert.Severity), alert.Component).Observe(duration)
 
-		log.Printf("Alert resolved: [%s] %s - %s", alert.Severity, alert.Component, alert.Message)
+		logger.LogInfo(ctx, "Alert resolved: [%s] %s - %s", zap.String("severity", string(alert.Severity)), zap.String("component", alert.Component), zap.String("message", alert.Message))
 	}
 
 	delete(am.alerts, alertKey)
@@ -437,10 +438,10 @@ func (am *AlertManager) getThresholdValue(rule *AlertRule) float64 {
 }
 
 // notifyAlert 通知告警
-func (am *AlertManager) notifyAlert(alert *Alert) {
+func (am *AlertManager) notifyAlert(ctx context.Context, alert *Alert) {
 	for _, notifier := range am.notifiers {
-		if err := notifier.Notify(alert); err != nil {
-			log.Printf("Failed to send alert notification: %v", err)
+		if err := notifier.Notify(ctx, alert); err != nil {
+			logger.LogInfo(ctx, "Failed to send alert notification: %v", zap.Error(err))
 		}
 	}
 }
@@ -546,8 +547,7 @@ func (am *AlertManager) GetAlertStats() map[string]interface{} {
 type LogNotifier struct{}
 
 // Notify 发送日志通知
-func (ln *LogNotifier) Notify(alert *Alert) error {
-	log.Printf("[ALERT] [%s] %s - %s: %s (value: %.2f, threshold: %.2f)",
-		alert.Severity, alert.Component, alert.Metric, alert.Message, alert.Value, alert.Threshold)
+func (ln *LogNotifier) Notify(ctx context.Context, alert *Alert) error {
+	logger.LogInfo(ctx, "[ALERT] [%s] %s - %s: %s (value: %.2f, threshold: %.2f)", zap.String("severity", string(alert.Severity)), zap.String("component", alert.Component), zap.String("metric", alert.Metric), zap.String("message", alert.Message), zap.Float64("value", alert.Value), zap.Float64("threshold", alert.Threshold))
 	return nil
 }

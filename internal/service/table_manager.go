@@ -4,17 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 )
 
 // TableManager 表管理器
@@ -63,7 +64,7 @@ func NewTableManager(redisPool *pool.RedisPool, primaryMinio *minio.Client, back
 // CreateTable 创建表
 func (tm *TableManager) CreateTable(ctx context.Context, tableName string, tableConfig *config.TableConfig, ifNotExists bool) error {
 	// 验证表名
-	if !tm.cfg.IsValidTableName(tableName) {
+	if !tm.cfg.IsValidTableName(ctx, tableName) {
 		return fmt.Errorf("invalid table name: %s", tableName)
 	}
 
@@ -112,7 +113,7 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 
 	// 如果Redis连接池为空，在MinIO中创建元数据标记文件
 	if tm.redisPool == nil {
-		log.Printf("Redis disabled, creating metadata marker in MinIO for table: %s", tableName)
+		logger.LogInfo(ctx, "Redis disabled, creating metadata marker in MinIO for table: %s", zap.String("table_name", tableName))
 		return tm.createTableMetadataInMinIO(ctx, tableName, tableConfig)
 	}
 
@@ -163,7 +164,7 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 		return fmt.Errorf("failed to initialize table stats: %w", err)
 	}
 
-	log.Printf("Created table: %s", tableName)
+	logger.LogInfo(ctx, "Created table: %s", zap.String("table_name", tableName))
 	return nil
 }
 
@@ -195,7 +196,7 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 
 	// 如果Redis连接池为空，跳过Redis操作
 	if tm.redisPool == nil {
-		log.Printf("Redis disabled, skipping Redis operations for table deletion: %s", tableName)
+		logger.LogInfo(ctx, "Redis disabled, skipping Redis operations for table deletion: %s", zap.String("table_name", tableName))
 		return filesDeleted, nil
 	}
 
@@ -209,28 +210,28 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 	// 删除表配置
 	configKey := fmt.Sprintf("table:%s:config", tableName)
 	if err := redisClient.Del(ctx, configKey).Err(); err != nil {
-		log.Printf("WARN: failed to delete table config: %v", err)
+		logger.LogInfo(ctx, "WARN: failed to delete table config: %v", zap.Error(err))
 	}
 
 	// 删除创建时间
 	createdAtKey := fmt.Sprintf("table:%s:created_at", tableName)
 	if err := redisClient.Del(ctx, createdAtKey).Err(); err != nil {
-		log.Printf("WARN: failed to delete table created_at: %v", err)
+		logger.LogInfo(ctx, "WARN: failed to delete table created_at: %v", zap.Error(err))
 	}
 
 	// 删除最后写入时间
 	lastWriteKey := fmt.Sprintf("table:%s:last_write", tableName)
 	if err := redisClient.Del(ctx, lastWriteKey).Err(); err != nil {
-		log.Printf("WARN: failed to delete table last_write: %v", err)
+		logger.LogInfo(ctx, "WARN: failed to delete table last_write: %v", zap.Error(err))
 	}
 
 	// 删除表统计
 	statsKey := fmt.Sprintf("table:%s:stats", tableName)
 	if err := redisClient.Del(ctx, statsKey).Err(); err != nil {
-		log.Printf("WARN: failed to delete table stats: %v", err)
+		logger.LogInfo(ctx, "WARN: failed to delete table stats: %v", zap.Error(err))
 	}
 
-	log.Printf("Dropped table: %s (files deleted: %d)", tableName, filesDeleted)
+	logger.LogInfo(ctx, "Dropped table: %s (files deleted: %d)", zap.String("table_name", tableName), zap.Int32("files_deleted", filesDeleted))
 	return filesDeleted, nil
 }
 
@@ -238,7 +239,7 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*TableManagerInfo, error) {
 	// 如果Redis连接池为空，使用MinIO发现表
 	if tm.redisPool == nil {
-		log.Printf("Redis disabled, discovering tables from MinIO")
+		logger.LogInfo(ctx, "Redis disabled, discovering tables from MinIO")
 		return tm.listTablesFromMinIO(ctx, pattern)
 	}
 
@@ -259,7 +260,7 @@ func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*Tabl
 
 		tableInfo, err := tm.getTableInfo(ctx, tableName)
 		if err != nil {
-			log.Printf("WARN: failed to get info for table %s: %v", tableName, err)
+			logger.LogInfo(ctx, "WARN: failed to get info for table %s: %v", zap.String("table_name", tableName), zap.Error(err))
 			continue
 		}
 
@@ -315,12 +316,12 @@ func (tm *TableManager) createTableMetadataInMinIO(ctx context.Context, tableNam
 		return fmt.Errorf("failed to create metadata marker in MinIO: %w", err)
 	}
 
-	log.Printf("Created metadata marker for table %s in MinIO: %s", tableName, metadataKey)
+	logger.LogInfo(ctx, "Created metadata marker for table %s in MinIO: %s", zap.String("table_name", tableName), zap.String("metadata_key", metadataKey))
 	return nil
 }
 
 // getCachedTableInfo 从缓存获取表信息（优化2）
-func (tm *TableManager) getCachedTableInfo(tableName string) (*TableManagerInfo, bool) {
+func (tm *TableManager) getCachedTableInfo(ctx context.Context, tableName string) (*TableManagerInfo, bool) {
 	tm.metadataCacheMutex.RLock()
 	defer tm.metadataCacheMutex.RUnlock()
 
@@ -329,21 +330,21 @@ func (tm *TableManager) getCachedTableInfo(tableName string) (*TableManagerInfo,
 }
 
 // setCachedTableInfo 设置表信息缓存（优化2）
-func (tm *TableManager) setCachedTableInfo(tableName string, info *TableManagerInfo) {
+func (tm *TableManager) setCachedTableInfo(ctx context.Context, tableName string, info *TableManagerInfo) {
 	tm.metadataCacheMutex.Lock()
 	defer tm.metadataCacheMutex.Unlock()
 
 	tm.metadataCache[tableName] = info
-	log.Printf("Cached metadata for table %s", tableName)
+	logger.LogInfo(ctx, "Cached metadata for table %s", zap.String("table_name", tableName))
 }
 
 // invalidateCachedTableInfo 使表缓存失效（优化2）
-func (tm *TableManager) invalidateCachedTableInfo(tableName string) {
+func (tm *TableManager) invalidateCachedTableInfo(ctx context.Context, tableName string) {
 	tm.metadataCacheMutex.Lock()
 	defer tm.metadataCacheMutex.Unlock()
 
 	delete(tm.metadataCache, tableName)
-	log.Printf("Invalidated cache for table %s", tableName)
+	logger.LogInfo(ctx, "Invalidated cache for table %s", zap.String("table_name", tableName))
 }
 
 // listTablesFromMinIO 从MinIO发现表（单节点模式）
@@ -363,7 +364,7 @@ func (tm *TableManager) listTablesFromMinIO(ctx context.Context, pattern string)
 	tableMap := make(map[string]bool)
 	for object := range objectCh {
 		if object.Err != nil {
-			log.Printf("WARN: error listing objects: %v", object.Err)
+			logger.LogInfo(ctx, "WARN: error listing objects: %v", zap.Error(object.Err))
 			continue
 		}
 
@@ -381,7 +382,7 @@ func (tm *TableManager) listTablesFromMinIO(ctx context.Context, pattern string)
 	var tables []*TableManagerInfo
 	for tableName := range tableMap {
 		// 先检查缓存
-		if cachedInfo, exists := tm.getCachedTableInfo(tableName); exists {
+		if cachedInfo, exists := tm.getCachedTableInfo(ctx, tableName); exists {
 			tables = append(tables, cachedInfo)
 			continue
 		}
@@ -396,11 +397,11 @@ func (tm *TableManager) listTablesFromMinIO(ctx context.Context, pattern string)
 			Status:    "active",
 		}
 
-		tm.setCachedTableInfo(tableName, info)
+		tm.setCachedTableInfo(ctx, tableName, info)
 		tables = append(tables, info)
 	}
 
-	log.Printf("Discovered %d tables from MinIO (%d from cache)", len(tables), len(tableMap)-len(tables))
+	logger.LogInfo(ctx, "Discovered %d tables from MinIO (%d from cache)", zap.Int("tables", len(tables)), zap.Int("cache", len(tableMap)-len(tables)))
 	return tables, nil
 }
 
@@ -665,14 +666,14 @@ func (tm *TableManager) deleteTableData(ctx context.Context, tableName string) (
 	for _, key := range keys {
 		files, err := redisClient.SMembers(ctx, key).Result()
 		if err != nil {
-			log.Printf("WARN: failed to get files for key %s: %v", key, err)
+			logger.LogInfo(ctx, "WARN: failed to get files for key %s: %v", zap.String("key", key), zap.Error(err))
 			continue
 		}
 
 		// 从MinIO删除文件
 		for _, file := range files {
 			if err := tm.primaryMinio.RemoveObject(ctx, tm.cfg.MinIO.Bucket, file, minio.RemoveObjectOptions{}); err != nil {
-				log.Printf("WARN: failed to delete file %s from primary MinIO: %v", file, err)
+				logger.LogInfo(ctx, "WARN: failed to delete file %s from primary MinIO: %v", zap.String("file", file), zap.Error(err))
 			} else {
 				totalDeleted++
 			}
@@ -680,14 +681,14 @@ func (tm *TableManager) deleteTableData(ctx context.Context, tableName string) (
 			// 从备份MinIO删除文件（如果存在）
 			if tm.backupMinio != nil && tm.cfg.Backup.Enabled {
 				if err := tm.backupMinio.RemoveObject(ctx, tm.cfg.Backup.MinIO.Bucket, file, minio.RemoveObjectOptions{}); err != nil {
-					log.Printf("WARN: failed to delete file %s from backup MinIO: %v", file, err)
+					logger.LogInfo(ctx, "WARN: failed to delete file %s from backup MinIO: %v", zap.String("file", file), zap.Error(err))
 				}
 			}
 		}
 
 		// 删除索引键
 		if err := redisClient.Del(ctx, key).Err(); err != nil {
-			log.Printf("WARN: failed to delete index key %s: %v", key, err)
+			logger.LogInfo(ctx, "WARN: failed to delete index key %s: %v", zap.String("key", key), zap.Error(err))
 		}
 	}
 

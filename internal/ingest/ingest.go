@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -23,7 +24,7 @@ func NewIngester(buf *buffer.ConcurrentBuffer) *Ingester {
 }
 
 // IngestData converts the request and adds it to the buffer.
-func (i *Ingester) IngestData(req *olapv1.WriteRequest) error {
+func (i *Ingester) IngestData(ctx context.Context, req *olapv1.WriteRequest) error {
 	payloadBytes, err := protojson.Marshal(req.Payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
@@ -42,41 +43,41 @@ func (i *Ingester) IngestData(req *olapv1.WriteRequest) error {
 		Payload:   string(payloadBytes),
 	}
 
-	i.buffer.Add(row)
+	i.buffer.Add(ctx, row)
 	return nil
 }
 
 // FlushBuffer 手动刷新缓冲区
-func (i *Ingester) FlushBuffer() error {
+func (i *Ingester) FlushBuffer(ctx context.Context) error {
 	if i.buffer == nil {
 		return fmt.Errorf("buffer not initialized")
 	}
 
 	// 触发手动刷新所有缓冲区
-	return i.buffer.FlushDataPoints()
+	return i.buffer.FlushDataPoints(ctx)
 }
 
 // GetBufferStats 获取缓冲区统计信息
-func (i *Ingester) GetBufferStats() *buffer.ConcurrentBufferStats {
+func (i *Ingester) GetBufferStats(ctx context.Context) *buffer.ConcurrentBufferStats {
 	if i.buffer == nil {
 		return nil
 	}
-	return i.buffer.GetStats()
+	return i.buffer.GetStats(ctx)
 }
 
 // GetBufferedData 获取指定表的缓冲区数据（用于混合查询）
-func (i *Ingester) GetBufferedData(tableName string) []buffer.DataRow {
+func (i *Ingester) GetBufferedData(ctx context.Context, tableName string) []buffer.DataRow {
 	if i.buffer == nil {
 		return []buffer.DataRow{}
 	}
 
 	// 获取该表的所有缓冲区键
-	keys := i.buffer.GetTableKeys(tableName)
+	keys := i.buffer.GetTableKeys(ctx, tableName)
 
 	// 收集所有数据行
 	var allRows []buffer.DataRow
 	for _, key := range keys {
-		rows := i.buffer.GetBufferData(key)
+		rows := i.buffer.GetBufferData(ctx, key)
 		allRows = append(allRows, rows...)
 	}
 
@@ -84,13 +85,13 @@ func (i *Ingester) GetBufferedData(tableName string) []buffer.DataRow {
 }
 
 // GetAllBufferedTables 获取缓冲区中所有表名
-func (i *Ingester) GetAllBufferedTables() []string {
+func (i *Ingester) GetAllBufferedTables(ctx context.Context) []string {
 	if i.buffer == nil {
 		return []string{}
 	}
 
 	tableMap := make(map[string]bool)
-	keys := i.buffer.GetAllKeys()
+	keys := i.buffer.GetAllKeys(ctx)
 
 	for _, key := range keys {
 		// 键格式：table/id/date

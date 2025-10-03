@@ -93,13 +93,13 @@ type BackupStats struct {
 }
 
 // NewBackupManager 创建备份管理器（向后兼容）
-func NewBackupManager(storage storage.Storage, nodeID string, config BackupConfig) *BackupManager {
-	return NewBackupManagerWithStorages(storage, nil, nil, nodeID, config)
+func NewBackupManager(ctx context.Context, storage storage.Storage, nodeID string, config BackupConfig) *BackupManager {
+	return NewBackupManagerWithStorages(ctx, storage, nil, nil, nodeID, config)
 }
 
 // NewBackupManagerWithStorages 使用分离的存储接口创建备份管理器
-func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage storage.CacheStorage, objectStorage storage.ObjectStorage, nodeID string, config BackupConfig) *BackupManager {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewBackupManagerWithStorages(ctx context.Context, unifiedStorage storage.Storage, cacheStorage storage.CacheStorage, objectStorage storage.ObjectStorage, nodeID string, config BackupConfig) *BackupManager {
+	ctx, cancel := context.WithCancel(ctx)
 
 	manager := &BackupManager{
 		storage:       unifiedStorage,
@@ -127,29 +127,29 @@ func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage s
 }
 
 // Start 启动备份管理器
-func (bm *BackupManager) Start() error {
+func (bm *BackupManager) Start(ctx context.Context) error {
 	bm.logger.Printf("Starting metadata backup manager, interval: %v", bm.config.Interval)
-	bm.logger.Printf("Backup configuration: bucket=%s, storage=%v, objectStorage=%v, cacheStorage=%v", 
+	bm.logger.Printf("Backup configuration: bucket=%s, storage=%v, objectStorage=%v, cacheStorage=%v",
 		bm.bucket, bm.storage != nil, bm.objectStorage != nil, bm.cacheStorage != nil)
 
 	// 立即执行一次备份
-	if err := bm.performBackup(); err != nil {
+	if err := bm.performBackup(ctx); err != nil {
 		bm.logger.Printf("Initial backup failed: %v", err)
 	}
 
 	// 启动定期备份
 	bm.wg.Add(1)
-	go bm.backupLoop()
+	go bm.backupLoop(ctx)
 
 	// 启动清理任务
 	bm.wg.Add(1)
-	go bm.cleanupLoop()
+	go bm.cleanupLoop(ctx)
 
 	return nil
 }
 
 // Stop 停止备份管理器
-func (bm *BackupManager) Stop() error {
+func (bm *BackupManager) Stop(ctx context.Context) error {
 	bm.logger.Println("Stopping metadata backup manager")
 
 	bm.cancel()
@@ -160,7 +160,7 @@ func (bm *BackupManager) Stop() error {
 }
 
 // backupLoop 备份循环
-func (bm *BackupManager) backupLoop() {
+func (bm *BackupManager) backupLoop(ctx context.Context) {
 	defer bm.wg.Done()
 
 	ticker := time.NewTicker(bm.config.Interval)
@@ -171,7 +171,7 @@ func (bm *BackupManager) backupLoop() {
 		case <-bm.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := bm.performBackup(); err != nil {
+			if err := bm.performBackup(ctx); err != nil {
 				bm.incrementErrorCount()
 				bm.logger.Printf("Backup failed: %v", err)
 			}
@@ -180,19 +180,19 @@ func (bm *BackupManager) backupLoop() {
 }
 
 // performBackup 执行备份
-func (bm *BackupManager) performBackup() error {
+func (bm *BackupManager) performBackup(ctx context.Context) error {
 	startTime := time.Now()
 	bm.logger.Printf("Starting metadata backup")
 	bm.logger.Printf("Backup target bucket: %s", bm.bucket)
 
 	// 收集元数据
-	entries, err := bm.collectMetadata()
+	entries, err := bm.collectMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to collect metadata: %w", err)
 	}
 
 	// 获取当前版本号并递增
-	currentVersion, err := bm.getCurrentAndIncrementVersion()
+	currentVersion, err := bm.getCurrentAndIncrementVersion(ctx)
 	if err != nil {
 		bm.logger.Printf("Failed to get/increment version, using default: %v", err)
 		currentVersion = "1.0.0"
@@ -224,10 +224,10 @@ func (bm *BackupManager) performBackup() error {
 	var uploadErr error
 	if bm.objectStorage != nil {
 		bm.logger.Printf("Using object storage interface for backup upload")
-		uploadErr = bm.objectStorage.PutObject(context.Background(), bm.bucket, objectName, reader, int64(len(data)))
+		uploadErr = bm.objectStorage.PutObject(ctx, bm.bucket, objectName, reader, int64(len(data)))
 	} else if bm.storage != nil {
 		bm.logger.Printf("Using unified storage interface for backup upload")
-		uploadErr = bm.storage.PutObject(context.Background(), bm.bucket, objectName, reader, int64(len(data)))
+		uploadErr = bm.storage.PutObject(ctx, bm.bucket, objectName, reader, int64(len(data)))
 	} else {
 		return fmt.Errorf("no object storage available")
 	}
@@ -248,7 +248,7 @@ func (bm *BackupManager) performBackup() error {
 }
 
 // getCurrentAndIncrementVersion 获取当前版本号并递增
-func (bm *BackupManager) getCurrentAndIncrementVersion() (string, error) {
+func (bm *BackupManager) getCurrentAndIncrementVersion(ctx context.Context) (string, error) {
 	var redisClient redis.Cmdable
 
 	// 获取Redis客户端
@@ -283,8 +283,6 @@ func (bm *BackupManager) getCurrentAndIncrementVersion() (string, error) {
 	} else {
 		return "", fmt.Errorf("no cache storage available")
 	}
-
-	ctx := context.Background()
 
 	// 获取当前版本号
 	currentVersion, err := redisClient.Get(ctx, "metadata:version").Result()
@@ -326,12 +324,12 @@ func (bm *BackupManager) incrementVersion(version string) string {
 }
 
 // collectMetadata 收集元数据（公共方法）
-func (bm *BackupManager) CollectMetadata() ([]*MetadataEntry, error) {
-	return bm.collectMetadata()
+func (bm *BackupManager) CollectMetadata(ctx context.Context) ([]*MetadataEntry, error) {
+	return bm.collectMetadata(ctx)
 }
 
 // collectMetadata 收集元数据
-func (bm *BackupManager) collectMetadata() ([]*MetadataEntry, error) {
+func (bm *BackupManager) collectMetadata(ctx context.Context) ([]*MetadataEntry, error) {
 	var redisClient redis.Cmdable
 
 	// 获取Redis客户端
@@ -375,7 +373,6 @@ func (bm *BackupManager) collectMetadata() ([]*MetadataEntry, error) {
 	}
 
 	var entries []*MetadataEntry
-	ctx := context.Background()
 
 	// 收集服务注册信息
 	if serviceEntries, err := bm.collectServiceRegistry(ctx, redisClient); err != nil {
@@ -567,7 +564,7 @@ func (bm *BackupManager) collectClusterInfo(ctx context.Context, client redis.Cm
 }
 
 // cleanupLoop 清理循环
-func (bm *BackupManager) cleanupLoop() {
+func (bm *BackupManager) cleanupLoop(ctx context.Context) {
 	defer bm.wg.Done()
 
 	// 每天执行一次清理
@@ -579,7 +576,7 @@ func (bm *BackupManager) cleanupLoop() {
 		case <-bm.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := bm.cleanupOldBackups(); err != nil {
+			if err := bm.cleanupOldBackups(ctx); err != nil {
 				bm.logger.Printf("Cleanup failed: %v", err)
 			}
 		}
@@ -587,11 +584,11 @@ func (bm *BackupManager) cleanupLoop() {
 }
 
 // cleanupOldBackups 清理旧备份
-func (bm *BackupManager) cleanupOldBackups() error {
+func (bm *BackupManager) cleanupOldBackups(ctx context.Context) error {
 	cutoffTime := time.Now().AddDate(0, 0, -bm.config.RetentionDays)
 	prefix := fmt.Sprintf("metadata-backup/%s/", bm.nodeID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	// 列出所有备份对象

@@ -35,7 +35,7 @@ type CacheStorage interface {
 	GetClient() interface{}
 
 	// 连接管理
-	Close() error
+	Close(ctx context.Context) error
 }
 
 // ObjectStorage 对象存储接口
@@ -59,7 +59,7 @@ type ObjectStorage interface {
 	GetStats() map[string]interface{}
 
 	// 连接管理
-	Close() error
+	Close(ctx context.Context) error
 }
 
 // StorageFactory 存储工厂接口
@@ -68,7 +68,7 @@ type StorageFactory interface {
 	CreateObjectStorage() (ObjectStorage, error)
 	CreateBackupObjectStorage() (ObjectStorage, error) // 备份存储
 	GetPoolManager() *pool.PoolManager
-	Close() error
+	Close(ctx context.Context) error
 }
 
 // 保持向后兼容的统一存储接口

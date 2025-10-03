@@ -15,9 +15,9 @@ import (
 
 // ValidationResult 验证结果
 type ValidationResult struct {
-	Component string `json:"component"`
-	Status    string `json:"status"`
-	Message   string `json:"message"`
+	Component string                 `json:"component"`
+	Status    string                 `json:"status"`
+	Message   string                 `json:"message"`
 	Details   map[string]interface{} `json:"details,omitempty"`
 }
 
@@ -32,31 +32,31 @@ func NewConfigValidator(cfg Config) *ConfigValidator {
 }
 
 // ValidateAll 验证所有配置
-func (v *ConfigValidator) ValidateAll() ([]ValidationResult, error) {
+func (v *ConfigValidator) ValidateAll(ctx context.Context) ([]ValidationResult, error) {
 	var results []ValidationResult
-	
+
 	// 验证Redis配置
-	if result := v.validateRedisConfig(); result != nil {
+	if result := v.validateRedisConfig(ctx); result != nil {
 		results = append(results, *result)
 	}
-	
+
 	// 验证MinIO配置
-	if result := v.validateMinIOConfig(); result != nil {
+	if result := v.validateMinIOConfig(ctx); result != nil {
 		results = append(results, *result)
 	}
-	
+
 	// 验证服务器配置
-	if result := v.validateServerConfig(); result != nil {
+	if result := v.validateServerConfig(ctx); result != nil {
 		results = append(results, *result)
 	}
-	
+
 	return results, nil
 }
 
 // validateRedisConfig 验证Redis配置
-func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
+func (v *ConfigValidator) validateRedisConfig(ctx context.Context) *ValidationResult {
 	cfg := v.cfg.Redis
-	
+
 	// 检查必需字段
 	if cfg.Addr == "" {
 		return &ValidationResult{
@@ -65,7 +65,7 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 			Message:   "Redis address is required",
 		}
 	}
-	
+
 	// 验证地址格式
 	parts := strings.Split(cfg.Addr, ":")
 	if len(parts) != 2 {
@@ -78,7 +78,7 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 			},
 		}
 	}
-	
+
 	// 验证端口
 	if port, err := strconv.Atoi(parts[1]); err != nil || port <= 0 || port > 65535 {
 		return &ValidationResult{
@@ -90,7 +90,7 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 			},
 		}
 	}
-	
+
 	// 测试连接
 	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
@@ -98,10 +98,10 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 		DB:       cfg.DB,
 	})
 	defer client.Close()
-	
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	
+
 	if err := client.Ping(ctx).Err(); err != nil {
 		return &ValidationResult{
 			Component: "redis",
@@ -113,7 +113,7 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 			},
 		}
 	}
-	
+
 	// 获取Redis信息
 	info, err := client.Info(ctx).Result()
 	if err != nil {
@@ -126,23 +126,23 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 			},
 		}
 	}
-	
+
 	return &ValidationResult{
 		Component: "redis",
 		Status:    "ok",
 		Message:   "Redis connection successful",
 		Details: map[string]interface{}{
-			"addr":    cfg.Addr,
-			"db":      cfg.DB,
-			"info":    info[:200] + "...", // 截取部分信息
+			"addr": cfg.Addr,
+			"db":   cfg.DB,
+			"info": info[:200] + "...", // 截取部分信息
 		},
 	}
 }
 
 // validateMinIOConfig 验证MinIO配置
-func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
+func (v *ConfigValidator) validateMinIOConfig(ctx context.Context) *ValidationResult {
 	cfg := v.cfg.MinIO
-	
+
 	if cfg.Endpoint == "" {
 		return &ValidationResult{
 			Component: "minio",
@@ -150,7 +150,7 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 			Message:   "MinIO endpoint is required",
 		}
 	}
-	
+
 	if cfg.AccessKeyID == "" {
 		return &ValidationResult{
 			Component: "minio",
@@ -158,7 +158,7 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 			Message:   "MinIO access key ID is required",
 		}
 	}
-	
+
 	if cfg.SecretAccessKey == "" {
 		return &ValidationResult{
 			Component: "minio",
@@ -166,7 +166,7 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 			Message:   "MinIO secret access key is required",
 		}
 	}
-	
+
 	// 注释掉bucket验证，因为MinioConfig没有BucketName字段
 	// if cfg.BucketName == "" {
 	// 	return &ValidationResult{
@@ -175,7 +175,7 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 	// 		Message:   "MinIO bucket name is required",
 	// 	}
 	// }
-	
+
 	// 测试连接
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
@@ -191,10 +191,10 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 			},
 		}
 	}
-	
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	
+
 	// 简单的连接测试
 	_, err = client.ListBuckets(ctx)
 	if err != nil {
@@ -207,7 +207,7 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 			},
 		}
 	}
-	
+
 	return &ValidationResult{
 		Component: "minio",
 		Status:    "ok",
@@ -220,9 +220,9 @@ func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
 }
 
 // validateServerConfig 验证服务器配置
-func (v *ConfigValidator) validateServerConfig() *ValidationResult {
+func (v *ConfigValidator) validateServerConfig(ctx context.Context) *ValidationResult {
 	cfg := v.cfg.Server
-	
+
 	// 检查GRPC端口
 	if cfg.GrpcPort == "" {
 		return &ValidationResult{
@@ -231,7 +231,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 			Message:   "Server GRPC port is required",
 		}
 	}
-	
+
 	if port, err := strconv.Atoi(cfg.GrpcPort); err != nil || port <= 0 || port > 65535 {
 		return &ValidationResult{
 			Component: "server",
@@ -242,7 +242,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 			},
 		}
 	}
-	
+
 	// 检查端口是否被占用
 	addr := fmt.Sprintf(":%s", cfg.GrpcPort)
 	listener, err := net.Listen("tcp", addr)
@@ -258,7 +258,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 		}
 	}
 	listener.Close()
-	
+
 	// 检查REST端口（如果配置了）
 	if cfg.RestPort != "" {
 		if port, err := strconv.Atoi(cfg.RestPort); err != nil || port <= 0 || port > 65535 {
@@ -271,7 +271,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 				},
 			}
 		}
-		
+
 		addr := fmt.Sprintf(":%s", cfg.RestPort)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
@@ -287,7 +287,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 		}
 		listener.Close()
 	}
-	
+
 	return &ValidationResult{
 		Component: "server",
 		Status:    "ok",
@@ -303,7 +303,7 @@ func (v *ConfigValidator) validateServerConfig() *ValidationResult {
 func (v *ConfigValidator) GetOverallStatus(results []ValidationResult) string {
 	hasError := false
 	hasWarning := false
-	
+
 	for _, result := range results {
 		switch result.Status {
 		case "error":
@@ -312,7 +312,7 @@ func (v *ConfigValidator) GetOverallStatus(results []ValidationResult) string {
 			hasWarning = true
 		}
 	}
-	
+
 	if hasError {
 		return "error"
 	} else if hasWarning {
@@ -324,7 +324,7 @@ func (v *ConfigValidator) GetOverallStatus(results []ValidationResult) string {
 // PrintValidationResults 打印验证结果
 func (v *ConfigValidator) PrintValidationResults(results []ValidationResult) {
 	fmt.Println("=== Configuration Validation Results ===")
-	
+
 	for _, result := range results {
 		status := result.Status
 		switch status {
@@ -335,16 +335,16 @@ func (v *ConfigValidator) PrintValidationResults(results []ValidationResult) {
 		case "error":
 			status = "✗ ERROR"
 		}
-		
+
 		fmt.Printf("[%s] %s: %s\n", status, result.Component, result.Message)
-		
+
 		if result.Details != nil {
 			for key, value := range result.Details {
 				fmt.Printf("  %s: %v\n", key, value)
 			}
 		}
 	}
-	
+
 	overallStatus := v.GetOverallStatus(results)
 	fmt.Printf("\nOverall Status: %s\n", overallStatus)
-} 
+}

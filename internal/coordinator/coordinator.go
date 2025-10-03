@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -12,12 +11,14 @@ import (
 	pb "minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/config"
 	"minIODB/internal/discovery"
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
 	"minIODB/internal/query"
 	"minIODB/internal/storage"
 	"minIODB/internal/utils"
 	"minIODB/pkg/consistenthash"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -123,7 +124,7 @@ type QueryCoordinator struct {
 
 // LocalQuerier 本地查询接口
 type LocalQuerier interface {
-	ExecuteQuery(sql string) (string, error)
+	ExecuteQuery(ctx context.Context, sql string) (string, error)
 }
 
 // NewWriteCoordinator 创建写入协调器
@@ -138,8 +139,8 @@ func NewWriteCoordinator(registry *discovery.ServiceRegistry) *WriteCoordinator 
 }
 
 // NewQueryCoordinator 创建查询协调器
-func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceRegistry, localQuerier LocalQuerier, cfg *config.Config, indexSystem *storage.IndexSystem) *QueryCoordinator {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewQueryCoordinator(ctx context.Context, redisPool *pool.RedisPool, registry *discovery.ServiceRegistry, localQuerier LocalQuerier, cfg *config.Config, indexSystem *storage.IndexSystem) *QueryCoordinator {
+	ctx, cancel := context.WithCancel(ctx)
 	cb := utils.NewCircuitBreaker("query_coordinator", utils.DefaultCircuitBreakerConfig)
 
 	qc := &QueryCoordinator{
@@ -161,7 +162,7 @@ func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceR
 	// 初始化分片优化器（如果存储引擎启用）
 	if cfg != nil && cfg.StorageEngine.Enabled {
 		qc.shardOptimizer = storage.NewShardOptimizer()
-		log.Println("Shard optimizer initialized for query coordinator")
+		logger.LogInfo(ctx, "Shard optimizer initialized for query coordinator")
 	}
 
 	// 启动监控goroutine
@@ -172,8 +173,8 @@ func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceR
 }
 
 // RouteWrite 路由写入请求到对应的节点
-func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (wc *WriteCoordinator) RouteWrite(ctx context.Context, req *pb.WriteDataRequest) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// 使用熔断器执行操作
@@ -182,7 +183,7 @@ func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error)
 
 	cbErr := wc.circuitBreaker.Execute(ctx, func(ctx context.Context) error {
 		// 获取所有活跃节点
-		nodes, getErr := wc.registry.GetHealthyNodes()
+		nodes, getErr := wc.registry.GetHealthyNodes(ctx)
 		if getErr != nil {
 			return utils.NewRetryableError(fmt.Errorf("failed to get healthy nodes: %w", getErr))
 		}
@@ -261,19 +262,19 @@ func (wc *WriteCoordinator) updateHashRing(nodes []*discovery.NodeInfo) {
 }
 
 // ExecuteDistributedQuery 执行分布式查询
-func (qc *QueryCoordinator) ExecuteDistributedQuery(sql string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func (qc *QueryCoordinator) ExecuteDistributedQuery(ctx context.Context, sql string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	// 1. 创建查询计划
-	plan, err := qc.createQueryPlan(sql)
+	plan, err := qc.createQueryPlan(ctx, sql)
 	if err != nil {
 		return "", fmt.Errorf("failed to create query plan: %w", err)
 	}
 
 	// 2. 如果不需要分布式查询，直接本地执行
 	if !plan.IsDistributed {
-		return qc.localQuerier.ExecuteQuery(sql)
+		return qc.localQuerier.ExecuteQuery(ctx, sql)
 	}
 
 	// 3. 执行分布式查询
@@ -281,14 +282,14 @@ func (qc *QueryCoordinator) ExecuteDistributedQuery(sql string) (string, error) 
 }
 
 // createQueryPlan 创建查询计划（集成分片优化）
-func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
+func (qc *QueryCoordinator) createQueryPlan(ctx context.Context, sql string) (*QueryPlan, error) {
 	plan := &QueryPlan{
 		SQL:         sql,
 		FileMapping: make(map[string][]string),
 	}
 
 	// 获取所有健康节点
-	nodes, err := qc.registry.GetHealthyNodes()
+	nodes, err := qc.registry.GetHealthyNodes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get healthy nodes: %w", err)
 	}
@@ -300,15 +301,15 @@ func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
 	}
 
 	// 分析SQL，确定需要查询的表和数据分片
-	tables, err := qc.extractTablesFromSQL(sql)
+	tables, err := qc.extractTablesFromSQL(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract tables: %w", err)
 	}
 
 	// 获取数据分布信息
-	dataDistribution, err := qc.getDataDistribution(tables)
+	dataDistribution, err := qc.getDataDistribution(ctx, tables)
 	if err != nil {
-		log.Printf("WARN: failed to get data distribution, falling back to broadcast: %v", err)
+		logger.LogInfo(ctx, "WARN: failed to get data distribution, falling back to broadcast: %v", zap.Error(err))
 		// 回退到广播模式
 		for _, node := range nodes {
 			nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
@@ -320,7 +321,7 @@ func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
 
 	// 使用分片优化器优化查询计划
 	if qc.shardOptimizer != nil {
-		dataDistribution = qc.optimizeQueryPlanWithSharding(sql, tables, dataDistribution, nodes)
+		dataDistribution = qc.optimizeQueryPlanWithSharding(ctx, sql, tables, dataDistribution, nodes)
 	}
 
 	// 根据数据分布创建查询计划
@@ -348,7 +349,7 @@ func (qc *QueryCoordinator) executeDistributedPlan(ctx context.Context, plan *Qu
 			go func(addr string) {
 				// 使用重试机制查询节点
 				retryErr := utils.Retry(ctx, utils.DefaultRetryConfig, "remote_query", func(ctx context.Context) error {
-					result, queryErr := qc.executeRemoteQuery(addr, plan.SQL)
+					result, queryErr := qc.executeRemoteQuery(ctx, addr, plan.SQL)
 					if queryErr != nil {
 						resultChan <- QueryResult{
 							NodeID: addr,
@@ -390,12 +391,12 @@ func (qc *QueryCoordinator) executeDistributedPlan(ctx context.Context, plan *Qu
 	}
 
 	// 聚合结果
-	return qc.aggregateQueryResults(results, plan.SQL)
+	return qc.aggregateQueryResults(ctx, results, plan.SQL)
 }
 
 // executeRemoteQuery 执行远程查询
-func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (qc *QueryCoordinator) executeRemoteQuery(ctx context.Context, nodeAddr, sql string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// 检查是否是本节点
@@ -405,7 +406,7 @@ func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, er
 
 	if nodeAddr == currentNode {
 		// 本节点查询，调用本地查询引擎
-		return qc.localQuerier.ExecuteQuery(sql)
+		return qc.localQuerier.ExecuteQuery(ctx, sql)
 	}
 
 	// 连接到远程节点
@@ -427,7 +428,7 @@ func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, er
 }
 
 // extractTablesFromSQL 从SQL中提取表名
-func (qc *QueryCoordinator) extractTablesFromSQL(sql string) ([]string, error) {
+func (qc *QueryCoordinator) extractTablesFromSQL(ctx context.Context, sql string) ([]string, error) {
 	// 使用增强的TableExtractor
 	extractor := query.NewTableExtractor()
 	tables := extractor.ExtractTableNames(sql)
@@ -435,7 +436,7 @@ func (qc *QueryCoordinator) extractTablesFromSQL(sql string) ([]string, error) {
 }
 
 // getDataDistribution 获取数据分布信息（集成索引系统）
-func (qc *QueryCoordinator) getDataDistribution(tables []string) (map[string][]string, error) {
+func (qc *QueryCoordinator) getDataDistribution(ctx context.Context, tables []string) (map[string][]string, error) {
 	distribution := make(map[string][]string)
 
 	// 如果Redis未启用，直接返回本地节点信息
@@ -448,16 +449,14 @@ func (qc *QueryCoordinator) getDataDistribution(tables []string) (map[string][]s
 		return distribution, nil
 	}
 
-	ctx := context.Background()
-
 	// 优先使用索引系统进行智能查询
 	if qc.indexSystem != nil {
 		indexDistribution, err := qc.getDataDistributionFromIndex(ctx, tables)
 		if err == nil && len(indexDistribution) > 0 {
-			log.Printf("Using index system for data distribution query")
+			logger.LogInfo(ctx, "Using index system for data distribution query")
 			return indexDistribution, nil
 		}
-		log.Printf("Index system query failed, falling back to Redis: %v", err)
+		logger.LogInfo(ctx, "Index system query failed, falling back to Redis: %v", zap.Error(err))
 	}
 
 	// 回退到Redis查询
@@ -503,17 +502,17 @@ func (qc *QueryCoordinator) getDataDistributionFromIndex(ctx context.Context, ta
 
 		// 1. 尝试使用BloomFilter进行快速过滤
 		bloomKey := fmt.Sprintf("bloom:%s", table)
-		useBloom := qc.indexSystem.HasBloomFilter(bloomKey)
+		useBloom := qc.indexSystem.HasBloomFilter(ctx, bloomKey)
 		if useBloom {
-			log.Printf("Using BloomFilter index for table %s", table)
+			logger.LogInfo(ctx, "Using BloomFilter index for table %s", zap.String("table", table))
 			indexUsed = true
 		}
 
 		// 2. 尝试使用MinMax索引进行范围查询优化
 		minMaxKey := fmt.Sprintf("minmax:%s", table)
-		useMinMax := qc.indexSystem.HasMinMaxIndex(minMaxKey)
+		useMinMax := qc.indexSystem.HasMinMaxIndex(ctx, minMaxKey)
 		if useMinMax {
-			log.Printf("Using MinMax index for table %s", table)
+			logger.LogInfo(ctx, "Using MinMax index for table %s", zap.String("table", table))
 			indexUsed = true
 		}
 
@@ -521,7 +520,7 @@ func (qc *QueryCoordinator) getDataDistributionFromIndex(ctx context.Context, ta
 		pattern := fmt.Sprintf("index:table:%s:id:*", table)
 		keys, err := qc.redisPool.GetClient().Keys(ctx, pattern).Result()
 		if err != nil {
-			log.Printf("Failed to get file index keys for table %s: %v", table, err)
+			logger.LogInfo(ctx, "Failed to get file index keys for table %s: %v", zap.String("table", table), zap.Error(err))
 			continue
 		}
 
@@ -538,7 +537,7 @@ func (qc *QueryCoordinator) getDataDistributionFromIndex(ctx context.Context, ta
 		// 注意：这里简化实现，实际应该根据具体查询条件调用索引系统的查询方法
 		filteredFiles := candidateFiles
 		if indexUsed {
-			log.Printf("Index system filtered %d files for table %s", len(filteredFiles), table)
+			logger.LogInfo(ctx, "Index system filtered %d files for table %s", zap.Int("filtered_files", len(filteredFiles)), zap.String("table", table))
 		}
 
 		// 6. 分配文件到节点
@@ -557,8 +556,8 @@ func (qc *QueryCoordinator) getDataDistributionFromIndex(ctx context.Context, ta
 }
 
 // optimizeQueryPlanWithSharding 使用分片优化器优化查询计划
-func (qc *QueryCoordinator) optimizeQueryPlanWithSharding(sql string, tables []string, dataDistribution map[string][]string, nodes []*discovery.NodeInfo) map[string][]string {
-	log.Printf("Optimizing query plan using shard optimizer for %d tables", len(tables))
+func (qc *QueryCoordinator) optimizeQueryPlanWithSharding(ctx context.Context, sql string, tables []string, dataDistribution map[string][]string, nodes []*discovery.NodeInfo) map[string][]string {
+	logger.LogInfo(ctx, "Optimizing query plan using shard optimizer for %d tables", zap.Int("tables", len(tables)))
 
 	// 获取分片统计信息
 	shardStats := qc.shardOptimizer.GetStats()
@@ -566,18 +565,19 @@ func (qc *QueryCoordinator) optimizeQueryPlanWithSharding(sql string, tables []s
 	// 基于负载均衡优化文件分配
 	if shardStats.LoadBalance < 0.7 {
 		// 负载不均衡，需要优化文件分配
-		log.Printf("Detected load imbalance (%.2f), rebalancing file distribution", shardStats.LoadBalance)
+		logger.LogInfo(ctx, "Detected load imbalance (%.2f), rebalancing file distribution", zap.Float64("load_balance", shardStats.LoadBalance))
 		dataDistribution = qc.rebalanceFileDistribution(dataDistribution, nodes)
 	}
 
 	// 基于数据局部性优化查询路由
-	optimizedDistribution := qc.optimizeDataLocality(dataDistribution, tables)
+	optimizedDistribution := qc.optimizeDataLocality(ctx, dataDistribution, tables)
 
 	// 减少不必要的节点访问
 	optimizedDistribution = qc.pruneEmptyNodes(optimizedDistribution)
 
-	log.Printf("Query plan optimized: %d nodes involved (original: %d)",
-		len(optimizedDistribution), len(dataDistribution))
+	logger.LogInfo(ctx, "Query plan optimized: %d nodes involved (original: %d)",
+		zap.Int("optimized_nodes", len(optimizedDistribution)),
+		zap.Int("original_nodes", len(dataDistribution)))
 
 	return optimizedDistribution
 }
@@ -623,7 +623,7 @@ func (qc *QueryCoordinator) rebalanceFileDistribution(distribution map[string][]
 }
 
 // optimizeDataLocality 优化数据局部性
-func (qc *QueryCoordinator) optimizeDataLocality(distribution map[string][]string, tables []string) map[string][]string {
+func (qc *QueryCoordinator) optimizeDataLocality(ctx context.Context, distribution map[string][]string, tables []string) map[string][]string {
 	// 简化实现：检查分片优化器是否有局部性信息
 	// 实际实现应该根据访问模式历史来优化
 
@@ -666,7 +666,7 @@ func (qc *QueryCoordinator) pruneEmptyNodes(distribution map[string][]string) ma
 }
 
 // aggregateQueryResults 聚合查询结果
-func (qc *QueryCoordinator) aggregateQueryResults(results []QueryResult, sql string) (string, error) {
+func (qc *QueryCoordinator) aggregateQueryResults(ctx context.Context, results []QueryResult, sql string) (string, error) {
 	// 过滤出成功的结果
 	var successResults []string
 	var errors []string
@@ -681,7 +681,7 @@ func (qc *QueryCoordinator) aggregateQueryResults(results []QueryResult, sql str
 
 	// 如果有错误，记录日志
 	if len(errors) > 0 {
-		log.Printf("Some query nodes failed: %v", errors)
+		logger.LogInfo(ctx, "Some query nodes failed: %v", zap.Strings("errors", errors))
 	}
 
 	// 如果没有成功结果
@@ -695,29 +695,29 @@ func (qc *QueryCoordinator) aggregateQueryResults(results []QueryResult, sql str
 	}
 
 	// 多个结果需要聚合
-	return qc.mergeResults(successResults, sql)
+	return qc.mergeResults(ctx, successResults, sql)
 }
 
 // mergeResults 合并多个查询结果
-func (qc *QueryCoordinator) mergeResults(results []string, sql string) (string, error) {
+func (qc *QueryCoordinator) mergeResults(ctx context.Context, results []string, sql string) (string, error) {
 	// 分析SQL类型来决定如何合并结果
 	lowerSQL := strings.ToLower(sql)
 
 	// 如果是聚合查询（COUNT, SUM, AVG等），需要特殊处理
 	if strings.Contains(lowerSQL, "count(") {
-		return qc.aggregateCountResults(results)
+		return qc.aggregateCountResults(ctx, results)
 	}
 
 	if strings.Contains(lowerSQL, "sum(") {
-		return qc.aggregateSumResults(results)
+		return qc.aggregateSumResults(ctx, results)
 	}
 
 	// 对于普通SELECT查询，简单合并所有结果
-	return qc.unionResults(results)
+	return qc.unionResults(ctx, results)
 }
 
 // aggregateCountResults 聚合COUNT查询结果
-func (qc *QueryCoordinator) aggregateCountResults(results []string) (string, error) {
+func (qc *QueryCoordinator) aggregateCountResults(ctx context.Context, results []string) (string, error) {
 	totalCount := 0
 
 	for _, result := range results {
@@ -750,7 +750,7 @@ func (qc *QueryCoordinator) aggregateCountResults(results []string) (string, err
 }
 
 // aggregateSumResults 聚合SUM查询结果
-func (qc *QueryCoordinator) aggregateSumResults(results []string) (string, error) {
+func (qc *QueryCoordinator) aggregateSumResults(ctx context.Context, results []string) (string, error) {
 	totalSum := 0.0
 
 	for _, result := range results {
@@ -783,14 +783,14 @@ func (qc *QueryCoordinator) aggregateSumResults(results []string) (string, error
 }
 
 // unionResults 合并普通查询结果
-func (qc *QueryCoordinator) unionResults(results []string) (string, error) {
+func (qc *QueryCoordinator) unionResults(ctx context.Context, results []string) (string, error) {
 	var allData []map[string]interface{}
 
 	for _, result := range results {
 		// 解析JSON结果
 		var data []map[string]interface{}
 		if err := json.Unmarshal([]byte(result), &data); err != nil {
-			log.Printf("WARN: failed to parse result JSON: %v", err)
+			logger.LogInfo(ctx, "WARN: failed to parse result JSON: %v", zap.Error(err))
 			continue
 		}
 
@@ -807,8 +807,8 @@ func (qc *QueryCoordinator) unionResults(results []string) (string, error) {
 }
 
 // GetQueryStats 获取查询统计信息
-func (qc *QueryCoordinator) GetQueryStats() map[string]interface{} {
-	nodes, err := qc.registry.DiscoverNodes()
+func (qc *QueryCoordinator) GetQueryStats(ctx context.Context) map[string]interface{} {
+	nodes, err := qc.registry.DiscoverNodes(ctx)
 	if err != nil {
 		return map[string]interface{}{
 			"error": err.Error(),
@@ -835,7 +835,7 @@ func (qc *QueryCoordinator) monitorNodes() {
 			return
 		case <-ticker.C:
 			// 监控节点状态
-			log.Println("Monitoring nodes...")
+			logger.LogInfo(qc.ctx, "Monitoring nodes...")
 		}
 	}
 }

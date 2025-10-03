@@ -3,16 +3,17 @@ package storage
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"go.uber.org/zap"
 )
 
 // IndexSystem 索引系统
@@ -306,7 +307,7 @@ type QueryResult struct {
 }
 
 // NewIndexSystem 创建索引系统
-func NewIndexSystem(redisPool *pool.RedisPool) *IndexSystem {
+func NewIndexSystem(ctx context.Context, redisPool *pool.RedisPool) *IndexSystem {
 	return &IndexSystem{
 		bloomFilters:     make(map[string]*BloomFilterIndex),
 		minMaxIndexes:    make(map[string]*MinMaxIndex),
@@ -367,7 +368,7 @@ func NewDefaultIndexConfig() *IndexConfig {
 }
 
 // CreateBloomFilter 创建BloomFilter索引
-func (is *IndexSystem) CreateBloomFilter(name, columnName string) error {
+func (is *IndexSystem) CreateBloomFilter(ctx context.Context, name, columnName string) error {
 	is.mutex.Lock()
 	defer is.mutex.Unlock()
 
@@ -389,12 +390,12 @@ func (is *IndexSystem) CreateBloomFilter(name, columnName string) error {
 	is.bloomFilters[name] = index
 	is.updateIndexStats("bloom_filter", 1)
 
-	log.Printf("Created BloomFilter index: %s for column: %s", name, columnName)
+	logger.LogInfo(ctx, "Created BloomFilter index: %s for column: %s", zap.String("name", name), zap.String("column_name", columnName))
 	return nil
 }
 
 // CreateMinMaxIndex 创建MinMax索引
-func (is *IndexSystem) CreateMinMaxIndex(name, columnName, dataType string) error {
+func (is *IndexSystem) CreateMinMaxIndex(ctx context.Context, name, columnName, dataType string) error {
 	is.mutex.Lock()
 	defer is.mutex.Unlock()
 
@@ -413,12 +414,12 @@ func (is *IndexSystem) CreateMinMaxIndex(name, columnName, dataType string) erro
 	is.minMaxIndexes[name] = index
 	is.updateIndexStats("minmax", 1)
 
-	log.Printf("Created MinMax index: %s for column: %s", name, columnName)
+	logger.LogInfo(ctx, "Created MinMax index: %s for column: %s", zap.String("name", name), zap.String("column_name", columnName))
 	return nil
 }
 
 // CreateInvertedIndex 创建倒排索引
-func (is *IndexSystem) CreateInvertedIndex(name, columnName string) error {
+func (is *IndexSystem) CreateInvertedIndex(ctx context.Context, name, columnName string) error {
 	is.mutex.Lock()
 	defer is.mutex.Unlock()
 
@@ -440,12 +441,12 @@ func (is *IndexSystem) CreateInvertedIndex(name, columnName string) error {
 	is.invertedIndexes[name] = index
 	is.updateIndexStats("inverted", 1)
 
-	log.Printf("Created Inverted index: %s for column: %s", name, columnName)
+	logger.LogInfo(ctx, "Created Inverted index: %s for column: %s", zap.String("name", name), zap.String("column_name", columnName))
 	return nil
 }
 
 // CreateBitmapIndex 创建位图索引
-func (is *IndexSystem) CreateBitmapIndex(name, columnName string) error {
+func (is *IndexSystem) CreateBitmapIndex(ctx context.Context, name, columnName string) error {
 	is.mutex.Lock()
 	defer is.mutex.Unlock()
 
@@ -461,12 +462,12 @@ func (is *IndexSystem) CreateBitmapIndex(name, columnName string) error {
 	is.bitmapIndexes[name] = index
 	is.updateIndexStats("bitmap", 1)
 
-	log.Printf("Created Bitmap index: %s for column: %s", name, columnName)
+	logger.LogInfo(ctx, "Created Bitmap index: %s for column: %s", zap.String("name", name), zap.String("column_name", columnName))
 	return nil
 }
 
 // CreateCompositeIndex 创建复合索引
-func (is *IndexSystem) CreateCompositeIndex(name string, columns []string) error {
+func (is *IndexSystem) CreateCompositeIndex(ctx context.Context, name string, columns []string) error {
 	is.mutex.Lock()
 	defer is.mutex.Unlock()
 
@@ -490,12 +491,12 @@ func (is *IndexSystem) CreateCompositeIndex(name string, columns []string) error
 	is.compositeIndexes[name] = index
 	is.updateIndexStats("composite", 1)
 
-	log.Printf("Created Composite index: %s for columns: %v", name, columns)
+	logger.LogInfo(ctx, "Created Composite index: %s for columns: %v", zap.String("name", name), zap.Any("columns", columns))
 	return nil
 }
 
 // AddToBloomFilter 添加元素到BloomFilter
-func (is *IndexSystem) AddToBloomFilter(indexName string, value string) error {
+func (is *IndexSystem) AddToBloomFilter(ctx context.Context, indexName string, value string) error {
 	is.mutex.RLock()
 	index, exists := is.bloomFilters[indexName]
 	is.mutex.RUnlock()
@@ -515,7 +516,7 @@ func (is *IndexSystem) AddToBloomFilter(indexName string, value string) error {
 }
 
 // TestBloomFilter 测试BloomFilter
-func (is *IndexSystem) TestBloomFilter(indexName string, value string) (bool, error) {
+func (is *IndexSystem) TestBloomFilter(ctx context.Context, indexName string, value string) (bool, error) {
 	is.mutex.RLock()
 	index, exists := is.bloomFilters[indexName]
 	is.mutex.RUnlock()
@@ -548,7 +549,7 @@ func (is *IndexSystem) TestBloomFilter(indexName string, value string) (bool, er
 }
 
 // UpdateMinMaxIndex 更新MinMax索引
-func (is *IndexSystem) UpdateMinMaxIndex(indexName string, value interface{}) error {
+func (is *IndexSystem) UpdateMinMaxIndex(ctx context.Context, indexName string, value interface{}) error {
 	is.mutex.RLock()
 	index, exists := is.minMaxIndexes[indexName]
 	is.mutex.RUnlock()
@@ -898,23 +899,23 @@ func (is *IndexSystem) GetStats() *IndexStats {
 
 // OptimizeIndexes 优化索引
 func (is *IndexSystem) OptimizeIndexes(ctx context.Context) error {
-	log.Println("Starting index optimization...")
+	logger.LogInfo(ctx, "Starting index optimization...")
 
 	startTime := time.Now()
 
 	// 优化BloomFilter索引
-	if err := is.optimizeBloomFilters(); err != nil {
-		log.Printf("Failed to optimize bloom filters: %v", err)
+	if err := is.optimizeBloomFilters(ctx); err != nil {
+		logger.LogInfo(ctx, "Failed to optimize bloom filters: %v", zap.Error(err))
 	}
 
 	// 优化MinMax索引
-	if err := is.optimizeMinMaxIndexes(); err != nil {
-		log.Printf("Failed to optimize minmax indexes: %v", err)
+	if err := is.optimizeMinMaxIndexes(ctx); err != nil {
+		logger.LogInfo(ctx, "Failed to optimize minmax indexes: %v", zap.Error(err))
 	}
 
 	// 优化倒排索引
-	if err := is.optimizeInvertedIndexes(); err != nil {
-		log.Printf("Failed to optimize inverted indexes: %v", err)
+	if err := is.optimizeInvertedIndexes(ctx); err != nil {
+		logger.LogInfo(ctx, "Failed to optimize inverted indexes: %v", zap.Error(err))
 	}
 
 	// 更新统计信息
@@ -923,12 +924,12 @@ func (is *IndexSystem) OptimizeIndexes(ctx context.Context) error {
 	is.stats.LastMaintenance = time.Now()
 	is.stats.mutex.Unlock()
 
-	log.Printf("Index optimization completed in %v", time.Since(startTime))
+	logger.LogInfo(ctx, "Index optimization completed in %v", zap.Duration("duration", time.Since(startTime)))
 	return nil
 }
 
 // optimizeBloomFilters 优化BloomFilter索引
-func (is *IndexSystem) optimizeBloomFilters() error {
+func (is *IndexSystem) optimizeBloomFilters(ctx context.Context) error {
 	is.mutex.RLock()
 	filters := make([]*BloomFilterIndex, 0, len(is.bloomFilters))
 	for _, filter := range is.bloomFilters {
@@ -941,8 +942,7 @@ func (is *IndexSystem) optimizeBloomFilters() error {
 
 		// 检查是否需要重建（false positive rate过高）
 		if filter.stats.ActualFPRate > filter.config.FalsePositiveRate*2 {
-			log.Printf("Rebuilding bloom filter %s due to high FP rate: %.4f",
-				filter.name, filter.stats.ActualFPRate)
+			logger.LogInfo(ctx, "Rebuilding bloom filter %s due to high FP rate: %.4f", zap.String("name", filter.name), zap.Float64("actual_fp_rate", filter.stats.ActualFPRate))
 
 			// 重建过程（这里简化处理）
 			newSize := filter.stats.ElementCount * 2
@@ -959,7 +959,7 @@ func (is *IndexSystem) optimizeBloomFilters() error {
 }
 
 // optimizeMinMaxIndexes 优化MinMax索引
-func (is *IndexSystem) optimizeMinMaxIndexes() error {
+func (is *IndexSystem) optimizeMinMaxIndexes(ctx context.Context) error {
 	is.mutex.RLock()
 	indexes := make([]*MinMaxIndex, 0, len(is.minMaxIndexes))
 	for _, index := range is.minMaxIndexes {
@@ -984,7 +984,7 @@ func (is *IndexSystem) optimizeMinMaxIndexes() error {
 }
 
 // optimizeInvertedIndexes 优化倒排索引
-func (is *IndexSystem) optimizeInvertedIndexes() error {
+func (is *IndexSystem) optimizeInvertedIndexes(ctx context.Context) error {
 	is.mutex.RLock()
 	indexes := make([]*InvertedIndex, 0, len(is.invertedIndexes))
 	for _, index := range is.invertedIndexes {
@@ -1024,7 +1024,7 @@ func (is *IndexSystem) optimizeInvertedIndexes() error {
 }
 
 // HasBloomFilter 检查是否存在指定的BloomFilter索引
-func (is *IndexSystem) HasBloomFilter(key string) bool {
+func (is *IndexSystem) HasBloomFilter(ctx context.Context, key string) bool {
 	is.mutex.RLock()
 	defer is.mutex.RUnlock()
 
@@ -1033,7 +1033,7 @@ func (is *IndexSystem) HasBloomFilter(key string) bool {
 }
 
 // HasMinMaxIndex 检查是否存在指定的MinMax索引
-func (is *IndexSystem) HasMinMaxIndex(key string) bool {
+func (is *IndexSystem) HasMinMaxIndex(ctx context.Context, key string) bool {
 	is.mutex.RLock()
 	defer is.mutex.RUnlock()
 

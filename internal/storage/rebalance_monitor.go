@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
-	"log"
+	"minIODB/internal/logger"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // RebalanceMonitor 自动重平衡监控器
@@ -81,12 +83,12 @@ func (rm *RebalanceMonitor) Start(ctx context.Context) {
 	rm.isMonitoring = true
 	rm.mutex.Unlock()
 
-	log.Println("Starting rebalance monitor...")
+	logger.LogInfo(ctx, "Starting rebalance monitor...")
 	go rm.monitorLoop(ctx)
 }
 
 // Stop 停止监控
-func (rm *RebalanceMonitor) Stop() {
+func (rm *RebalanceMonitor) Stop(ctx context.Context) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 
@@ -96,7 +98,7 @@ func (rm *RebalanceMonitor) Stop() {
 
 	close(rm.stopChan)
 	rm.isMonitoring = false
-	log.Println("Rebalance monitor stopped")
+	logger.LogInfo(ctx, "Rebalance monitor stopped")
 }
 
 // monitorLoop 监控循环
@@ -133,17 +135,16 @@ func (rm *RebalanceMonitor) performCheck(ctx context.Context) {
 	rm.stats.DetectedHotSpots = rm.detectHotSpots(shardStats)
 	rm.stats.mutex.Unlock()
 
-	log.Printf("Rebalance check: LoadBalance=%.2f, DataSkew=%.2f, HotSpots=%d",
-		shardStats.LoadBalance, rm.stats.CurrentDataSkew, rm.stats.DetectedHotSpots)
+	logger.LogInfo(ctx, "Rebalance check: LoadBalance=%.2f, DataSkew=%.2f, HotSpots=%d", zap.Float64("load_balance", shardStats.LoadBalance), zap.Float64("data_skew", rm.stats.CurrentDataSkew), zap.Int("hot_spots", rm.stats.DetectedHotSpots))
 
 	// 检查是否需要重平衡
-	if rm.shouldTriggerRebalance(shardStats) {
+	if rm.shouldTriggerRebalance(ctx, shardStats) {
 		rm.triggerRebalance(ctx, "automatic_threshold_triggered")
 	}
 }
 
 // shouldTriggerRebalance 判断是否应该触发重平衡
-func (rm *RebalanceMonitor) shouldTriggerRebalance(shardStats *ShardStats) bool {
+func (rm *RebalanceMonitor) shouldTriggerRebalance(ctx context.Context, shardStats *ShardStats) bool {
 	// 如果未启用自动重平衡，返回false
 	if !rm.config.EnableAutoRebalance {
 		return false
@@ -154,8 +155,7 @@ func (rm *RebalanceMonitor) shouldTriggerRebalance(shardStats *ShardStats) bool 
 		rm.stats.mutex.Lock()
 		rm.stats.SkippedRebalances++
 		rm.stats.mutex.Unlock()
-		log.Printf("Skipping rebalance: too soon since last rebalance (%.0f minutes ago)",
-			time.Since(rm.lastRebalance).Minutes())
+		logger.LogInfo(ctx, "Skipping rebalance: too soon since last rebalance (%.0f minutes ago)", zap.Float64("minutes", time.Since(rm.lastRebalance).Minutes()))
 		return false
 	}
 
@@ -164,27 +164,25 @@ func (rm *RebalanceMonitor) shouldTriggerRebalance(shardStats *ShardStats) bool 
 		rm.stats.mutex.Lock()
 		rm.stats.SkippedRebalances++
 		rm.stats.mutex.Unlock()
-		log.Println("Skipping rebalance: rate limit exceeded")
+		logger.LogInfo(ctx, "Skipping rebalance: rate limit exceeded")
 		return false
 	}
 
 	// 检查负载均衡阈值
 	if shardStats.LoadBalance < rm.config.LoadBalanceThreshold {
-		log.Printf("Load imbalance detected: %.2f < %.2f",
-			shardStats.LoadBalance, rm.config.LoadBalanceThreshold)
+		logger.LogInfo(ctx, "Load imbalance detected: %.2f < %.2f", zap.Float64("load_balance", shardStats.LoadBalance), zap.Float64("load_balance_threshold", rm.config.LoadBalanceThreshold))
 		return true
 	}
 
 	// 检查数据倾斜
 	if rm.stats.CurrentDataSkew > rm.config.DataSkewThreshold {
-		log.Printf("Data skew detected: %.2f > %.2f",
-			rm.stats.CurrentDataSkew, rm.config.DataSkewThreshold)
+		logger.LogInfo(ctx, "Data skew detected: %.2f > %.2f", zap.Float64("data_skew", rm.stats.CurrentDataSkew), zap.Float64("data_skew_threshold", rm.config.DataSkewThreshold))
 		return true
 	}
 
 	// 检查热点
 	if rm.stats.DetectedHotSpots > 0 {
-		log.Printf("Hot spots detected: %d nodes", rm.stats.DetectedHotSpots)
+		logger.LogInfo(ctx, "Hot spots detected: %d nodes", zap.Int("hot_spots", rm.stats.DetectedHotSpots))
 		return true
 	}
 
@@ -211,12 +209,12 @@ func (rm *RebalanceMonitor) isRebalanceRateLimited() bool {
 
 // triggerRebalance 触发重平衡
 func (rm *RebalanceMonitor) triggerRebalance(ctx context.Context, reason string) {
-	log.Printf("Triggering rebalance: %s", reason)
+	logger.LogInfo(ctx, "Triggering rebalance: %s", zap.String("reason", reason))
 
 	startTime := time.Now()
 
 	// 调用分片优化器的重平衡功能
-	rm.shardOptimizer.rebalancer.TriggerRebalance(reason)
+	rm.shardOptimizer.rebalancer.TriggerRebalance(ctx, reason)
 
 	duration := time.Since(startTime)
 
@@ -232,7 +230,7 @@ func (rm *RebalanceMonitor) triggerRebalance(ctx context.Context, reason string)
 	rm.stats.RebalanceDuration = duration
 	rm.stats.mutex.Unlock()
 
-	log.Printf("Rebalance completed in %v", duration)
+	logger.LogInfo(ctx, "Rebalance completed in %v", zap.Duration("duration", duration))
 }
 
 // calculateDataSkew 计算数据倾斜度
@@ -323,20 +321,20 @@ func (rm *RebalanceMonitor) GetStats() *RebalanceMonitorStats {
 
 // ForceRebalance 强制执行重平衡
 func (rm *RebalanceMonitor) ForceRebalance(ctx context.Context, reason string) {
-	log.Printf("Force rebalance requested: %s", reason)
+	logger.LogInfo(ctx, "Force rebalance requested: %s", zap.String("reason", reason))
 	rm.triggerRebalance(ctx, "manual_"+reason)
 }
 
 // UpdateConfig 更新配置
-func (rm *RebalanceMonitor) UpdateConfig(config *RebalanceMonitorConfig) {
+func (rm *RebalanceMonitor) UpdateConfig(ctx context.Context, config *RebalanceMonitorConfig) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 	rm.config = config
-	log.Println("Rebalance monitor configuration updated")
+	logger.LogInfo(ctx, "Rebalance monitor configuration updated")
 }
 
 // IsMonitoring 检查是否正在监控
-func (rm *RebalanceMonitor) IsMonitoring() bool {
+func (rm *RebalanceMonitor) IsMonitoring(ctx context.Context) bool {
 	rm.mutex.RLock()
 	defer rm.mutex.RUnlock()
 	return rm.isMonitoring

@@ -106,6 +106,55 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 
 ## 🚀 快速开始
 
+### ⚡ 5分钟快速上手（推荐）
+
+如果你是第一次使用 MinIODB，推荐使用简化配置快速启动：
+
+#### 1. 准备环境
+
+```bash
+# 安装依赖
+go mod download
+
+# 启动 MinIO（如果还没有）
+docker run -d -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin \
+  minio/minio server /data --console-address ":9001"
+```
+
+#### 2. 使用简化配置启动
+
+```bash
+# 直接使用简化配置文件启动（单节点模式）
+go run cmd/server/main.go -config config.simple.yaml
+```
+
+就这么简单！服务已启动在：
+- REST API: `http://localhost:8081`
+- gRPC: `localhost:8080`
+- 监控: `http://localhost:8082/metrics`
+
+#### 3. 验证服务
+
+```bash
+# 健康检查
+curl http://localhost:8081/v1/health
+
+# 创建第一个表并写入数据
+curl -X POST http://localhost:8081/v1/tables \
+  -H "Content-Type: application/json" \
+  -d '{"table_name": "test", "config": {"buffer_size": 1000}}'
+```
+
+**简化配置说明：**
+- `config.simple.yaml` 只包含必需配置项
+- 其他配置自动使用合理默认值
+- 默认启用单节点模式（无需 Redis）
+- 适合开发、测试和小规模部署
+
+---
+
 ### 前置要求
 
 #### 单节点模式（推荐新手）

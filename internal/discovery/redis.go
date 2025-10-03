@@ -8,7 +8,7 @@ import (
 )
 
 // NewRedisClient creates a new Redis client from the given configuration
-func NewRedisClient(cfg config.RedisConfig) *redis.Client {
+func NewRedisClient(ctx context.Context, cfg config.RedisConfig) *redis.Client {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
@@ -18,7 +18,7 @@ func NewRedisClient(cfg config.RedisConfig) *redis.Client {
 }
 
 // PingRedis checks the connection to Redis
-func PingRedis(client *redis.Client) error {
-	_, err := client.Ping(context.Background()).Result()
+func PingRedis(ctx context.Context, client *redis.Client) error {
+	_, err := client.Ping(ctx).Result()
 	return err
 }

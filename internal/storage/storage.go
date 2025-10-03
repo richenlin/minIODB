@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/logger"
 	"minIODB/internal/pool"
 
 	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 )
 
 // StorageImpl 存储实现
@@ -20,9 +21,9 @@ type StorageImpl struct {
 }
 
 // NewStorage 创建新的存储实例
-func NewStorage(cfg *config.Config) (Storage, error) {
-	log.Println("Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
-	return NewUnifiedStorage(cfg)
+func NewStorage(ctx context.Context, cfg *config.Config) (Storage, error) {
+	logger.LogInfo(ctx, "Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
+	return NewUnifiedStorage(ctx, cfg)
 }
 
 // Redis operations
@@ -304,7 +305,7 @@ func (s *StorageImpl) HealthCheck(ctx context.Context) error {
 	// 检查备份MinIO连接池健康状态（如果存在）
 	if backupPool := s.poolManager.GetBackupMinIOPool(); backupPool != nil {
 		if err := backupPool.HealthCheck(ctx); err != nil {
-			log.Printf("WARN: Backup MinIO health check failed: %v", err)
+			logger.LogInfo(ctx, "WARN: Backup MinIO health check failed: %v", zap.Error(err))
 		}
 	}
 
@@ -312,9 +313,9 @@ func (s *StorageImpl) HealthCheck(ctx context.Context) error {
 }
 
 // Close 关闭连接
-func (s *StorageImpl) Close() error {
+func (s *StorageImpl) Close(ctx context.Context) error {
 	if s.poolManager != nil {
-		return s.poolManager.Close()
+		return s.poolManager.Close(ctx)
 	}
 	return nil
 }

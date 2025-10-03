@@ -3,9 +3,11 @@ package pool
 import (
 	"context"
 	"fmt"
-	"log"
+	"minIODB/internal/logger"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // PoolManager 统一连接池管理器
@@ -40,7 +42,7 @@ func DefaultPoolManagerConfig() *PoolManagerConfig {
 }
 
 // NewPoolManager 创建新的连接池管理器
-func NewPoolManager(config *PoolManagerConfig) (*PoolManager, error) {
+func NewPoolManager(ctx context.Context, config *PoolManagerConfig) (*PoolManager, error) {
 	if config == nil {
 		config = DefaultPoolManagerConfig()
 	}
@@ -49,19 +51,19 @@ func NewPoolManager(config *PoolManagerConfig) (*PoolManager, error) {
 	var redisPool *RedisPool
 	var err error
 	if config.Redis != nil {
-		redisPool, err = NewRedisPool(config.Redis)
+		redisPool, err = NewRedisPool(ctx, config.Redis)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Redis pool: %w", err)
 		}
 	} else {
-		log.Println("Redis configuration is nil, skipping Redis pool creation (single-node mode)")
+		logger.LogInfo(ctx, "Redis configuration is nil, skipping Redis pool creation (single-node mode)")
 	}
 
 	// 创建MinIO连接池
-	minioPool, err := NewMinIOPool(config.MinIO)
+	minioPool, err := NewMinIOPool(ctx, config.MinIO)
 	if err != nil {
 		if redisPool != nil {
-			redisPool.Close()
+			redisPool.Close(ctx)
 		}
 		return nil, fmt.Errorf("failed to create MinIO pool: %w", err)
 	}
@@ -69,9 +71,9 @@ func NewPoolManager(config *PoolManagerConfig) (*PoolManager, error) {
 	// 创建备份MinIO连接池（如果配置了）
 	var backupPool *MinIOPool
 	if config.BackupMinIO != nil {
-		backupPool, err = NewMinIOPool(config.BackupMinIO)
+		backupPool, err = NewMinIOPool(ctx, config.BackupMinIO)
 		if err != nil {
-			log.Printf("WARN: failed to create backup MinIO pool: %v", err)
+			logger.LogInfo(ctx, "WARN: failed to create backup MinIO pool: %v", zap.Error(err))
 			// 备份连接池失败不影响主要功能
 		}
 	}
@@ -85,9 +87,9 @@ func NewPoolManager(config *PoolManagerConfig) (*PoolManager, error) {
 	}
 
 	// 启动健康检查
-	manager.startHealthCheck()
+	manager.startHealthCheck(ctx)
 
-	log.Println("Connection pool manager initialized successfully")
+	logger.LogInfo(ctx, "Connection pool manager initialized successfully")
 	return manager, nil
 }
 
@@ -113,54 +115,54 @@ func (pm *PoolManager) GetBackupMinIOPool() *MinIOPool {
 }
 
 // startHealthCheck 启动健康检查
-func (pm *PoolManager) startHealthCheck() {
+func (pm *PoolManager) startHealthCheck(ctx context.Context) {
 	if pm.healthCheckRunning {
 		return
 	}
 
 	pm.healthCheckRunning = true
-	go pm.healthCheckLoop()
+	go pm.healthCheckLoop(ctx)
 }
 
 // healthCheckLoop 健康检查循环
-func (pm *PoolManager) healthCheckLoop() {
+func (pm *PoolManager) healthCheckLoop(ctx context.Context) {
 	ticker := time.NewTicker(pm.healthCheckInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			pm.performHealthCheck()
+			pm.performHealthCheck(ctx)
 		case <-pm.stopHealthCheck:
-			log.Println("Health check stopped")
+			logger.LogInfo(ctx, "Health check stopped")
 			return
 		}
 	}
 }
 
 // performHealthCheck 执行健康检查
-func (pm *PoolManager) performHealthCheck() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (pm *PoolManager) performHealthCheck(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// 检查Redis连接池（如果存在）
 	if pm.redisPool != nil {
 		if err := pm.redisPool.HealthCheck(ctx); err != nil {
-			log.Printf("WARN: Redis health check failed: %v", err)
+			logger.LogInfo(ctx, "WARN: Redis health check failed: %v", zap.Error(err))
 		}
 	}
 
 	// 检查MinIO连接池
 	if pm.minioPool != nil {
 		if err := pm.minioPool.HealthCheck(ctx); err != nil {
-			log.Printf("WARN: MinIO health check failed: %v", err)
+			logger.LogInfo(ctx, "WARN: MinIO health check failed: %v", zap.Error(err))
 		}
 	}
 
 	// 检查备份MinIO连接池
 	if pm.backupPool != nil {
 		if err := pm.backupPool.HealthCheck(ctx); err != nil {
-			log.Printf("WARN: Backup MinIO health check failed: %v", err)
+			logger.LogInfo(ctx, "WARN: Backup MinIO health check failed: %v", zap.Error(err))
 		}
 	}
 }
@@ -196,80 +198,80 @@ func (pm *PoolManager) GetOverallStats() map[string]interface{} {
 }
 
 // UpdateRedisPool 更新Redis连接池
-func (pm *PoolManager) UpdateRedisPool(config *RedisPoolConfig) error {
+func (pm *PoolManager) UpdateRedisPool(ctx context.Context, config *RedisPoolConfig) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
 	// 创建新的Redis连接池
-	newPool, err := NewRedisPool(config)
+	newPool, err := NewRedisPool(ctx, config)
 	if err != nil {
 		return fmt.Errorf("failed to create new Redis pool: %w", err)
 	}
 
 	// 关闭旧连接池
 	if pm.redisPool != nil {
-		pm.redisPool.Close()
+		pm.redisPool.Close(ctx)
 	}
 
 	pm.redisPool = newPool
-	log.Println("Redis connection pool updated successfully")
+	logger.LogInfo(ctx, "Redis connection pool updated successfully")
 	return nil
 }
 
 // UpdateMinIOPool 更新MinIO连接池
-func (pm *PoolManager) UpdateMinIOPool(config *MinIOPoolConfig) error {
+func (pm *PoolManager) UpdateMinIOPool(ctx context.Context, config *MinIOPoolConfig) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
 	// 创建新的MinIO连接池
-	newPool, err := NewMinIOPool(config)
+	newPool, err := NewMinIOPool(ctx, config)
 	if err != nil {
 		return fmt.Errorf("failed to create new MinIO pool: %w", err)
 	}
 
 	// 关闭旧连接池
 	if pm.minioPool != nil {
-		pm.minioPool.Close()
+		pm.minioPool.Close(ctx)
 	}
 
 	pm.minioPool = newPool
-	log.Println("MinIO connection pool updated successfully")
+	logger.LogInfo(ctx, "MinIO connection pool updated successfully")
 	return nil
 }
 
 // UpdateBackupMinIOPool 更新备份MinIO连接池
-func (pm *PoolManager) UpdateBackupMinIOPool(config *MinIOPoolConfig) error {
+func (pm *PoolManager) UpdateBackupMinIOPool(ctx context.Context, config *MinIOPoolConfig) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
 	if config == nil {
 		// 禁用备份连接池
 		if pm.backupPool != nil {
-			pm.backupPool.Close()
+			pm.backupPool.Close(ctx)
 			pm.backupPool = nil
 		}
-		log.Println("Backup MinIO connection pool disabled")
+		logger.LogInfo(ctx, "Backup MinIO connection pool disabled")
 		return nil
 	}
 
 	// 创建新的备份MinIO连接池
-	newPool, err := NewMinIOPool(config)
+	newPool, err := NewMinIOPool(ctx, config)
 	if err != nil {
 		return fmt.Errorf("failed to create new backup MinIO pool: %w", err)
 	}
 
 	// 关闭旧连接池
 	if pm.backupPool != nil {
-		pm.backupPool.Close()
+		pm.backupPool.Close(ctx)
 	}
 
 	pm.backupPool = newPool
-	log.Println("Backup MinIO connection pool updated successfully")
+	logger.LogInfo(ctx, "Backup MinIO connection pool updated successfully")
 	return nil
 }
 
 // Close 关闭所有连接池
-func (pm *PoolManager) Close() error {
+func (pm *PoolManager) Close(ctx context.Context) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
@@ -283,26 +285,26 @@ func (pm *PoolManager) Close() error {
 
 	// 关闭Redis连接池
 	if pm.redisPool != nil {
-		if err := pm.redisPool.Close(); err != nil {
+		if err := pm.redisPool.Close(ctx); err != nil {
 			errors = append(errors, fmt.Sprintf("Redis pool close error: %v", err))
 		}
 	}
 
 	// 关闭MinIO连接池
 	if pm.minioPool != nil {
-		pm.minioPool.Close()
+		pm.minioPool.Close(ctx)
 	}
 
 	// 关闭备份MinIO连接池
 	if pm.backupPool != nil {
-		pm.backupPool.Close()
+		pm.backupPool.Close(ctx)
 	}
 
 	if len(errors) > 0 {
 		return fmt.Errorf("connection pool close errors: %v", errors)
 	}
 
-	log.Println("All connection pools closed successfully")
+	logger.LogInfo(ctx, "All connection pools closed successfully")
 	return nil
 }
 
