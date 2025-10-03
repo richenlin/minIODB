@@ -5,3 +5,5 @@ test/performance/tools/jwt_generator
 test/performance/results/
 miniodb-test
 test/performance/test_results/
+logs/
+coverage.out

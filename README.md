@@ -279,6 +279,22 @@ curl -X POST http://localhost:8081/v1/tables \
 curl http://localhost:8081/v1/tables
 ```
 
+## 📚 文档资源
+
+### 核心文档
+
+- **[故障排查指南](docs/TROUBLESHOOTING.md)** - 错误码参考、慢查询诊断、备份恢复故障处理
+- **[告警配置指南](docs/ALERTING_GUIDE.md)** - Prometheus告警规则配置与管理
+- **[部署文档](deploy/README.md)** - 生产环境部署配置和最佳实践
+
+### 快速链接
+
+- 🔧 **遇到问题？** → [故障排查指南](docs/TROUBLESHOOTING.md)
+- 📊 **配置监控？** → [告警配置指南](docs/ALERTING_GUIDE.md)
+- 🚀 **生产部署？** → [部署文档](deploy/README.md)
+
+---
+
 ## 📖 API文档
 
 ### RESTful API
