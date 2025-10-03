@@ -104,72 +104,109 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// performStartupSync 执行启动时的同步检查（增强版）
+// performStartupSync 执行启动时的同步检查（增强版 - 完整闭环）
 func (m *Manager) performStartupSync(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second) // 增加超时时间
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	m.logger.Printf("Starting enhanced startup synchronization check")
+	m.logger.Printf("=== Starting Enhanced Startup Synchronization Check ===")
+	startTime := time.Now()
 
-	// 获取分布式锁，防止多节点并发执行
+	// 步骤1: 获取分布式锁，防止多节点并发执行
 	lockKey := "metadata:sync:lock"
 	lockAcquired, err := m.acquireDistributedLock(ctx, lockKey, 30*time.Second)
 	if err != nil {
-		m.logger.Printf("Failed to acquire sync lock: %v", err)
+		m.logger.Printf("❌ Failed to acquire sync lock: %v", err)
 		return err
 	}
 	if !lockAcquired {
-		m.logger.Printf("Another node is performing sync, skipping")
-		return err
+		m.logger.Printf("⚠️  Another node is performing sync, skipping")
+		return nil // 正常返回，不是错误
 	}
 	defer m.releaseDistributedLock(ctx, lockKey)
+	m.logger.Printf("✓ Acquired sync lock")
 
-	// 获取版本信息（增强版）
+	// 步骤2: 获取版本信息（增强版）
 	versionInfo, err := m.getEnhancedVersionInfo(ctx)
 	if err != nil {
-		m.logger.Printf("Failed to get version info: %v", err)
+		m.logger.Printf("❌ Failed to get version info: %v", err)
 		return err
 	}
 
-	m.logger.Printf("Version info - Redis: %s, Latest Backup: %s, Status: %s",
-		versionInfo.RedisVersion, versionInfo.BackupVersion, versionInfo.Status)
+	m.logger.Printf("📊 Version Info:")
+	m.logger.Printf("   Redis Version: %s (timestamp: %v)", versionInfo.RedisVersion, versionInfo.RedisTimestamp)
+	m.logger.Printf("   Backup Version: %s (timestamp: %v)", versionInfo.BackupVersion, versionInfo.BackupTimestamp)
+	m.logger.Printf("   Status: %s (confidence: %.2f)", versionInfo.Status, versionInfo.Confidence)
+	m.logger.Printf("   Backup Object: %s", versionInfo.BackupObjectName)
 
-	// 根据版本状态执行相应操作
+	// 步骤3: 根据版本状态执行相应操作
+	var operationErr error
 	switch versionInfo.Status {
 	case "redis_newer":
-		m.logger.Printf("Redis version is newer, performing backup")
-		if err := m.performSafeBackup(ctx, versionInfo); err != nil {
-			m.logger.Printf("Safe backup failed: %v", err)
+		m.logger.Printf("📝 Redis version is newer than backup")
+		m.logger.Printf("   Action: Performing safe backup to preserve Redis data")
+		if err := m.performSafeBackupWithValidation(ctx, versionInfo); err != nil {
+			m.logger.Printf("❌ Safe backup failed: %v", err)
+			operationErr = err
+		} else {
+			m.logger.Printf("✓ Safe backup completed successfully")
 		}
 
 	case "backup_newer":
-		m.logger.Printf("Backup version is newer, performing recovery")
-		if err := m.performSafeRecovery(ctx, versionInfo); err != nil {
-			m.logger.Printf("Safe recovery failed: %v", err)
+		m.logger.Printf("📦 Backup version is newer than Redis")
+		m.logger.Printf("   Action: Performing safe recovery from backup")
+		if err := m.performSafeRecoveryWithValidation(ctx, versionInfo); err != nil {
+			m.logger.Printf("❌ Safe recovery failed: %v", err)
+			operationErr = err
+		} else {
+			m.logger.Printf("✓ Safe recovery completed successfully")
 		}
 
 	case "versions_equal":
-		m.logger.Printf("Versions are equal, performing consistency check")
+		m.logger.Printf("⚖️  Redis and backup versions are equal")
+		m.logger.Printf("   Action: Performing consistency check")
 		if err := m.performEnhancedConsistencyCheck(ctx, versionInfo); err != nil {
-			m.logger.Printf("Enhanced consistency check failed: %v", err)
+			m.logger.Printf("❌ Consistency check failed: %v", err)
+			operationErr = err
+		} else {
+			m.logger.Printf("✓ Consistency check passed")
 		}
 
 	case "version_conflict":
-		m.logger.Printf("Version conflict detected, manual intervention required")
+		m.logger.Printf("⚠️  Version conflict detected")
+		m.logger.Printf("   Redis: %s, Backup: %s", versionInfo.RedisVersion, versionInfo.BackupVersion)
+		m.logger.Printf("   Action: Manual intervention required")
 		m.handleVersionConflict(ctx, versionInfo)
+		operationErr = fmt.Errorf("version conflict requires manual intervention")
 
 	case "redis_version_lost":
-		m.logger.Printf("Redis version lost, attempting recovery from backup metadata")
+		m.logger.Printf("🔍 Redis version information lost")
+		m.logger.Printf("   Action: Attempting recovery from backup metadata")
 		if err := m.recoverVersionFromBackup(ctx, versionInfo); err != nil {
-			m.logger.Printf("Version recovery failed: %v", err)
+			m.logger.Printf("❌ Version recovery failed: %v", err)
+			operationErr = err
+		} else {
+			m.logger.Printf("✓ Version recovered successfully")
 		}
 
 	default:
-		m.logger.Printf("Unknown version status: %s", versionInfo.Status)
+		m.logger.Printf("❓ Unknown version status: %s", versionInfo.Status)
+		operationErr = fmt.Errorf("unknown version status: %s", versionInfo.Status)
 	}
 
-	m.logger.Printf("Enhanced startup synchronization check completed")
-	return nil
+	// 步骤4: 最终验证和报告
+	duration := time.Since(startTime)
+	m.logger.Printf("=== Startup Synchronization Summary ===")
+	m.logger.Printf("   Duration: %v", duration)
+	m.logger.Printf("   Status: %s", versionInfo.Status)
+	if operationErr != nil {
+		m.logger.Printf("   Result: ❌ FAILED - %v", operationErr)
+	} else {
+		m.logger.Printf("   Result: ✓ SUCCESS")
+	}
+	m.logger.Printf("=== End Startup Synchronization ===")
+
+	return operationErr
 }
 
 // VersionInfo 增强的版本信息
@@ -827,11 +864,12 @@ func (m *Manager) ListObjects(ctx context.Context, prefix string) ([]*BackupInfo
 	return backups, nil
 }
 
-// performSafeBackup 执行安全备份
-func (m *Manager) performSafeBackup(ctx context.Context, versionInfo *VersionInfo) error {
-	m.logger.Printf("Performing safe backup with version validation")
+// performSafeBackupWithValidation 执行带验证的安全备份（完整闭环）
+func (m *Manager) performSafeBackupWithValidation(ctx context.Context, versionInfo *VersionInfo) error {
+	m.logger.Printf("→ Starting safe backup with validation")
 
-	// 执行备份前再次验证版本状态
+	// 步骤1: 执行备份前再次验证版本状态
+	m.logger.Printf("  [1/5] Re-verifying version status before backup")
 	currentVersionInfo, err := m.getEnhancedVersionInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to re-verify version before backup: %w", err)
@@ -839,81 +877,149 @@ func (m *Manager) performSafeBackup(ctx context.Context, versionInfo *VersionInf
 
 	// 如果状态发生变化，重新评估
 	if currentVersionInfo.Status != versionInfo.Status {
-		m.logger.Printf("Version status changed during backup preparation: %s -> %s",
+		m.logger.Printf("  ❌ Version status changed: %s -> %s, aborting",
 			versionInfo.Status, currentVersionInfo.Status)
 		return fmt.Errorf("version status changed, aborting backup")
 	}
+	m.logger.Printf("  ✓ Version status verified")
 
-	// 执行备份
+	// 步骤2: 执行备份
+	m.logger.Printf("  [2/5] Executing backup")
 	if err := m.backupManager.performBackup(ctx); err != nil {
+		m.logger.Printf("  ❌ Backup execution failed: %v", err)
 		return fmt.Errorf("backup execution failed: %w", err)
 	}
+	m.logger.Printf("  ✓ Backup executed")
 
-	// 验证备份成功
+	// 步骤3: 验证备份成功
+	m.logger.Printf("  [3/5] Validating backup")
 	if err := m.validateBackupSuccess(ctx); err != nil {
+		m.logger.Printf("  ❌ Backup validation failed: %v", err)
 		return fmt.Errorf("backup validation failed: %w", err)
 	}
+	m.logger.Printf("  ✓ Backup validated")
 
-	m.logger.Printf("Safe backup completed successfully")
+	// 步骤4: 更新版本号
+	m.logger.Printf("  [4/5] Updating version metadata")
+	if err := m.updateVersionAfterBackup(ctx); err != nil {
+		m.logger.Printf("  ⚠️  Failed to update version: %v", err)
+		// 不阻止备份成功，但记录警告
+	} else {
+		m.logger.Printf("  ✓ Version updated")
+	}
+
+	// 步骤5: 最终一致性验证
+	m.logger.Printf("  [5/5] Final consistency check")
+	if err := m.verifyBackupConsistency(ctx); err != nil {
+		m.logger.Printf("  ⚠️  Consistency check warning: %v", err)
+		// 警告但不失败
+	} else {
+		m.logger.Printf("  ✓ Consistency verified")
+	}
+
+	m.logger.Printf("✓ Safe backup completed successfully")
 	return nil
 }
 
-// performSafeRecovery 执行安全恢复
-func (m *Manager) performSafeRecovery(ctx context.Context, versionInfo *VersionInfo) error {
-	m.logger.Printf("Performing safe recovery with validation")
+// performSafeBackup 保留原有方法以兼容其他调用
+func (m *Manager) performSafeBackup(ctx context.Context, versionInfo *VersionInfo) error {
+	return m.performSafeBackupWithValidation(ctx, versionInfo)
+}
 
-	// 1. 验证备份完整性
+// performSafeRecoveryWithValidation 执行带验证的安全恢复（完整闭环）
+func (m *Manager) performSafeRecoveryWithValidation(ctx context.Context, versionInfo *VersionInfo) error {
+	m.logger.Printf("→ Starting safe recovery with validation")
+
+	// 步骤1: 验证备份完整性（包含校验和验证）
+	m.logger.Printf("  [1/7] Validating backup integrity and checksum")
 	if err := m.validateBackupIntegrity(ctx, versionInfo.BackupObjectName); err != nil {
+		m.logger.Printf("  ❌ Backup integrity validation failed: %v", err)
 		return fmt.Errorf("backup integrity validation failed: %w", err)
 	}
+	m.logger.Printf("  ✓ Backup integrity verified (checksum valid)")
 
-	// 2. 创建当前数据的安全点
+	// 步骤2: 创建当前数据的安全点
+	m.logger.Printf("  [2/7] Creating data snapshot for rollback")
 	snapshotName, err := m.createDataSnapshot(ctx)
 	if err != nil {
-		m.logger.Printf("Warning: failed to create data snapshot: %v", err)
+		m.logger.Printf("  ⚠️  Failed to create data snapshot: %v", err)
 		// 不阻止恢复，但记录警告
+	} else {
+		m.logger.Printf("  ✓ Snapshot created: %s", snapshotName)
 	}
 
-	// 3. 执行恢复
+	// 步骤3: 执行恢复（使用并行模式）
+	m.logger.Printf("  [3/7] Executing recovery (parallel mode)")
 	options := RecoveryOptions{
 		Mode:      RecoveryModeComplete,
 		Overwrite: true,
 		Validate:  true,
 		DryRun:    false,
+		Parallel:  true, // 使用并行恢复
 	}
 
 	result, err := m.recoveryManager.RecoverFromBackup(ctx, versionInfo.BackupObjectName, options)
 	if err != nil {
+		m.logger.Printf("  ❌ Recovery failed: %v", err)
 		// 如果恢复失败且有快照，尝试回滚
 		if snapshotName != "" {
-			m.logger.Printf("Recovery failed, attempting rollback to snapshot: %s", snapshotName)
+			m.logger.Printf("  [Rollback] Attempting rollback to snapshot: %s", snapshotName)
 			if rollbackErr := m.rollbackToSnapshot(ctx, snapshotName); rollbackErr != nil {
-				m.logger.Printf("Rollback also failed: %v", rollbackErr)
+				m.logger.Printf("  ❌ Rollback also failed: %v", rollbackErr)
+				return fmt.Errorf("recovery and rollback both failed: recovery=%v, rollback=%v", err, rollbackErr)
 			}
+			m.logger.Printf("  ✓ Successfully rolled back to snapshot")
 		}
 		return fmt.Errorf("recovery failed: %w", err)
 	}
+	m.logger.Printf("  ✓ Recovery executed: ok=%d, errors=%d, duration=%v",
+		result.EntriesOK, result.EntriesError, result.Duration)
 
-	// 4. 验证恢复结果
+	// 步骤4: 验证恢复结果
+	m.logger.Printf("  [4/7] Validating recovery results")
 	if !result.Success || result.EntriesError > 0 {
+		m.logger.Printf("  ❌ Recovery completed with errors: total=%d, ok=%d, error=%d",
+			result.EntriesTotal, result.EntriesOK, result.EntriesError)
 		return fmt.Errorf("recovery completed with errors: total=%d, ok=%d, error=%d",
 			result.EntriesTotal, result.EntriesOK, result.EntriesError)
 	}
+	m.logger.Printf("  ✓ All entries recovered successfully")
 
-	// 5. 更新版本号和时间戳
+	// 步骤5: 更新版本号和时间戳
+	m.logger.Printf("  [5/7] Updating version metadata")
 	if err := m.updateVersionAfterRecovery(ctx, versionInfo.BackupVersion); err != nil {
-		m.logger.Printf("Warning: failed to update version after recovery: %v", err)
+		m.logger.Printf("  ⚠️  Failed to update version: %v", err)
+		// 不阻止恢复成功，但记录警告
+	} else {
+		m.logger.Printf("  ✓ Version updated to: %s", versionInfo.BackupVersion)
 	}
 
-	// 6. 清理快照
+	// 步骤6: 最终一致性验证
+	m.logger.Printf("  [6/7] Final consistency verification")
+	if err := m.verifyRecoveryConsistency(ctx, versionInfo); err != nil {
+		m.logger.Printf("  ⚠️  Consistency verification warning: %v", err)
+		// 警告但不失败
+	} else {
+		m.logger.Printf("  ✓ Consistency verified")
+	}
+
+	// 步骤7: 清理快照
+	m.logger.Printf("  [7/7] Cleaning up snapshot")
 	if snapshotName != "" {
 		if err := m.cleanupSnapshot(ctx, snapshotName); err != nil {
-			m.logger.Printf("Warning: failed to cleanup snapshot: %v", err)
+			m.logger.Printf("  ⚠️  Failed to cleanup snapshot: %v", err)
+		} else {
+			m.logger.Printf("  ✓ Snapshot cleaned up")
 		}
 	}
 
-	m.logger.Printf("Safe recovery completed successfully")
+	m.logger.Printf("✓ Safe recovery completed successfully")
 	return nil
+}
+
+// performSafeRecovery 保留原有方法以兼容其他调用
+func (m *Manager) performSafeRecovery(ctx context.Context, versionInfo *VersionInfo) error {
+	return m.performSafeRecoveryWithValidation(ctx, versionInfo)
 }
 
 // performEnhancedConsistencyCheck 执行增强的一致性检查
@@ -1037,6 +1143,81 @@ func (m *Manager) recoverVersionFromBackup(ctx context.Context, versionInfo *Ver
 	}
 
 	m.logger.Printf("Successfully recovered version %s from backup", versionInfo.BackupVersion)
+	return nil
+}
+
+// updateVersionAfterBackup 备份后更新版本号
+func (m *Manager) updateVersionAfterBackup(ctx context.Context) error {
+	// 获取当前版本
+	currentVersion, err := m.getCurrentVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get current version: %w", err)
+	}
+
+	// 更新版本时间戳
+	client, err := m.getRedisClient()
+	if err != nil {
+		return fmt.Errorf("failed to get redis client: %w", err)
+	}
+
+	timestamp := time.Now()
+	if err := client.Set(ctx, "metadata:version:timestamp",
+		timestamp.Format(time.RFC3339), 0).Err(); err != nil {
+		return fmt.Errorf("failed to update version timestamp: %w", err)
+	}
+
+	// 记录备份完成事件
+	if err := client.Set(ctx, "metadata:last_backup_time",
+		timestamp.Format(time.RFC3339), 0).Err(); err != nil {
+		m.logger.Printf("Warning: failed to update last backup time: %v", err)
+	}
+
+	m.logger.Printf("Version metadata updated: %s at %v", currentVersion, timestamp)
+	return nil
+}
+
+// verifyBackupConsistency 验证备份一致性
+func (m *Manager) verifyBackupConsistency(ctx context.Context) error {
+	// 获取最新备份
+	latestBackup, err := m.recoveryManager.GetLatestBackup(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get latest backup: %w", err)
+	}
+
+	// 验证备份
+	if err := m.recoveryManager.ValidateBackup(ctx, latestBackup.ObjectName); err != nil {
+		return fmt.Errorf("backup validation failed: %w", err)
+	}
+
+	m.logger.Printf("Backup consistency verified: %s", latestBackup.ObjectName)
+	return nil
+}
+
+// verifyRecoveryConsistency 验证恢复一致性
+func (m *Manager) verifyRecoveryConsistency(ctx context.Context, versionInfo *VersionInfo) error {
+	// 1. 验证版本号已更新
+	currentVersion, err := m.getCurrentVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get current version: %w", err)
+	}
+
+	if currentVersion != versionInfo.BackupVersion {
+		return fmt.Errorf("version mismatch after recovery: expected %s, got %s",
+			versionInfo.BackupVersion, currentVersion)
+	}
+
+	// 2. 验证元数据完整性（简单检查）
+	currentMetadata, err := m.getCurrentMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get current metadata: %w", err)
+	}
+
+	if len(currentMetadata) == 0 {
+		return fmt.Errorf("metadata is empty after recovery")
+	}
+
+	m.logger.Printf("Recovery consistency verified: version=%s, entries=%d",
+		currentVersion, len(currentMetadata))
 	return nil
 }
 

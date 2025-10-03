@@ -29,6 +29,10 @@ type TableManager struct {
 	metadataCache      map[string]*TableManagerInfo
 	metadataCacheMutex sync.RWMutex
 	metadataCacheTTL   time.Duration
+
+	// 表级锁（用于.metadata原子创建）
+	tableLocks      map[string]*sync.Mutex
+	tableLocksMutex sync.RWMutex
 }
 
 // TableManagerInfo 表管理器表信息
@@ -57,7 +61,8 @@ func NewTableManager(redisPool *pool.RedisPool, primaryMinio *minio.Client, back
 		backupMinio:      backupMinio,
 		cfg:              cfg,
 		metadataCache:    make(map[string]*TableManagerInfo),
-		metadataCacheTTL: 5 * time.Minute, // 缓存5分钟
+		metadataCacheTTL: cfg.QueryOptimization.MetadataCacheTTL, // 从配置读取TTL
+		tableLocks:       make(map[string]*sync.Mutex),
 	}
 }
 
@@ -270,22 +275,63 @@ func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*Tabl
 	return tables, nil
 }
 
-// createTableMetadataInMinIO 在MinIO中创建表元数据标记文件（单节点模式）
+// getTableLock 获取表级锁（用于原子创建）
+func (tm *TableManager) getTableLock(tableName string) *sync.Mutex {
+	tm.tableLocksMutex.Lock()
+	defer tm.tableLocksMutex.Unlock()
+
+	if lock, exists := tm.tableLocks[tableName]; exists {
+		return lock
+	}
+
+	lock := &sync.Mutex{}
+	tm.tableLocks[tableName] = lock
+	return lock
+}
+
+// createTableMetadataInMinIO 在MinIO中原子创建表元数据标记文件（单节点模式）
 func (tm *TableManager) createTableMetadataInMinIO(ctx context.Context, tableName string, tableConfig *config.TableConfig) error {
 	if tm.primaryMinio == nil {
 		return fmt.Errorf("MinIO client not initialized")
 	}
 
-	bucket := tm.cfg.MinIO.Bucket
+	// 步骤1: 获取表级锁，保证单机原子性
+	tableLock := tm.getTableLock(tableName)
+	tableLock.Lock()
+	defer tableLock.Unlock()
 
-	// 创建元数据对象的路径: {table}/.metadata
+	bucket := tm.cfg.MinIO.Bucket
 	metadataKey := fmt.Sprintf("%s/.metadata", tableName)
 
-	// 构建元数据JSON
+	// 步骤2: Stat检查，确保.metadata不存在
+	logger.LogInfo(ctx, "Checking if .metadata exists for table",
+		zap.String("table", tableName),
+		zap.String("key", metadataKey))
+
+	_, err := tm.primaryMinio.StatObject(ctx, bucket, metadataKey, minio.StatObjectOptions{})
+	if err == nil {
+		// 对象已存在
+		logger.LogWarn(ctx, ".metadata already exists for table",
+			zap.String("table", tableName))
+		return fmt.Errorf("table %s already exists (metadata file present)", tableName)
+	}
+
+	// 验证错误类型 - 只有在对象不存在时才继续
+	minioErr, ok := err.(minio.ErrorResponse)
+	if !ok || minioErr.Code != "NoSuchKey" {
+		// 其他错误（网络问题等）
+		return fmt.Errorf("failed to check metadata existence: %w", err)
+	}
+
+	logger.LogInfo(ctx, ".metadata does not exist, proceeding with creation",
+		zap.String("table", tableName))
+
+	// 步骤3: 构建元数据JSON
 	metadata := map[string]interface{}{
 		"table_name": tableName,
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 		"status":     "active",
+		"version":    "1.0.0",
 		"config": map[string]interface{}{
 			"buffer_size":            tableConfig.BufferSize,
 			"flush_interval_seconds": int(tableConfig.FlushInterval.Seconds()),
@@ -300,7 +346,12 @@ func (tm *TableManager) createTableMetadataInMinIO(ctx context.Context, tableNam
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	// 上传元数据文件到MinIO
+	// 步骤4: 使用条件写上传（如果MinIO支持If-None-Match）
+	// 注意：MinIO v7不直接支持If-None-Match，但通过Stat+Lock组合保证原子性
+	logger.LogInfo(ctx, "Creating .metadata file",
+		zap.String("table", tableName),
+		zap.Int("size", len(metadataJSON)))
+
 	_, err = tm.primaryMinio.PutObject(
 		ctx,
 		bucket,
@@ -309,14 +360,30 @@ func (tm *TableManager) createTableMetadataInMinIO(ctx context.Context, tableNam
 		int64(len(metadataJSON)),
 		minio.PutObjectOptions{
 			ContentType: "application/json",
+			UserMetadata: map[string]string{
+				"X-Created-By":    "MinIODB",
+				"X-Creation-Time": time.Now().UTC().Format(time.RFC3339),
+			},
 		},
 	)
 
 	if err != nil {
+		logger.LogError(ctx, err, "Failed to create .metadata file",
+			zap.String("table", tableName))
 		return fmt.Errorf("failed to create metadata marker in MinIO: %w", err)
 	}
 
-	logger.LogInfo(ctx, "Created metadata marker for table %s in MinIO: %s", zap.String("table_name", tableName), zap.String("metadata_key", metadataKey))
+	// 步骤5: 最终验证 - 确认.metadata已成功创建
+	_, err = tm.primaryMinio.StatObject(ctx, bucket, metadataKey, minio.StatObjectOptions{})
+	if err != nil {
+		logger.LogError(ctx, err, "Failed to verify .metadata creation",
+			zap.String("table", tableName))
+		return fmt.Errorf("metadata creation verification failed: %w", err)
+	}
+
+	logger.LogInfo(ctx, "Successfully created .metadata atomically",
+		zap.String("table", tableName),
+		zap.String("key", metadataKey))
 	return nil
 }
 
@@ -338,8 +405,8 @@ func (tm *TableManager) setCachedTableInfo(ctx context.Context, tableName string
 	logger.LogInfo(ctx, "Cached metadata for table %s", zap.String("table_name", tableName))
 }
 
-// invalidateCachedTableInfo 使表缓存失效（优化2）
-func (tm *TableManager) invalidateCachedTableInfo(ctx context.Context, tableName string) {
+// InvalidateCachedTableInfo 使表缓存失效（优化2，公开方法用于REST API）
+func (tm *TableManager) InvalidateCachedTableInfo(ctx context.Context, tableName string) {
 	tm.metadataCacheMutex.Lock()
 	defer tm.metadataCacheMutex.Unlock()
 

@@ -13,6 +13,7 @@ import (
 	"minIODB/internal/buffer"
 	"minIODB/internal/config"
 	"minIODB/internal/logger"
+	"minIODB/internal/metrics"
 	"minIODB/internal/pool"
 	"minIODB/internal/storage"
 
@@ -68,8 +69,9 @@ type Querier struct {
 	indexSystem    *storage.IndexSystem // 新增：索引系统
 
 	// 缓存组件
-	queryCache *QueryCache
-	fileCache  *FileCache
+	queryCache     *QueryCache
+	fileCache      *FileCache
+	smartOptimizer *SmartCacheOptimizer // 智能缓存优化器（可选）
 
 	// 单节点模式文件索引缓存
 	localFileIndex      map[string][]string // tableName -> []filePath
@@ -170,7 +172,7 @@ func NewQuerier(ctx context.Context, redisPool *pool.RedisPool, minioClient stor
 		// 【新增】初始化缓存
 		localFileIndex:     make(map[string][]string),
 		localIndexLastScan: make(map[string]time.Time),
-		localFileIndexTTL:  5 * time.Minute, // 文件索引缓存5分钟
+		localFileIndexTTL:  cfg.QueryOptimization.LocalFileIndexTTL, // 从配置读取TTL
 		initializedViews:   make(map[string]bool),
 	}
 
@@ -182,39 +184,71 @@ func NewQuerier(ctx context.Context, redisPool *pool.RedisPool, minioClient stor
 func (q *Querier) ExecuteQuery(ctx context.Context, sqlQuery string) (string, error) {
 	startTime := time.Now()
 
-	logger.LogInfo(ctx, "Executing enhanced query", zap.String("value", sqlQuery))
+	// 应用查询超时
+	if q.config.QueryOptimization.QueryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, q.config.QueryOptimization.QueryTimeout)
+		defer cancel()
+	}
+
+	logger.LogInfo(ctx, "Executing query",
+		zap.String("sql", sqlQuery),
+		zap.Duration("timeout", q.config.QueryOptimization.QueryTimeout),
+	)
 
 	// 1. 提取表名
 	tables := q.tableExtractor.ExtractTableNames(sqlQuery)
 	if len(tables) == 0 {
 		q.updateErrorStats(ctx)
+		logger.LogError(ctx, fmt.Errorf("no tables found"), "No valid table names found in query",
+			zap.String("sql", sqlQuery),
+			zap.String("status", "failed"),
+			zap.Duration("duration", time.Since(startTime)),
+		)
 		return "", fmt.Errorf("no valid table names found in query")
 	}
 
 	validTables := q.tableExtractor.ValidateTableNames(tables)
 	if len(validTables) == 0 {
 		q.updateErrorStats(ctx)
+		logger.LogError(ctx, fmt.Errorf("no valid tables after validation"), "No valid table names after validation",
+			zap.String("sql", sqlQuery),
+			zap.Strings("tables", tables),
+			zap.String("status", "failed"),
+			zap.Duration("duration", time.Since(startTime)),
+		)
 		return "", fmt.Errorf("no valid table names found after validation")
 	}
 
-	logger.LogInfo(ctx, "Extracted tables: ", zap.String("table", fmt.Sprintf("%v", validTables)))
+	logger.LogInfo(ctx, "Extracted tables",
+		zap.Strings("tables", validTables),
+	)
 
 	// 2. 使用索引系统进行查询优化（如果可用）
 	if q.indexSystem != nil {
 		optimizedTables, err := q.optimizeQueryWithIndex(ctx, sqlQuery, validTables)
 		if err == nil && len(optimizedTables) > 0 {
-			logger.LogInfo(ctx, "Query optimized using index system")
+			logger.LogInfo(ctx, "Query optimized using index system",
+				zap.Strings("optimized_tables", optimizedTables),
+			)
 			validTables = optimizedTables
-		} else {
-			logger.LogInfo(ctx, "Index optimization failed, using original tables: ", zap.String("table", fmt.Sprintf("%v", err)))
+		} else if err != nil {
+			logger.LogWarn(ctx, "Index optimization failed, using original tables",
+				zap.Error(err),
+			)
 		}
 	}
 
 	// 3. 检查查询缓存（只有在Redis连接池可用时）
 	if q.queryCache != nil && q.redisPool != nil {
 		if cacheEntry, found := q.queryCache.Get(ctx, sqlQuery, validTables); found {
-			q.updateCacheHitStats(ctx, validTables, time.Since(startTime))
-			logger.LogInfo(ctx, "Query cache HIT - returning cached result")
+			cacheDuration := time.Since(startTime)
+			q.updateCacheHitStats(ctx, validTables, cacheDuration)
+			logger.LogInfo(ctx, "Query cache hit",
+				zap.Strings("tables", validTables),
+				zap.String("status", "success_cached"),
+				zap.Duration("duration", cacheDuration),
+			)
 			return cacheEntry.Result, nil
 		}
 	}
@@ -226,6 +260,11 @@ func (q *Querier) ExecuteQuery(ctx context.Context, sqlQuery string) (string, er
 	db, err := q.getDBConnection(ctx)
 	if err != nil {
 		q.updateErrorStats(ctx)
+		logger.LogError(ctx, err, "Failed to get database connection",
+			zap.String("sql", sqlQuery),
+			zap.String("status", "failed"),
+			zap.Duration("duration", time.Since(startTime)),
+		)
 		return "", fmt.Errorf("failed to get database connection: %w", err)
 	}
 	defer q.returnDBConnection(ctx, db)
@@ -234,6 +273,12 @@ func (q *Querier) ExecuteQuery(ctx context.Context, sqlQuery string) (string, er
 	for _, tableName := range validTables {
 		if err := q.prepareTableDataWithCacheAndDB(ctx, db, tableName); err != nil {
 			q.updateErrorStats(ctx)
+			logger.LogError(ctx, err, "Failed to prepare table data",
+				zap.String("table", tableName),
+				zap.String("sql", sqlQuery),
+				zap.String("status", "failed"),
+				zap.Duration("duration", time.Since(startTime)),
+			)
 			return "", fmt.Errorf("failed to prepare data for table %s: %w", tableName, err)
 		}
 	}
@@ -242,6 +287,12 @@ func (q *Querier) ExecuteQuery(ctx context.Context, sqlQuery string) (string, er
 	result, err := q.executeQueryWithOptimization(ctx, db, sqlQuery)
 	if err != nil {
 		q.updateErrorStats(ctx)
+		logger.LogError(ctx, err, "Query execution failed",
+			zap.String("sql", sqlQuery),
+			zap.Strings("tables", validTables),
+			zap.String("status", "failed"),
+			zap.Duration("duration", time.Since(startTime)),
+		)
 		return "", fmt.Errorf("query execution failed: %w", err)
 	}
 
@@ -254,9 +305,46 @@ func (q *Querier) ExecuteQuery(ctx context.Context, sqlQuery string) (string, er
 
 	// 8. 更新统计信息
 	queryTime := time.Since(startTime)
-	q.updateQueryStats(ctx, validTables, queryTime, q.tableExtractor.GetQueryType(sqlQuery))
+	queryType := q.tableExtractor.GetQueryType(sqlQuery)
+	q.updateQueryStats(ctx, validTables, queryTime, queryType)
 
-	logger.LogInfo(ctx, "Query executed successfully in ", zap.String("value", fmt.Sprintf("%v", queryTime)))
+	// 9. 检测慢查询
+	if q.config.QueryOptimization.SlowQueryThreshold > 0 && queryTime > q.config.QueryOptimization.SlowQueryThreshold {
+		// 记录慢查询日志
+		logger.LogWarn(ctx, "Slow query detected",
+			zap.String("sql", sqlQuery),
+			zap.Strings("tables", validTables),
+			zap.String("query_type", queryType),
+			zap.Duration("duration", queryTime),
+			zap.Duration("threshold", q.config.QueryOptimization.SlowQueryThreshold),
+			zap.Int("result_length", len(result)),
+		)
+
+		// 记录慢查询指标（为每个涉及的表记录）
+		for _, table := range validTables {
+			metrics.RecordSlowQuery(table)
+		}
+	}
+
+	// 10. 记录查询耗时到直方图（用于P50/P95/P99分位数计算）
+	for _, table := range validTables {
+		metrics.ObserveQueryDuration(queryType, table, queryTime)
+	}
+
+	// 11. 记录查询访问到SmartOptimizer（用于自适应TTL）
+	if q.smartOptimizer != nil {
+		q.smartOptimizer.RecordQueryAccess(ctx, sqlQuery, validTables, queryTime, int64(len(result)))
+	}
+
+	logger.LogInfo(ctx, "Query executed successfully",
+		zap.String("sql", sqlQuery),
+		zap.Strings("tables", validTables),
+		zap.String("query_type", queryType),
+		zap.Int("result_length", len(result)),
+		zap.String("status", "success"),
+		zap.Duration("duration", queryTime),
+	)
+
 	return result, nil
 }
 
@@ -1196,9 +1284,16 @@ func (q *Querier) executeQueryWithOptimization(ctx context.Context, db *sql.DB, 
 		return q.executeWithPreparedStatement(ctx, db, sqlQuery)
 	}
 
-	// 直接执行查询
-	rows, err := db.Query(sqlQuery)
+	// 使用context-aware的Query方法
+	rows, err := db.QueryContext(ctx, sqlQuery)
 	if err != nil {
+		// 检查是否是超时错误
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("query timeout exceeded: %w", err)
+		}
+		if ctx.Err() == context.Canceled {
+			return "", fmt.Errorf("query canceled: %w", err)
+		}
 		return "", err
 	}
 	defer rows.Close()
@@ -1232,13 +1327,19 @@ func (q *Querier) executeWithPreparedStatement(ctx context.Context, db *sql.DB, 
 	q.stmtMutex.RUnlock()
 
 	if !exists {
-		// 创建预编译语句
+		// 创建预编译语句（使用context）
 		var err error
-		stmt, err = db.Prepare(sqlQuery)
+		stmt, err = db.PrepareContext(ctx, sqlQuery)
 		if err != nil {
-			// 如果预编译失败，回退到直接查询
-			rows, err := db.Query(sqlQuery)
+			// 如果预编译失败，回退到直接查询（使用context）
+			rows, err := db.QueryContext(ctx, sqlQuery)
 			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return "", fmt.Errorf("query timeout exceeded: %w", err)
+				}
+				if ctx.Err() == context.Canceled {
+					return "", fmt.Errorf("query canceled: %w", err)
+				}
 				return "", err
 			}
 			defer rows.Close()
@@ -1250,9 +1351,15 @@ func (q *Querier) executeWithPreparedStatement(ctx context.Context, db *sql.DB, 
 		q.stmtMutex.Unlock()
 	}
 
-	// 执行预编译语句
-	rows, err := stmt.Query()
+	// 执行预编译语句（使用context）
+	rows, err := stmt.QueryContext(ctx)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("query timeout exceeded: %w", err)
+		}
+		if ctx.Err() == context.Canceled {
+			return "", fmt.Errorf("query canceled: %w", err)
+		}
 		return "", err
 	}
 	defer rows.Close()

@@ -65,6 +65,33 @@ var (
 		[]string{},
 	)
 
+	// MinIODB 写入路径指标（补强）
+	miniodbWriteDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "miniodb_write_duration_seconds",
+			Help: "MinIODB write operation duration in seconds",
+			// 细粒度分桶：1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s
+			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5},
+		},
+		[]string{"table", "status"},
+	)
+
+	miniodbWritesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miniodb_writes_total",
+			Help: "Total number of MinIODB write operations",
+		},
+		[]string{"table", "status"},
+	)
+
+	miniodbWriteBytesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miniodb_write_bytes_total",
+			Help: "Total bytes written to MinIODB",
+		},
+		[]string{"table"},
+	)
+
 	// 查询指标
 	queriesTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -83,6 +110,27 @@ var (
 		[]string{"type"},
 	)
 
+	// 慢查询指标
+	slowQueriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miniodb_slow_queries_total",
+			Help: "Total number of slow queries exceeding the threshold",
+		},
+		[]string{"table"},
+	)
+
+	// MinIODB查询耗时直方图（细粒度分桶，用于分位数计算）
+	miniodbQueryDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "miniodb_query_duration_seconds",
+			Help: "MinIODB query execution duration in seconds with fine-grained buckets for percentile calculation",
+			// 自定义分桶：10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 60s
+			// 这些分桶可以很好地计算 P50, P95, P99
+			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0},
+		},
+		[]string{"query_type", "table"},
+	)
+
 	// 缓冲区指标
 	bufferSize = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -98,6 +146,49 @@ var (
 			Help: "Total number of buffer flushes",
 		},
 		[]string{"status"},
+	)
+
+	// MinIODB 缓冲刷新指标（补强）
+	miniodbFlushDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "miniodb_flush_duration_seconds",
+			Help: "MinIODB buffer flush operation duration in seconds",
+			// 刷新通常比写入慢：10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s
+			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
+		},
+		[]string{"table", "trigger", "status"}, // trigger: periodic/manual/adaptive/memory_pressure
+	)
+
+	miniodbFlushesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miniodb_flushes_total",
+			Help: "Total number of MinIODB buffer flush operations",
+		},
+		[]string{"table", "trigger", "status"}, // trigger类型：periodic, manual, adaptive, memory_pressure
+	)
+
+	miniodbFlushRecordsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miniodb_flush_records_total",
+			Help: "Total number of records flushed from buffer",
+		},
+		[]string{"table"},
+	)
+
+	miniodbFlushBytesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miniodb_flush_bytes_total",
+			Help: "Total bytes flushed from buffer to storage",
+		},
+		[]string{"table"},
+	)
+
+	miniodbPendingWrites = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_pending_writes",
+			Help: "Current number of pending writes in buffer",
+		},
+		[]string{"table"},
 	)
 
 	// MinIO指标
@@ -134,6 +225,64 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"operation"},
+	)
+
+	// Redis连接池指标（新增）
+	redisPoolActiveConns = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_redis_pool_active_conns",
+			Help: "Current number of active Redis connections",
+		},
+		[]string{"pool_name"},
+	)
+
+	redisPoolIdleConns = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_redis_pool_idle_conns",
+			Help: "Current number of idle Redis connections",
+		},
+		[]string{"pool_name"},
+	)
+
+	redisPoolTotalConns = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_redis_pool_total_conns",
+			Help: "Total number of Redis connections in pool",
+		},
+		[]string{"pool_name"},
+	)
+
+	redisPoolUtilization = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_redis_pool_utilization_percent",
+			Help: "Redis connection pool utilization percentage (active/total * 100)",
+		},
+		[]string{"pool_name"},
+	)
+
+	// MinIO连接池指标（新增）
+	minioPoolActiveConns = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_minio_pool_active_conns",
+			Help: "Current number of active MinIO connections",
+		},
+		[]string{"pool_name"},
+	)
+
+	minioPoolIdleConns = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_minio_pool_idle_conns",
+			Help: "Current number of idle MinIO connections",
+		},
+		[]string{"pool_name"},
+	)
+
+	minioPoolUtilization = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "miniodb_minio_pool_utilization_percent",
+			Help: "MinIO connection pool utilization percentage",
+		},
+		[]string{"pool_name"},
 	)
 
 	// 系统指标
@@ -268,6 +417,16 @@ func (m *QueryMetrics) Finish(status string) {
 	queryDuration.WithLabelValues(m.queryType).Observe(duration)
 }
 
+// RecordSlowQuery 记录慢查询
+func RecordSlowQuery(table string) {
+	slowQueriesTotal.WithLabelValues(table).Inc()
+}
+
+// ObserveQueryDuration 记录MinIODB查询耗时到直方图
+func ObserveQueryDuration(queryType, table string, duration time.Duration) {
+	miniodbQueryDuration.WithLabelValues(queryType, table).Observe(duration.Seconds())
+}
+
 // UpdateBufferSize 更新缓冲区大小指标
 func UpdateBufferSize(bufferType string, size float64) {
 	bufferSize.WithLabelValues(bufferType).Set(size)
@@ -276,6 +435,92 @@ func UpdateBufferSize(bufferType string, size float64) {
 // RecordBufferFlush 记录缓冲区刷新指标
 func RecordBufferFlush(status string) {
 	bufferFlushesTotal.WithLabelValues(status).Inc()
+}
+
+// WriteMetrics 写入操作指标记录器
+type WriteMetrics struct {
+	table string
+	start time.Time
+}
+
+// NewWriteMetrics 创建写入指标记录器
+func NewWriteMetrics(table string) *WriteMetrics {
+	return &WriteMetrics{
+		table: table,
+		start: time.Now(),
+	}
+}
+
+// Finish 完成写入指标记录
+func (m *WriteMetrics) Finish(status string, bytes int64) {
+	duration := time.Since(m.start).Seconds()
+	miniodbWriteDuration.WithLabelValues(m.table, status).Observe(duration)
+	miniodbWritesTotal.WithLabelValues(m.table, status).Inc()
+	if bytes > 0 {
+		miniodbWriteBytesTotal.WithLabelValues(m.table).Add(float64(bytes))
+	}
+}
+
+// FlushMetrics 缓冲刷新指标记录器
+type FlushMetrics struct {
+	table   string
+	trigger string // periodic, manual, adaptive, memory_pressure
+	start   time.Time
+}
+
+// NewFlushMetrics 创建刷新指标记录器
+func NewFlushMetrics(table, trigger string) *FlushMetrics {
+	return &FlushMetrics{
+		table:   table,
+		trigger: trigger,
+		start:   time.Now(),
+	}
+}
+
+// Finish 完成刷新指标记录
+func (m *FlushMetrics) Finish(status string, recordsFlushed, bytesFlushed int64) {
+	duration := time.Since(m.start).Seconds()
+	miniodbFlushDuration.WithLabelValues(m.table, m.trigger, status).Observe(duration)
+	miniodbFlushesTotal.WithLabelValues(m.table, m.trigger, status).Inc()
+	if recordsFlushed > 0 {
+		miniodbFlushRecordsTotal.WithLabelValues(m.table).Add(float64(recordsFlushed))
+	}
+	if bytesFlushed > 0 {
+		miniodbFlushBytesTotal.WithLabelValues(m.table).Add(float64(bytesFlushed))
+	}
+}
+
+// UpdatePendingWrites 更新待写入记录数
+func UpdatePendingWrites(table string, count int64) {
+	miniodbPendingWrites.WithLabelValues(table).Set(float64(count))
+}
+
+// UpdateRedisPoolMetrics 更新Redis连接池指标
+func UpdateRedisPoolMetrics(poolName string, active, idle, total uint32) {
+	redisPoolActiveConns.WithLabelValues(poolName).Set(float64(active))
+	redisPoolIdleConns.WithLabelValues(poolName).Set(float64(idle))
+	redisPoolTotalConns.WithLabelValues(poolName).Set(float64(total))
+
+	// 计算利用率
+	var utilization float64
+	if total > 0 {
+		utilization = (float64(active) / float64(total)) * 100
+	}
+	redisPoolUtilization.WithLabelValues(poolName).Set(utilization)
+}
+
+// UpdateMinIOPoolMetrics 更新MinIO连接池指标
+func UpdateMinIOPoolMetrics(poolName string, active, idle uint32) {
+	minioPoolActiveConns.WithLabelValues(poolName).Set(float64(active))
+	minioPoolIdleConns.WithLabelValues(poolName).Set(float64(idle))
+
+	// MinIO连接池通常是按需创建，利用率按活跃连接数计算
+	total := active + idle
+	var utilization float64
+	if total > 0 {
+		utilization = (float64(active) / float64(total)) * 100
+	}
+	minioPoolUtilization.WithLabelValues(poolName).Set(utilization)
 }
 
 // MinIOMetrics MinIO操作指标记录器

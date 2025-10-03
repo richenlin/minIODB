@@ -36,3 +36,11 @@ monitoring:
   port: ":8082"          # 监控端口
   path: "/metrics"       # Prometheus指标路径
 
+# 查询优化配置（可选）
+# 如需调整缓存TTL、查询超时或慢查询阈值，可以取消以下注释并修改值
+# query_optimization:
+#   local_file_index_ttl: 300s   # 本地文件索引缓存TTL（默认5分钟）
+#   metadata_cache_ttl: 300s     # 表元数据缓存TTL（默认5分钟）
+#   query_timeout: 30s           # 查询超时时间（默认30秒）
+#   slow_query_threshold: 1s     # 慢查询阈值（默认1秒）
+

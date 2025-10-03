@@ -1,0 +1,179 @@
+groups:
+  - name: miniodb_connection_pool_alerts
+    interval: 30s
+    rules:
+      # Redis连接池耗尽告警
+      - alert: RedisPoolHighUtilization
+        expr: miniodb_redis_pool_utilization_percent > 90
+        for: 2m
+        labels:
+          severity: warning
+          component: redis_pool
+        annotations:
+          summary: "Redis连接池利用率过高"
+          description: "Redis连接池 {{$labels.pool_name}} 的利用率已达到 {{$value}}%，超过90%阈值，持续2分钟。可能导致连接等待和性能下降。"
+          grafana_url: "http://localhost:3000/d/miniodb/connection-pools?var-pool={{$labels.pool_name}}"
+
+      - alert: RedisPoolCriticalUtilization
+        expr: miniodb_redis_pool_utilization_percent > 95
+        for: 1m
+        labels:
+          severity: critical
+          component: redis_pool
+        annotations:
+          summary: "Redis连接池接近耗尽（严重）"
+          description: "Redis连接池 {{$labels.pool_name}} 的利用率已达到 {{$value}}%，超过95%，持续1分钟。连接池即将耗尽，请立即扩容或优化。"
+          action: "1. 检查慢查询和长时间占用连接的操作\n2. 增加Redis连接池大小\n3. 检查是否有连接泄漏"
+
+      # MinIO连接池耗尽告警
+      - alert: MinIOPoolHighUtilization
+        expr: miniodb_minio_pool_utilization_percent > 90
+        for: 2m
+        labels:
+          severity: warning
+          component: minio_pool
+        annotations:
+          summary: "MinIO连接池利用率过高"
+          description: "MinIO连接池 {{$labels.pool_name}} 的利用率已达到 {{$value}}%，超过90%阈值，持续2分钟。"
+
+      - alert: MinIOPoolCriticalUtilization
+        expr: miniodb_minio_pool_utilization_percent > 95
+        for: 1m
+        labels:
+          severity: critical
+          component: minio_pool
+        annotations:
+          summary: "MinIO连接池接近耗尽（严重）"
+          description: "MinIO连接池 {{$labels.pool_name}} 的利用率已达到 {{$value}}%，超过95%，持续1分钟。"
+          action: "1. 检查大文件上传/下载操作\n2. 增加连接池大小\n3. 检查网络延迟"
+
+  - name: miniodb_tail_latency_alerts
+    interval: 30s
+    rules:
+      # 查询P99尾部时延告警
+      - alert: QueryP99LatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(miniodb_query_duration_seconds_bucket[5m])) by (le, table)) > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: query
+        annotations:
+          summary: "查询P99时延过高"
+          description: "表 {{$labels.table}} 的查询P99时延为 {{$value}}秒，超过5秒阈值，持续3分钟。99%的查询性能受到影响。"
+          grafana_url: "http://localhost:3000/d/miniodb/query-performance?var-table={{$labels.table}}"
+
+      - alert: QueryP99LatencyCritical
+        expr: histogram_quantile(0.99, sum(rate(miniodb_query_duration_seconds_bucket[5m])) by (le, table)) > 10
+        for: 2m
+        labels:
+          severity: critical
+          component: query
+        annotations:
+          summary: "查询P99时延严重过高"
+          description: "表 {{$labels.table}} 的查询P99时延为 {{$value}}秒，超过10秒，持续2分钟。严重影响用户体验。"
+          action: "1. 检查慢查询日志\n2. 分析表数据量和索引\n3. 检查系统资源（CPU/内存/磁盘IO）\n4. 考虑查询缓存或数据分区"
+
+      # 写入P99尾部时延告警
+      - alert: WriteP99LatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(miniodb_write_duration_seconds_bucket[5m])) by (le, table)) > 1
+        for: 3m
+        labels:
+          severity: warning
+          component: write
+        annotations:
+          summary: "写入P99时延过高"
+          description: "表 {{$labels.table}} 的写入P99时延为 {{$value}}秒，超过1秒阈值，持续3分钟。"
+
+      - alert: WriteP99LatencyCritical
+        expr: histogram_quantile(0.99, sum(rate(miniodb_write_duration_seconds_bucket[5m])) by (le, table)) > 2.5
+        for: 2m
+        labels:
+          severity: critical
+          component: write
+        annotations:
+          summary: "写入P99时延严重过高"
+          description: "表 {{$labels.table}} 的写入P99时延为 {{$value}}秒，超过2.5秒，持续2分钟。"
+          action: "1. 检查缓冲区刷新频率\n2. 检查MinIO存储性能\n3. 考虑增加缓冲区大小"
+
+      # 刷新P99尾部时延告警
+      - alert: FlushP99LatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(miniodb_flush_duration_seconds_bucket[5m])) by (le, table, trigger)) > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: flush
+        annotations:
+          summary: "缓冲刷新P99时延过高"
+          description: "表 {{$labels.table}} 的刷新P99时延为 {{$value}}秒（触发类型：{{$labels.trigger}}），超过5秒阈值，持续3分钟。"
+
+  - name: miniodb_connection_pool_recovery
+    interval: 30s
+    rules:
+      # 连接池利用率恢复通知
+      - alert: RedisPoolUtilizationRecovered
+        expr: miniodb_redis_pool_utilization_percent < 70 and miniodb_redis_pool_utilization_percent offset 5m > 90
+        for: 1m
+        labels:
+          severity: info
+          component: redis_pool
+        annotations:
+          summary: "Redis连接池利用率已恢复正常"
+          description: "Redis连接池 {{$labels.pool_name}} 的利用率已降至 {{$value}}%（低于70%），系统已恢复正常。"
+
+      - alert: MinIOPoolUtilizationRecovered
+        expr: miniodb_minio_pool_utilization_percent < 70 and miniodb_minio_pool_utilization_percent offset 5m > 90
+        for: 1m
+        labels:
+          severity: info
+          component: minio_pool
+        annotations:
+          summary: "MinIO连接池利用率已恢复正常"
+          description: "MinIO连接池 {{$labels.pool_name}} 的利用率已降至 {{$value}}%（低于70%），系统已恢复正常。"
+
+      # 查询时延恢复通知
+      - alert: QueryLatencyRecovered
+        expr: histogram_quantile(0.99, sum(rate(miniodb_query_duration_seconds_bucket[5m])) by (le, table)) < 3 and histogram_quantile(0.99, sum(rate(miniodb_query_duration_seconds_bucket[5m] offset 10m)) by (le, table)) > 5
+        for: 2m
+        labels:
+          severity: info
+          component: query
+        annotations:
+          summary: "查询P99时延已恢复正常"
+          description: "表 {{$labels.table}} 的查询P99时延已降至 {{$value}}秒（低于3秒），性能已恢复正常。"
+
+  - name: miniodb_combined_alerts
+    interval: 30s
+    rules:
+      # 综合告警：连接池耗尽 + 高时延
+      - alert: SystemUnderPressure
+        expr: |
+          (miniodb_redis_pool_utilization_percent > 90 or miniodb_minio_pool_utilization_percent > 90)
+          and
+          histogram_quantile(0.99, sum(rate(miniodb_query_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "系统承受高压力"
+          description: "连接池利用率过高（>90%）且查询P99时延超过5秒，系统处于高压力状态，持续2分钟。"
+          action: |
+            紧急处理步骤：
+            1. 立即扩容连接池
+            2. 检查并优化慢查询
+            3. 检查系统资源（CPU/内存/网络）
+            4. 考虑限流或降级
+            5. 通知运维团队
+
+      # 慢查询激增告警
+      - alert: SlowQueriesSurge
+        expr: rate(miniodb_slow_queries_total[5m]) > 10
+        for: 3m
+        labels:
+          severity: warning
+          component: query
+        annotations:
+          summary: "慢查询数量激增"
+          description: "表 {{$labels.table}} 的慢查询速率为 {{$value}}/秒，持续3分钟。"
+          action: "1. 检查查询日志\n2. 分析慢查询模式\n3. 优化表结构或索引\n4. 考虑查询缓存"
+

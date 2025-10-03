@@ -1,0 +1,184 @@
+{
+  "panels": [
+    {
+      "title": "写入操作速率（按表）",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(miniodb_writes_total[5m])",
+          "legendFormat": "{{table}} - {{status}}"
+        }
+      ],
+      "description": "每秒写入操作数，按表和状态分组"
+    },
+    {
+      "title": "写入操作耗时 (P50/P95/P99)",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(miniodb_write_duration_seconds_bucket[5m])) by (le, table))",
+          "legendFormat": "{{table}} - P50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(miniodb_write_duration_seconds_bucket[5m])) by (le, table))",
+          "legendFormat": "{{table}} - P95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(miniodb_write_duration_seconds_bucket[5m])) by (le, table))",
+          "legendFormat": "{{table}} - P99"
+        }
+      ],
+      "description": "写入操作的P50/P95/P99耗时分位数"
+    },
+    {
+      "title": "写入字节数（按表）",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(miniodb_write_bytes_total[5m])",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "description": "每秒写入的字节数"
+    },
+    {
+      "title": "缓冲刷新速率（按触发类型）",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(miniodb_flushes_total[5m])",
+          "legendFormat": "{{table}} - {{trigger}} - {{status}}"
+        }
+      ],
+      "description": "每秒缓冲刷新次数，按表、触发类型和状态分组。触发类型：periodic（定期）、manual（手动）、adaptive（自适应）、memory_pressure（内存压力）"
+    },
+    {
+      "title": "刷新操作耗时 (P50/P95/P99)",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(miniodb_flush_duration_seconds_bucket[5m])) by (le, table, trigger))",
+          "legendFormat": "{{table}}/{{trigger}} - P50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(miniodb_flush_duration_seconds_bucket[5m])) by (le, table, trigger))",
+          "legendFormat": "{{table}}/{{trigger}} - P95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(miniodb_flush_duration_seconds_bucket[5m])) by (le, table, trigger))",
+          "legendFormat": "{{table}}/{{trigger}} - P99"
+        }
+      ],
+      "description": "刷新操作的P50/P95/P99耗时分位数，按表和触发类型分组"
+    },
+    {
+      "title": "刷新记录数速率",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(miniodb_flush_records_total[5m])",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "description": "每秒从缓冲刷新的记录数"
+    },
+    {
+      "title": "刷新字节数速率",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(miniodb_flush_bytes_total[5m])",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "description": "每秒从缓冲刷新到存储的字节数"
+    },
+    {
+      "title": "待写入记录数（实时）",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "miniodb_pending_writes",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "description": "当前缓冲区中待写入的记录数（实时值）"
+    },
+    {
+      "title": "写入成功率",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "sum(rate(miniodb_writes_total{status=\"success\"}[5m])) by (table) / sum(rate(miniodb_writes_total[5m])) by (table) * 100",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "description": "写入操作的成功率（%）"
+    },
+    {
+      "title": "刷新成功率",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "sum(rate(miniodb_flushes_total{status=\"success\"}[5m])) by (table, trigger) / sum(rate(miniodb_flushes_total[5m])) by (table, trigger) * 100",
+          "legendFormat": "{{table}}/{{trigger}}"
+        }
+      ],
+      "description": "缓冲刷新的成功率（%），按表和触发类型分组"
+    },
+    {
+      "title": "写入吞吐量 Top 5 表",
+      "type": "table",
+      "targets": [
+        {
+          "expr": "topk(5, sum(rate(miniodb_writes_total[5m])) by (table))",
+          "format": "table"
+        }
+      ],
+      "description": "写入吞吐量最高的5个表"
+    },
+    {
+      "title": "刷新操作耗时热力图",
+      "type": "heatmap",
+      "targets": [
+        {
+          "expr": "sum(rate(miniodb_flush_duration_seconds_bucket[5m])) by (le)",
+          "format": "heatmap",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "description": "刷新操作耗时分布热力图"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "table",
+        "type": "query",
+        "query": "label_values(miniodb_writes_total, table)",
+        "description": "选择表"
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "name": "Manual Flushes",
+        "datasource": "Prometheus",
+        "expr": "changes(miniodb_flushes_total{trigger=\"manual\"}[1m]) > 0",
+        "tagKeys": "table",
+        "textFormat": "Manual flush: {{table}}"
+      },
+      {
+        "name": "Memory Pressure Flushes",
+        "datasource": "Prometheus",
+        "expr": "changes(miniodb_flushes_total{trigger=\"memory_pressure\"}[1m]) > 0",
+        "tagKeys": "table",
+        "textFormat": "Memory pressure flush: {{table}}"
+      }
+    ]
+  },
+  "description": "MinIODB 写入与缓冲刷新指标监控面板。包含写入耗时、刷新耗时的分位数（P50/P95/P99）、吞吐量、成功率等关键指标。",
+  "version": "1.0.0"
+}
+

@@ -24,6 +24,7 @@ type QueryCache struct {
 	cacheHits      int64
 	cacheMisses    int64
 	cacheKeyPrefix string
+	smartOptimizer *SmartCacheOptimizer // 智能缓存优化器（可选）
 }
 
 // CacheConfig 缓存配置
@@ -77,6 +78,11 @@ func NewQueryCache(redisClient *redis.Client, config *CacheConfig, logger *zap.L
 		enableMetrics:  config.EnableMetrics,
 		cacheKeyPrefix: config.KeyPrefix,
 	}
+}
+
+// SetSmartOptimizer 设置智能缓存优化器（用于自适应TTL）
+func (qc *QueryCache) SetSmartOptimizer(optimizer *SmartCacheOptimizer) {
+	qc.smartOptimizer = optimizer
 }
 
 // Get 从缓存获取查询结果
@@ -139,16 +145,36 @@ func (qc *QueryCache) Set(ctx context.Context, query string, result string, tabl
 	// 生成缓存键
 	cacheKey := qc.generateCacheKey(query, tables)
 
+	// 计算TTL（自适应或默认）
+	ttl := qc.defaultTTL
+	if qc.smartOptimizer != nil {
+		ttl = qc.smartOptimizer.CalculateOptimalTTL(ctx, query)
+		logger.LogInfo(ctx, "Using adaptive TTL",
+			zap.Duration("ttl", ttl),
+			zap.Duration("default_ttl", qc.defaultTTL),
+			zap.String("query_hash", entry.QueryHash[:8]),
+		)
+	}
+
 	// 存储到Redis
-	if err := qc.redisClient.Set(ctx, cacheKey, data, qc.defaultTTL).Err(); err != nil {
+	if err := qc.redisClient.Set(ctx, cacheKey, data, ttl).Err(); err != nil {
 		return fmt.Errorf("failed to set cache: %w", err)
 	}
 
 	// 更新表级索引（用于缓存失效）
 	qc.updateTableIndex(ctx, tables, cacheKey)
 
-	logger.LogInfo(ctx, "Cache SET for query hash: %s, size: %d bytes", zap.String("query_hash", entry.QueryHash[:8]), zap.Int64("size", entry.Size))
+	logger.LogInfo(ctx, "Cache SET for query hash: %s, size: %d bytes, ttl: %v",
+		zap.String("query_hash", entry.QueryHash[:8]),
+		zap.Int64("size", entry.Size),
+		zap.Duration("ttl", ttl),
+	)
 	return nil
+}
+
+// InvalidateByTable 根据单个表名失效相关缓存
+func (qc *QueryCache) InvalidateByTable(ctx context.Context, table string) error {
+	return qc.InvalidateByTables(ctx, []string{table})
 }
 
 // InvalidateByTables 根据表名失效相关缓存

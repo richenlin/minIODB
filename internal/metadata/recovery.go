@@ -2,6 +2,8 @@ package metadata
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -293,11 +295,32 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 		return result, fmt.Errorf("No cache storage available")
 	}
 
-	// 开始事务（如果支持）
+	// 选择恢复模式：并行或顺序
+	if options.Parallel {
+		rm.logger.Printf("Using parallel recovery mode")
+		result = rm.recoverEntriesParallel(ctx, client, filteredEntries, options, result)
+	} else {
+		rm.logger.Printf("Using sequential recovery mode")
+		result = rm.recoverEntriesSequential(ctx, client, filteredEntries, options, result)
+	}
+
+	result.Success = result.EntriesError == 0
+	result.EndTime = time.Now()
+	result.Duration = result.EndTime.Sub(result.StartTime)
+
+	rm.logger.Printf("Recovery completed: success=%v, total=%d, ok=%d, error=%d, duration=%v",
+		result.Success, result.EntriesTotal, result.EntriesOK, result.EntriesError, result.Duration)
+
+	return result, nil
+}
+
+// recoverEntriesSequential 顺序恢复条目
+func (rm *RecoveryManager) recoverEntriesSequential(ctx context.Context, client redis.Cmdable, entries []*MetadataEntry, options RecoveryOptions, result *RecoveryResult) *RecoveryResult {
 	pipe := client.TxPipeline()
 	var pipeCommands int
+	const batchSize = 100
 
-	for _, entry := range filteredEntries {
+	for _, entry := range entries {
 		if err := rm.recoverEntry(ctx, pipe, entry, options, client); err != nil {
 			result.EntriesError++
 			result.ErrorEntries++
@@ -310,7 +333,7 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 		result.ProcessedEntries++
 
 		// 批量执行，避免管道过大
-		if pipeCommands >= 100 {
+		if pipeCommands >= batchSize {
 			if _, err := pipe.Exec(ctx); err != nil {
 				rm.logger.Printf("Pipeline execution failed: %v", err)
 			}
@@ -326,14 +349,116 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 		}
 	}
 
-	result.Success = result.EntriesError == 0
-	result.EndTime = time.Now()
-	result.Duration = result.EndTime.Sub(result.StartTime)
+	return result
+}
 
-	rm.logger.Printf("Recovery completed: success=%v, total=%d, ok=%d, error=%d, duration=%v",
-		result.Success, result.EntriesTotal, result.EntriesOK, result.EntriesError, result.Duration)
+// recoverEntriesParallel 并行恢复条目
+func (rm *RecoveryManager) recoverEntriesParallel(ctx context.Context, client redis.Cmdable, entries []*MetadataEntry, options RecoveryOptions, result *RecoveryResult) *RecoveryResult {
+	const (
+		batchSize  = 100 // 每批处理100条
+		numWorkers = 10  // 10个并发worker
+	)
 
-	return result, nil
+	// 将entries分批
+	batches := rm.splitIntoBatches(entries, batchSize)
+	rm.logger.Printf("Split %d entries into %d batches (batch_size=%d)", len(entries), len(batches), batchSize)
+
+	// 创建任务通道和结果通道
+	taskChan := make(chan []*MetadataEntry, len(batches))
+	type batchResult struct {
+		ok     int
+		errors []string
+	}
+	resultChan := make(chan batchResult, len(batches))
+
+	// 启动worker pool
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			for batch := range taskChan {
+				batchRes := rm.processBatch(ctx, client, batch, options, workerID)
+				resultChan <- batchRes
+			}
+		}(i)
+	}
+
+	// 发送任务
+	for _, batch := range batches {
+		taskChan <- batch
+	}
+	close(taskChan)
+
+	// 等待所有worker完成
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// 收集结果
+	for batchRes := range resultChan {
+		result.EntriesOK += batchRes.ok
+		result.ProcessedEntries += batchRes.ok
+		result.EntriesError += len(batchRes.errors)
+		result.ErrorEntries += len(batchRes.errors)
+		result.Errors = append(result.Errors, batchRes.errors...)
+	}
+
+	rm.logger.Printf("Parallel recovery completed: ok=%d, errors=%d", result.EntriesOK, result.EntriesError)
+	return result
+}
+
+// splitIntoBatches 将条目分批
+func (rm *RecoveryManager) splitIntoBatches(entries []*MetadataEntry, batchSize int) [][]*MetadataEntry {
+	var batches [][]*MetadataEntry
+
+	for i := 0; i < len(entries); i += batchSize {
+		end := i + batchSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+		batches = append(batches, entries[i:end])
+	}
+
+	return batches
+}
+
+// processBatch 处理一批条目（幂等）
+func (rm *RecoveryManager) processBatch(ctx context.Context, client redis.Cmdable, batch []*MetadataEntry, options RecoveryOptions, workerID int) struct {
+	ok     int
+	errors []string
+} {
+	result := struct {
+		ok     int
+		errors []string
+	}{}
+
+	// 为这一批创建pipeline
+	pipe := client.TxPipeline()
+
+	for _, entry := range batch {
+		if err := rm.recoverEntry(ctx, pipe, entry, options, client); err != nil {
+			result.errors = append(result.errors, fmt.Sprintf("Worker %d: Failed to recover %s: %v", workerID, entry.Key, err))
+			continue
+		}
+		result.ok++
+	}
+
+	// 执行这一批的所有命令
+	if result.ok > 0 {
+		if _, err := pipe.Exec(ctx); err != nil {
+			rm.logger.Printf("Worker %d: Batch execution failed: %v", workerID, err)
+			// 如果批量执行失败，标记所有成功的为错误
+			result.errors = append(result.errors, fmt.Sprintf("Worker %d: Batch exec failed for %d entries", workerID, result.ok))
+			result.ok = 0
+		} else {
+			rm.logger.Printf("Worker %d: Successfully processed batch of %d entries", workerID, result.ok)
+		}
+	}
+
+	return result
 }
 
 // downloadBackup 下载备份文件
@@ -490,7 +615,44 @@ func (rm *RecoveryManager) ValidateBackup(ctx context.Context, objectName string
 		return fmt.Errorf("failed to download backup: %w", err)
 	}
 
-	// 基本验证
+	// 1. 验证校验和（如果存在）
+	if snapshot.Checksum != "" {
+		rm.logger.Printf("Validating backup checksum: %s", snapshot.Checksum[:16]+"...")
+
+		// 保存原始校验和
+		originalChecksum := snapshot.Checksum
+
+		// 创建不含校验和的副本用于验证
+		snapshotForValidation := &BackupSnapshot{
+			NodeID:    snapshot.NodeID,
+			Timestamp: snapshot.Timestamp,
+			Version:   snapshot.Version,
+			Entries:   snapshot.Entries,
+			// 不包含Checksum和Size，因为计算校验和时这些字段为空
+		}
+
+		// 序列化用于校验的数据
+		dataForValidation, err := json.Marshal(snapshotForValidation)
+		if err != nil {
+			return fmt.Errorf("failed to marshal snapshot for validation: %w", err)
+		}
+
+		// 计算校验和
+		hash := sha256.Sum256(dataForValidation)
+		calculatedChecksum := hex.EncodeToString(hash[:])
+
+		// 比较校验和
+		if calculatedChecksum != originalChecksum {
+			return fmt.Errorf("checksum mismatch: expected %s, got %s (backup may be corrupted or tampered)",
+				originalChecksum[:16]+"...", calculatedChecksum[:16]+"...")
+		}
+
+		rm.logger.Printf("Checksum validation passed")
+	} else {
+		rm.logger.Printf("Warning: backup has no checksum, skipping checksum validation")
+	}
+
+	// 2. 基本验证
 	if snapshot.NodeID == "" {
 		return fmt.Errorf("backup missing node ID")
 	}
@@ -503,7 +665,7 @@ func (rm *RecoveryManager) ValidateBackup(ctx context.Context, objectName string
 		return fmt.Errorf("backup contains no entries")
 	}
 
-	// 验证条目
+	// 3. 验证条目
 	for i, entry := range snapshot.Entries {
 		if entry.Key == "" {
 			return fmt.Errorf("entry %d missing key", i)

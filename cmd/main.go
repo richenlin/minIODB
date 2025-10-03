@@ -33,23 +33,43 @@ import (
 )
 
 func main() {
+	// 先初始化基础logger（使用默认配置）
+	// 这样在加载配置时就可以输出日志
+	_ = logger.InitLogger(logger.DefaultLogConfig)
+	defer logger.Sync()
+
 	// 解析命令行参数
 	configPath := ""
 	if len(os.Args) > 1 {
-		configPath = os.Args[1]
+		for i := 1; i < len(os.Args); i++ {
+			if os.Args[i] == "-config" && i+1 < len(os.Args) {
+				configPath = os.Args[i+1]
+				break
+			}
+		}
 	}
 	ctx := context.Background()
+
 	// 加载配置
 	cfg, err := config.LoadConfig(ctx, configPath)
 	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
-		os.Exit(1)
+		logger.LogFatal(ctx, "Failed to load config: %v", zap.Error(err))
 	}
 
-	if err != nil {
-		logger.LogFatal(ctx, "Failed to create logger: %v", zap.Error(err))
+	// 用配置文件中的日志配置重新初始化logger
+	logConfig := logger.LogConfig{
+		Level:      cfg.Log.Level,
+		Format:     cfg.Log.Format,
+		Output:     cfg.Log.Output,
+		Filename:   cfg.Log.Filename,
+		MaxSize:    cfg.Log.MaxSize,
+		MaxBackups: cfg.Log.MaxBackups,
+		MaxAge:     cfg.Log.MaxAge,
+		Compress:   cfg.Log.Compress,
 	}
-	defer logger.Sync()
+	if err := logger.InitLogger(logConfig); err != nil {
+		logger.LogFatal(ctx, "Failed to reinitialize logger with config: %v", zap.Error(err))
+	}
 
 	logger.LogInfo(ctx, "Starting MinIODB server...")
 

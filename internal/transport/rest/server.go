@@ -217,6 +217,22 @@ type DropTableResponse struct {
 	FilesDeleted int32  `json:"files_deleted"`
 }
 
+// InvalidateTableCacheRequest 失效表缓存请求
+type InvalidateTableCacheRequest struct {
+	CacheTypes []string `json:"cache_types,omitempty"` // 指定失效的缓存类型: ["metadata", "file_index", "query"]，空表示全部
+	Reason     string   `json:"reason,omitempty"`      // 失效原因（运维记录）
+}
+
+// InvalidateTableCacheResponse 失效表缓存响应
+type InvalidateTableCacheResponse struct {
+	Success         bool     `json:"success"`
+	Message         string   `json:"message"`
+	TableName       string   `json:"table_name"`
+	InvalidatedAt   string   `json:"invalidated_at"`
+	CachesCleared   []string `json:"caches_cleared"`              // 实际清理的缓存类型
+	PreviousHitRate float64  `json:"previous_hit_rate,omitempty"` // 失效前的缓存命中率
+}
+
 // 元数据管理相关结构体
 
 // TriggerMetadataBackupRequest 触发元数据备份请求
@@ -388,6 +404,14 @@ func (s *Server) setupMiddleware(ctx context.Context) {
 	s.router.Use(gin.Logger())
 	s.router.Use(gin.Recovery())
 
+	// 请求大小限制中间件（基于config.Network.Server配置）
+	maxBodySize := int64(s.cfg.Network.Server.REST.MaxHeaderBytes * 10) // 默认为MaxHeaderBytes的10倍
+	if maxBodySize < 10*1024*1024 {                                     // 最小10MB
+		maxBodySize = 10 * 1024 * 1024
+	}
+	s.router.Use(s.requestSizeLimiter(maxBodySize))
+	logger.LogInfo(ctx, "Request size limiter enabled", zap.Int64("max_body_bytes", maxBodySize))
+
 	// 安全中间件
 	s.router.Use(s.securityMiddleware.CORS())
 	s.router.Use(s.securityMiddleware.SecurityHeaders())
@@ -453,7 +477,8 @@ func (s *Server) setupRoutes(ctx context.Context) {
 	securedRoutes.GET("/tables", s.listTables)
 	securedRoutes.GET("/tables/:name", s.getTable)
 	securedRoutes.DELETE("/tables/:name", s.deleteTable)
-	securedRoutes.POST("/tables/:name/flush", s.flushTable) // 手动刷新表数据
+	securedRoutes.POST("/tables/:name/flush", s.flushTable)                // 手动刷新表数据
+	securedRoutes.POST("/tables/:name/invalidate", s.invalidateTableCache) // 主动失效表缓存（运维模式）
 
 	// 元数据管理
 	securedRoutes.POST("/metadata/backup", s.backupMetadata)
@@ -932,6 +957,96 @@ func (s *Server) flushTable(c *gin.Context) {
 	})
 }
 
+// invalidateTableCache 处理主动失效表缓存请求（运维模式）
+func (s *Server) invalidateTableCache(c *gin.Context) {
+	tableName := c.Param("name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Table name is required"})
+		return
+	}
+
+	var req InvalidateTableCacheRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// 如果没有body或body为空，使用默认值（清理所有缓存）
+		req.CacheTypes = []string{"metadata", "file_index", "query"}
+	}
+
+	// 如果未指定缓存类型，默认清理所有
+	if len(req.CacheTypes) == 0 {
+		req.CacheTypes = []string{"metadata", "file_index", "query"}
+	}
+
+	ctx := c.Request.Context()
+	logger.LogInfo(ctx, "Cache invalidation requested for table",
+		zap.String("table", tableName),
+		zap.Strings("cache_types", req.CacheTypes),
+		zap.String("reason", req.Reason))
+
+	// TODO: 获取失效前的缓存命中率（如果有统计）
+	previousHitRate := 0.0
+
+	// 清理指定的缓存
+	cachesCleared := []string{}
+	invalidatedAt := time.Now().UTC().Format(time.RFC3339)
+
+	for _, cacheType := range req.CacheTypes {
+		switch cacheType {
+		case "metadata":
+			// 清理元数据缓存
+			if s.miniodbService != nil && s.miniodbService.GetTableManager() != nil {
+				s.miniodbService.GetTableManager().InvalidateCachedTableInfo(ctx, tableName)
+				cachesCleared = append(cachesCleared, "metadata")
+				logger.LogInfo(ctx, "Metadata cache invalidated", zap.String("table", tableName))
+			}
+
+		case "file_index":
+			// 清理文件索引缓存
+			if s.miniodbService != nil && s.miniodbService.GetQuerier() != nil {
+				s.miniodbService.GetQuerier().InvalidateFileIndexCache(ctx, tableName)
+				cachesCleared = append(cachesCleared, "file_index")
+				logger.LogInfo(ctx, "File index cache invalidated", zap.String("table", tableName))
+			}
+
+		case "query":
+			// 清理查询缓存
+			if s.miniodbService != nil && s.miniodbService.GetQuerier() != nil {
+				// 清理视图缓存
+				s.miniodbService.GetQuerier().InvalidateViewCache(ctx, tableName)
+				cachesCleared = append(cachesCleared, "query")
+				logger.LogInfo(ctx, "Query cache invalidated", zap.String("table", tableName))
+			}
+
+		default:
+			logger.LogWarn(ctx, "Unknown cache type requested",
+				zap.String("cache_type", cacheType),
+				zap.String("table", tableName))
+		}
+	}
+
+	if len(cachesCleared) == 0 {
+		c.JSON(http.StatusBadRequest, InvalidateTableCacheResponse{
+			Success:   false,
+			Message:   "No valid cache types specified or caches not available",
+			TableName: tableName,
+		})
+		return
+	}
+
+	logger.LogInfo(ctx, "Cache invalidation completed",
+		zap.String("table", tableName),
+		zap.Strings("caches_cleared", cachesCleared),
+		zap.String("reason", req.Reason))
+
+	c.JSON(http.StatusOK, InvalidateTableCacheResponse{
+		Success:         true,
+		Message:         fmt.Sprintf("Successfully invalidated %d cache(s)", len(cachesCleared)),
+		TableName:       tableName,
+		InvalidatedAt:   invalidatedAt,
+		CachesCleared:   cachesCleared,
+		PreviousHitRate: previousHitRate,
+	})
+}
+
 // backupMetadata 处理备份元数据请求
 func (s *Server) backupMetadata(c *gin.Context) {
 	var req miniodbv1.BackupMetadataRequest
@@ -1000,6 +1115,33 @@ func (s *Server) getMetadataStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// requestSizeLimiter 请求大小限制中间件
+func (s *Server) requestSizeLimiter(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 检查Content-Length头
+		if c.Request.ContentLength > maxBytes {
+			logger.LogWarn(c.Request.Context(), "Request body too large",
+				zap.Int64("content_length", c.Request.ContentLength),
+				zap.Int64("max_bytes", maxBytes),
+				zap.String("method", c.Request.Method),
+				zap.String("path", c.Request.URL.Path))
+
+			c.JSON(http.StatusRequestEntityTooLarge, ErrorResponse{
+				Error:   "Request body too large",
+				Code:    http.StatusRequestEntityTooLarge,
+				Message: fmt.Sprintf("Request body exceeds maximum allowed size of %d bytes", maxBytes),
+			})
+			c.Abort()
+			return
+		}
+
+		// 限制请求body大小（防止恶意超大请求）
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+
+		c.Next()
+	}
 }
 
 // jwtAuthMiddleware JWT认证中间件

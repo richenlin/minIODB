@@ -218,6 +218,12 @@ rate_limiting:
 
 # 查询性能优化
 query_optimization:
+  # TTL配置
+  local_file_index_ttl: 300s       # 本地文件索引缓存TTL（5分钟）
+  metadata_cache_ttl: 300s         # 表元数据缓存TTL（5分钟）
+  query_timeout: 30s               # 查询超时时间（30秒）
+  slow_query_threshold: 1s         # 慢查询阈值（1秒）
+  
   # 查询缓存配置
   query_cache:
     enabled: true

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,29 +36,33 @@ const tempDir = "temp_parquet"
 
 // ConcurrentBufferConfig 并发缓冲区配置
 type ConcurrentBufferConfig struct {
-	BufferSize     int           `yaml:"buffer_size"`      // 缓冲区大小
-	FlushInterval  time.Duration `yaml:"flush_interval"`   // 刷新间隔
-	WorkerPoolSize int           `yaml:"worker_pool_size"` // 工作池大小
-	TaskQueueSize  int           `yaml:"task_queue_size"`  // 任务队列大小
-	BatchFlushSize int           `yaml:"batch_flush_size"` // 批量刷新大小
-	EnableBatching bool          `yaml:"enable_batching"`  // 启用批量处理
-	FlushTimeout   time.Duration `yaml:"flush_timeout"`    // 刷新超时
-	MaxRetries     int           `yaml:"max_retries"`      // 最大重试次数
-	RetryDelay     time.Duration `yaml:"retry_delay"`      // 重试延迟
+	BufferSize        int           `yaml:"buffer_size"`         // 缓冲区大小
+	FlushInterval     time.Duration `yaml:"flush_interval"`      // 刷新间隔
+	WorkerPoolSize    int           `yaml:"worker_pool_size"`    // 工作池大小
+	TaskQueueSize     int           `yaml:"task_queue_size"`     // 任务队列大小
+	BatchFlushSize    int           `yaml:"batch_flush_size"`    // 批量刷新大小
+	EnableBatching    bool          `yaml:"enable_batching"`     // 启用批量处理
+	FlushTimeout      time.Duration `yaml:"flush_timeout"`       // 刷新超时
+	MaxRetries        int           `yaml:"max_retries"`         // 最大重试次数
+	RetryDelay        time.Duration `yaml:"retry_delay"`         // 重试延迟
+	MemoryThreshold   int64         `yaml:"memory_threshold"`    // 内存阈值（字节），超过此值触发刷新
+	EnableMemoryFlush bool          `yaml:"enable_memory_flush"` // 启用基于内存压力的刷新
 }
 
 // DefaultConcurrentBufferConfig 返回默认配置
 func DefaultConcurrentBufferConfig() *ConcurrentBufferConfig {
 	return &ConcurrentBufferConfig{
-		BufferSize:     1000,
-		FlushInterval:  30 * time.Second,
-		WorkerPoolSize: 10,
-		TaskQueueSize:  100,
-		BatchFlushSize: 5,
-		EnableBatching: true,
-		FlushTimeout:   60 * time.Second,
-		MaxRetries:     3,
-		RetryDelay:     1 * time.Second,
+		BufferSize:        1000,
+		FlushInterval:     30 * time.Second,
+		WorkerPoolSize:    10,
+		TaskQueueSize:     100,
+		BatchFlushSize:    5,
+		EnableBatching:    true,
+		FlushTimeout:      60 * time.Second,
+		MaxRetries:        3,
+		RetryDelay:        1 * time.Second,
+		MemoryThreshold:   512 * 1024 * 1024, // 512MB 默认内存阈值
+		EnableMemoryFlush: true,              // 默认启用内存压力刷新
 	}
 }
 
@@ -100,6 +105,9 @@ type ConcurrentBuffer struct {
 	queryCount    int64 // 查询计数
 	lastQueryTime int64 // 最后查询时间（纳秒）
 	adaptiveFlush bool  // 是否启用自适应刷新
+
+	// 缓存失效通知
+	cacheInvalidator CacheInvalidator // 缓存失效器（在刷新后通知查询层）
 }
 
 // ConcurrentBufferStats 并发缓冲区统计信息
@@ -377,7 +385,30 @@ func (w *Worker) uploadToStorage(ctx context.Context, bufferKey, localFilePath s
 	}
 
 	// 更新Redis索引
-	return w.updateRedisIndex(ctx, bufferKey, objectName)
+	if err := w.updateRedisIndex(ctx, bufferKey, objectName); err != nil {
+		return err
+	}
+
+	// 提取表名并通知缓存失效
+	// bufferKey格式: 表名/ID/日期
+	parts := strings.Split(bufferKey, "/")
+	if len(parts) >= 1 && w.buffer.cacheInvalidator != nil {
+		tableName := parts[0]
+		if err := w.buffer.cacheInvalidator.InvalidateTable(ctx, tableName); err != nil {
+			// 缓存失效失败不应导致整个刷新失败，只记录警告
+			logger.LogWarn(ctx, "Failed to invalidate cache after flush",
+				zap.String("table", tableName),
+				zap.Error(err),
+			)
+		} else {
+			logger.LogInfo(ctx, "Cache invalidated after flush",
+				zap.String("table", tableName),
+				zap.String("buffer_key", bufferKey),
+			)
+		}
+	}
+
+	return nil
 }
 
 // Worker.generateObjectName 生成对象名（支持智能分片）
@@ -479,6 +510,11 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 	}
 
 	return nil
+}
+
+// SetCacheInvalidator 设置缓存失效器
+func (cb *ConcurrentBuffer) SetCacheInvalidator(invalidator CacheInvalidator) {
+	cb.cacheInvalidator = invalidator
 }
 
 // Add 添加数据到缓冲区
@@ -785,6 +821,7 @@ func (cb *ConcurrentBuffer) checkAdaptiveFlush(ctx context.Context) {
 	// 自适应策略：
 	// 1. 如果缓冲区有大量待写入数据（>80%）且查询频繁（>10次/分钟），触发刷新
 	// 2. 如果缓冲区接近满（>90%），立即刷新
+	// 3. 如果内存占用超过阈值，触发刷新（新增）
 
 	bufferUtilization := float64(pendingWrites) / float64(cb.config.BufferSize)
 
@@ -796,6 +833,7 @@ func (cb *ConcurrentBuffer) checkAdaptiveFlush(ctx context.Context) {
 	shouldFlush := false
 	reason := ""
 
+	// 检查缓冲区利用率
 	if bufferUtilization > 0.9 {
 		shouldFlush = true
 		reason = "buffer nearly full (>90%)"
@@ -804,16 +842,54 @@ func (cb *ConcurrentBuffer) checkAdaptiveFlush(ctx context.Context) {
 		reason = "high buffer utilization (>80%) with frequent queries"
 	}
 
+	// 检查内存压力（如果启用）
+	if !shouldFlush && cb.config.EnableMemoryFlush && cb.config.MemoryThreshold > 0 {
+		var memStats runtime.MemStats
+		runtime.ReadMemStats(&memStats)
+
+		// 使用Alloc（当前分配的堆内存）作为内存压力指标
+		currentMemory := int64(memStats.Alloc)
+		memoryUtilization := float64(currentMemory) / float64(cb.config.MemoryThreshold)
+
+		if currentMemory > cb.config.MemoryThreshold {
+			shouldFlush = true
+			reason = fmt.Sprintf("memory pressure (current: %s, threshold: %s, utilization: %.1f%%)",
+				formatBytes(currentMemory),
+				formatBytes(cb.config.MemoryThreshold),
+				memoryUtilization*100)
+		}
+	}
+
 	if shouldFlush {
 		logger.LogInfo(ctx,
-			"Adaptive flush triggered: %s (utilization: %.2f%%, queries: %d)", zap.String("reason", reason),
+			"Adaptive flush triggered",
+			zap.String("reason", reason),
 			zap.Float64("buffer_utilization", bufferUtilization*100),
 			zap.Int64("query_count", queryCount))
 		cb.flushAllBuffers(ctx)
 
 		// 重置查询计数
 		atomic.StoreInt64(&cb.queryCount, 0)
+
+		// 触发GC以释放内存（可选，根据情况调整）
+		if cb.config.EnableMemoryFlush {
+			go runtime.GC()
+		}
 	}
+}
+
+// formatBytes 格式化字节数为人类可读格式
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // AddDataPoint 添加数据点到缓冲区（兼容bufferManager接口）

@@ -3,6 +3,8 @@ package metadata
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -41,6 +43,8 @@ type BackupSnapshot struct {
 	Timestamp time.Time        `json:"timestamp"`
 	Version   string           `json:"version"`
 	Entries   []*MetadataEntry `json:"entries"`
+	Checksum  string           `json:"checksum"` // SHA-256校验和
+	Size      int64            `json:"size"`     // 备份大小（字节）
 }
 
 // BackupManager 备份管理器
@@ -198,7 +202,7 @@ func (bm *BackupManager) performBackup(ctx context.Context) error {
 		currentVersion = "1.0.0"
 	}
 
-	// 创建备份快照
+	// 创建备份快照（先不设置Checksum）
 	snapshot := &BackupSnapshot{
 		NodeID:    bm.nodeID,
 		Timestamp: startTime,
@@ -206,10 +210,24 @@ func (bm *BackupManager) performBackup(ctx context.Context) error {
 		Entries:   entries,
 	}
 
-	// 序列化快照
-	data, err := json.Marshal(snapshot)
+	// 序列化快照（不含checksum）
+	dataWithoutChecksum, err := json.Marshal(snapshot)
 	if err != nil {
 		return fmt.Errorf("failed to marshal snapshot: %w", err)
+	}
+
+	// 计算SHA-256校验和
+	hash := sha256.Sum256(dataWithoutChecksum)
+	checksum := hex.EncodeToString(hash[:])
+
+	// 添加校验和和大小到快照
+	snapshot.Checksum = checksum
+	snapshot.Size = int64(len(dataWithoutChecksum))
+
+	// 重新序列化完整的快照
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return fmt.Errorf("failed to marshal final snapshot: %w", err)
 	}
 
 	// 上传到MinIO

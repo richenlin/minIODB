@@ -362,9 +362,13 @@ type AuthConfig struct {
 
 // QueryOptimizationConfig 查询优化配置
 type QueryOptimizationConfig struct {
-	QueryCache QueryCacheConfig `yaml:"query_cache"`
-	FileCache  FileCacheConfig  `yaml:"file_cache"`
-	DuckDB     DuckDBConfig     `yaml:"duckdb"`
+	QueryCache         QueryCacheConfig `yaml:"query_cache"`
+	FileCache          FileCacheConfig  `yaml:"file_cache"`
+	DuckDB             DuckDBConfig     `yaml:"duckdb"`
+	LocalFileIndexTTL  time.Duration    `yaml:"local_file_index_ttl"` // 本地文件索引缓存TTL
+	MetadataCacheTTL   time.Duration    `yaml:"metadata_cache_ttl"`   // 表元数据缓存TTL
+	QueryTimeout       time.Duration    `yaml:"query_timeout"`        // 查询超时时间
+	SlowQueryThreshold time.Duration    `yaml:"slow_query_threshold"` // 慢查询阈值
 }
 
 // QueryCacheConfig 查询缓存配置
@@ -918,6 +922,11 @@ func (c *Config) setDefaults() {
 				HealthCheckInterval: 5 * time.Minute,
 			},
 		},
+		// TTL配置默认值
+		LocalFileIndexTTL:  5 * time.Minute,  // 本地文件索引缓存5分钟（默认值）
+		MetadataCacheTTL:   5 * time.Minute,  // 表元数据缓存5分钟（默认值）
+		QueryTimeout:       30 * time.Second, // 查询超时30秒（默认值）
+		SlowQueryThreshold: 1 * time.Second,  // 慢查询阈值1秒（默认值）
 	}
 
 	// 认证配置默认值
@@ -1130,13 +1139,18 @@ func (c *Config) validate(ctx context.Context) error {
 
 	// 验证Redis配置 - 仅在启用时验证
 	if c.Redis.Enabled || c.Network.Pools.Redis.Enabled {
-		redisAddr := c.Redis.Addr
-		if redisAddr == "" {
-			redisAddr = c.Network.Pools.Redis.Addr
-		}
-		// 检查是否为空
-		if redisAddr == "" {
+		// 新配置优先级更高，检查新配置地址
+		// 如果新配置已启用但地址为空，则报错（不使用旧配置的默认值）
+		if c.Network.Pools.Redis.Enabled && c.Network.Pools.Redis.Addr == "" {
 			return fmt.Errorf("redis.addr is required when Redis is enabled\nExample: redis.addr: 'localhost:6379'\nTip: Set redis.enabled: false for single-node mode")
+		}
+		// 如果使用旧配置且启用但地址为空
+		if c.Redis.Enabled && !c.Network.Pools.Redis.Enabled {
+			redisAddr := c.Redis.Addr
+			if redisAddr == "" || redisAddr == "localhost:6379" {
+				// 默认值视为未设置
+				return fmt.Errorf("redis.addr is required when Redis is enabled\nExample: redis.addr: 'localhost:6379'\nTip: Set redis.enabled: false for single-node mode")
+			}
 		}
 	}
 
