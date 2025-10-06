@@ -6,12 +6,27 @@ import (
 	"time"
 
 	pb "minIODB/api/proto/miniodb/v1"
+	"minIODB/internal/logger"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func init() {
+	// 初始化测试logger
+	_ = logger.InitLogger(logger.LogConfig{
+		Level:      "info",
+		Format:     "console",
+		Output:     "stdout",
+		Filename:   "",
+		MaxSize:    100,
+		MaxBackups: 7,
+		MaxAge:     1,
+		Compress:   true,
+	})
+}
 
 // TestMinIODBServiceBasicOperations 测试MinIODBService基本操作
 func TestMinIODBServiceBasicOperations(t *testing.T) {

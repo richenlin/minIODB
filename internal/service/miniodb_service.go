@@ -169,6 +169,23 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 
 // validateWriteRequest 验证写入请求
 func (s *MinIODBService) validateWriteRequest(req *miniodb.WriteDataRequest) error {
+	// 验证表名
+	if req.Table == "" {
+		return status.Error(codes.InvalidArgument, "Table name is required and cannot be empty")
+	}
+
+	if len(req.Table) > 128 {
+		return status.Error(codes.InvalidArgument, "Table name cannot exceed 128 characters")
+	}
+
+	// 验证表名格式（只允许字母、数字、连字符和下划线）
+	for _, r := range req.Table {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return status.Error(codes.InvalidArgument, "Table name contains invalid characters, only alphanumeric, dash and underscore allowed")
+		}
+	}
+
 	if req.Data == nil {
 		return status.Error(codes.InvalidArgument, "Data record is required")
 	}

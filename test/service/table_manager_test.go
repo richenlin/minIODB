@@ -6,8 +6,24 @@ import (
 	"testing"
 	"time"
 
+	"minIODB/internal/logger"
+
 	"github.com/stretchr/testify/assert"
 )
+
+func init() {
+	// 初始化测试logger
+	_ = logger.InitLogger(logger.LogConfig{
+		Level:      "info",
+		Format:     "console",
+		Output:     "stdout",
+		Filename:   "",
+		MaxSize:    100,
+		MaxBackups: 7,
+		MaxAge:     1,
+		Compress:   true,
+	})
+}
 
 // TestTableManagerBasicOperations 测试TableManager基本操作
 func TestTableManagerBasicOperations(t *testing.T) {

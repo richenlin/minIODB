@@ -38,6 +38,3 @@ type BufferInterface interface {
 
 // 确保ConcurrentBuffer实现了BufferInterface接口
 var _ BufferInterface = (*ConcurrentBuffer)(nil)
-
-// 确保MockConcurrentBuffer实现了BufferInterface接口
-var _ BufferInterface = (*MockConcurrentBuffer)(nil)

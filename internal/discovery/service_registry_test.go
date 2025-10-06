@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"minIODB/internal/config"
+	"minIODB/internal/logger"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,20 @@ func (m *MockRedisPool) Close(ctx context.Context) error {
 func (m *MockRedisPool) GetStats() interface{} {
 	args := m.Called()
 	return args.Get(0)
+}
+
+func init() {
+	// 初始化测试logger
+	_ = logger.InitLogger(logger.LogConfig{
+		Level:      "info",
+		Format:     "console",
+		Output:     "stdout",
+		Filename:   "",
+		MaxSize:    100,
+		MaxBackups: 7,
+		MaxAge:     1,
+		Compress:   true,
+	})
 }
 
 // MockRedisClient2 is a mock implementation of Redis client for testing
