@@ -1,0 +1,402 @@
+syntax = "proto3";
+
+package miniodb.v1;
+
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "./;miniodb";
+
+// MinIODB核心服务 - 统一的数据操作和管理服务
+service MinIODBService {
+  // 数据操作 (6个核心接口)
+  rpc WriteData(WriteDataRequest) returns (WriteDataResponse);
+  rpc QueryData(QueryDataRequest) returns (QueryDataResponse);
+  rpc UpdateData(UpdateDataRequest) returns (UpdateDataResponse);
+  rpc DeleteData(DeleteDataRequest) returns (DeleteDataResponse);
+  
+  // 流式操作
+  rpc StreamWrite(stream StreamWriteRequest) returns (StreamWriteResponse);
+  rpc StreamQuery(StreamQueryRequest) returns (stream StreamQueryResponse);
+  
+  // 表管理 (4个核心接口)
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc GetTable(GetTableRequest) returns (GetTableResponse);
+  rpc DeleteTable(DeleteTableRequest) returns (DeleteTableResponse);
+  
+  // 元数据管理 (4个核心接口)
+  rpc BackupMetadata(BackupMetadataRequest) returns (BackupMetadataResponse);
+  rpc RestoreMetadata(RestoreMetadataRequest) returns (RestoreMetadataResponse);
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+  rpc GetMetadataStatus(GetMetadataStatusRequest) returns (GetMetadataStatusResponse);
+  
+  // 健康检查和监控 (3个核心接口)
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+}
+
+// 认证服务 (3个核心接口)
+service AuthService {
+  rpc GetToken(GetTokenRequest) returns (GetTokenResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+}
+
+// ============================================================================
+// 数据操作相关消息定义
+// ============================================================================
+
+// 数据记录结构
+message DataRecord {
+  string id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  google.protobuf.Struct payload = 3;
+}
+
+// 写入数据请求
+message WriteDataRequest {
+  string table = 1;                    // 表名
+  DataRecord data = 2;                 // 数据记录
+}
+
+// 向后兼容的写入请求 (用于内部Ingester)
+message WriteRequest {
+  string table = 1;                    // 表名
+  string id = 2;                       // 记录ID
+  google.protobuf.Timestamp timestamp = 3; // 时间戳
+  google.protobuf.Struct payload = 4;  // 数据负载
+}
+
+// 写入数据响应
+message WriteDataResponse {
+  bool success = 1;
+  string message = 2;
+  string node_id = 3;                  // 处理请求的节点ID
+}
+
+// 查询数据请求
+message QueryDataRequest {
+  string sql = 1;                      // SQL查询语句
+  int32 limit = 2;                     // 返回记录数限制
+  string cursor = 3;                   // 分页游标
+  bool include_deleted = 4;            // 是否包含已删除的记录（墓碑记录），默认false
+}
+
+// 查询数据响应
+message QueryDataResponse {
+  string result_json = 1;              // JSON格式的查询结果
+  bool has_more = 2;                   // 是否有更多数据
+  string next_cursor = 3;              // 下一页游标
+}
+
+// 更新数据请求
+message UpdateDataRequest {
+  string table = 1;                    // 表名
+  string id = 2;                       // 记录ID
+  google.protobuf.Struct payload = 3;  // 更新的数据
+  google.protobuf.Timestamp timestamp = 4; // 更新时间戳
+}
+
+// 更新数据响应
+message UpdateDataResponse {
+  bool success = 1;
+  string message = 2;
+  string node_id = 3;
+}
+
+// 删除数据请求
+message DeleteDataRequest {
+  string table = 1;                    // 表名
+  string id = 2;                       // 记录ID
+  bool soft_delete = 3;                // 是否软删除
+}
+
+// 删除数据响应
+message DeleteDataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 deleted_count = 3;             // 删除的记录数
+}
+
+// 流式写入请求
+message StreamWriteRequest {
+  repeated DataRecord records = 1;      // 批量数据记录
+  string table = 2;                     // 目标表名
+}
+
+// 流式写入响应
+message StreamWriteResponse {
+  bool success = 1;
+  int64 records_count = 2;              // 成功写入的记录数
+  repeated string errors = 3;           // 错误信息列表
+}
+
+// 流式查询请求
+message StreamQueryRequest {
+  string sql = 1;                       // SQL查询语句
+  int32 batch_size = 2;                 // 批次大小
+  string cursor = 3;                    // 起始游标
+}
+
+// 流式查询响应
+message StreamQueryResponse {
+  repeated DataRecord records = 1;      // 数据记录批次
+  bool has_more = 2;                    // 是否有更多数据
+  string cursor = 3;                    // 当前游标
+}
+
+// ============================================================================
+// 表管理相关消息定义
+// ============================================================================
+
+// 表配置
+message TableConfig {
+  int32 buffer_size = 1;                // 缓冲区大小
+  int32 flush_interval_seconds = 2;     // 刷新间隔(秒)
+  int32 retention_days = 3;             // 数据保留天数
+  bool backup_enabled = 4;              // 是否启用备份
+  map<string, string> properties = 5;   // 扩展属性
+}
+
+// 创建表请求
+message CreateTableRequest {
+  string table_name = 1;                // 表名
+  TableConfig config = 2;               // 表配置
+  bool if_not_exists = 3;               // 如果不存在则创建
+}
+
+// 创建表响应
+message CreateTableResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 列出表请求
+message ListTablesRequest {
+  string pattern = 1;                   // 表名模式过滤
+}
+
+// 表信息
+message TableInfo {
+  string name = 1;                      // 表名
+  TableConfig config = 2;               // 表配置
+  google.protobuf.Timestamp created_at = 3; // 创建时间
+  google.protobuf.Timestamp last_write = 4; // 最后写入时间
+  string status = 5;                    // 表状态
+  TableStats stats = 6;                 // 表统计信息
+}
+
+// 表统计信息
+message TableStats {
+  int64 record_count = 1;               // 记录数
+  int64 file_count = 2;                 // 文件数
+  int64 size_bytes = 3;                 // 大小(字节)
+  google.protobuf.Timestamp oldest_record = 4; // 最老记录时间
+  google.protobuf.Timestamp newest_record = 5; // 最新记录时间
+}
+
+// 列出表响应
+message ListTablesResponse {
+  repeated TableInfo tables = 1;        // 表信息列表
+  int32 total = 2;                      // 总数
+}
+
+// 获取表请求
+message GetTableRequest {
+  string table_name = 1;                // 表名
+}
+
+// 获取表响应
+message GetTableResponse {
+  TableInfo table_info = 1;             // 表信息
+}
+
+// 删除表请求
+message DeleteTableRequest {
+  string table_name = 1;                // 表名
+  bool if_exists = 2;                   // 如果存在则删除
+  bool cascade = 3;                     // 级联删除
+}
+
+// 删除表响应
+message DeleteTableResponse {
+  bool success = 1;
+  string message = 2;
+  int32 files_deleted = 3;              // 删除的文件数
+}
+
+// ============================================================================
+// 元数据管理相关消息定义
+// ============================================================================
+
+// 备份元数据请求
+message BackupMetadataRequest {
+  bool force = 1;                       // 是否强制备份
+}
+
+// 备份元数据响应
+message BackupMetadataResponse {
+  bool success = 1;
+  string message = 2;
+  string backup_id = 3;                 // 备份ID
+  google.protobuf.Timestamp timestamp = 4; // 备份时间
+}
+
+// 恢复元数据请求
+message RestoreMetadataRequest {
+  string backup_file = 1;               // 备份文件路径
+  bool from_latest = 2;                 // 是否从最新备份恢复
+  bool dry_run = 3;                     // 是否干运行
+  bool overwrite = 4;                   // 是否覆盖现有数据
+  bool validate = 5;                    // 是否验证数据
+  bool parallel = 6;                    // 是否并行执行
+  map<string, string> filters = 7;      // 过滤选项
+  repeated string key_patterns = 8;     // 键模式过滤
+}
+
+// 恢复元数据响应
+message RestoreMetadataResponse {
+  bool success = 1;
+  string message = 2;
+  string backup_file = 3;               // 使用的备份文件
+  int32 entries_total = 4;              // 总条目数
+  int32 entries_ok = 5;                 // 成功条目数
+  int32 entries_skipped = 6;            // 跳过条目数
+  int32 entries_error = 7;              // 错误条目数
+  string duration = 8;                  // 执行时长
+  repeated string errors = 9;           // 错误信息列表
+  map<string, string> details = 10;     // 详细信息
+}
+
+// 列出备份请求
+message ListBackupsRequest {
+  int32 days = 1;                       // 查询最近多少天的备份
+}
+
+// 备份信息
+message BackupInfo {
+  string object_name = 1;               // 对象名称
+  string node_id = 2;                   // 节点ID
+  google.protobuf.Timestamp timestamp = 3; // 备份时间
+  int64 size = 4;                       // 文件大小
+  google.protobuf.Timestamp last_modified = 5; // 最后修改时间
+}
+
+// 列出备份响应
+message ListBackupsResponse {
+  repeated BackupInfo backups = 1;      // 备份信息列表
+  int32 total = 2;                      // 总数
+}
+
+// 获取元数据状态请求
+message GetMetadataStatusRequest {
+  // 空请求，获取当前元数据状态
+}
+
+// 获取元数据状态响应
+message GetMetadataStatusResponse {
+  string node_id = 1;                   // 节点ID
+  map<string, string> backup_status = 2; // 备份状态
+  google.protobuf.Timestamp last_backup = 3; // 最后备份时间
+  google.protobuf.Timestamp next_backup = 4; // 下次备份时间
+  string health_status = 5;             // 健康状态
+}
+
+// ============================================================================
+// 健康检查和监控相关消息定义
+// ============================================================================
+
+// 健康检查请求
+message HealthCheckRequest {
+  // 空请求，检查所有组件健康状态
+}
+
+// 健康检查响应
+message HealthCheckResponse {
+  string status = 1;                    // 整体状态
+  google.protobuf.Timestamp timestamp = 2; // 检查时间
+  string version = 3;                   // 服务版本
+  map<string, string> details = 4;      // 各组件状态详情
+}
+
+// 获取状态请求
+message GetStatusRequest {
+  // 空请求，获取系统状态
+}
+
+// 节点信息
+message NodeInfo {
+  string id = 1;                        // 节点ID
+  string status = 2;                    // 节点状态
+  string type = 3;                      // 节点类型
+  string address = 4;                   // 节点地址
+  int64 last_seen = 5;                  // 最后见到时间
+}
+
+// 获取状态响应
+message GetStatusResponse {
+  google.protobuf.Timestamp timestamp = 1; // 状态时间戳
+  map<string, int64> buffer_stats = 2;   // 缓冲区统计
+  map<string, int64> redis_stats = 3;    // Redis统计
+  map<string, int64> minio_stats = 4;    // MinIO统计
+  repeated NodeInfo nodes = 5;           // 节点信息列表
+  int32 total_nodes = 6;                 // 总节点数
+}
+
+// 获取指标请求
+message GetMetricsRequest {
+  // 空请求，获取性能指标
+}
+
+// 获取指标响应
+message GetMetricsResponse {
+  google.protobuf.Timestamp timestamp = 1; // 指标时间戳
+  map<string, double> performance_metrics = 2; // 性能指标
+  map<string, int64> resource_usage = 3;    // 资源使用情况
+  map<string, string> system_info = 4;      // 系统信息
+}
+
+// ============================================================================
+// 认证相关消息定义
+// ============================================================================
+
+// 获取Token请求
+message GetTokenRequest {
+  string api_key = 1;                   // API密钥
+  string secret = 2;                    // API密码
+}
+
+// 获取Token响应
+message GetTokenResponse {
+  string access_token = 1;              // 访问令牌
+  string refresh_token = 2;             // 刷新令牌
+  int64 expires_in = 3;                 // 过期时间(秒)
+  string token_type = 4;                // 令牌类型(通常为Bearer)
+}
+
+// 刷新Token请求
+message RefreshTokenRequest {
+  string refresh_token = 1;             // 刷新令牌
+}
+
+// 刷新Token响应
+message RefreshTokenResponse {
+  string access_token = 1;              // 新的访问令牌
+  string refresh_token = 2;             // 新的刷新令牌
+  int64 expires_in = 3;                 // 过期时间(秒)
+  string token_type = 4;                // 令牌类型
+}
+
+// 撤销Token请求
+message RevokeTokenRequest {
+  string token = 1;                     // 要撤销的令牌
+}
+
+// 撤销Token响应
+message RevokeTokenResponse {
+  bool success = 1;
+  string message = 2;
+} 

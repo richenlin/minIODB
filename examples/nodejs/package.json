@@ -1,0 +1,84 @@
+{
+  "name": "@miniodb/nodejs-sdk",
+  "version": "1.0.0",
+  "description": "Node.js TypeScript SDK for MinIODB - A distributed OLAP system based on MinIO, DuckDB and Redis",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rimraf dist",
+    "dev": "ts-node src/examples/basic-usage.ts",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write src/**/*.ts",
+    "prepare": "npm run build",
+    "generate:proto": "node scripts/generate-proto.js"
+  },
+  "keywords": [
+    "miniodb",
+    "database",
+    "olap",
+    "grpc",
+    "sdk",
+    "client",
+    "typescript",
+    "nodejs"
+  ],
+  "author": "MinIODB Team",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/minIODB.git",
+    "directory": "examples/nodejs"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/minIODB/issues"
+  },
+  "homepage": "https://github.com/your-org/minIODB#readme",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "proto/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@grpc/grpc-js": "^1.9.0",
+    "@grpc/proto-loader": "^0.7.8",
+    "google-protobuf": "^3.21.2",
+    "protobufjs": "^7.2.4",
+    "winston": "^3.10.0",
+    "axios": "^1.5.0",
+    "eventemitter3": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.5.0",
+    "@types/google-protobuf": "^3.15.6",
+    "@typescript-eslint/eslint-plugin": "^6.4.0",
+    "@typescript-eslint/parser": "^6.4.0",
+    "eslint": "^8.47.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "jest": "^29.6.2",
+    "@types/jest": "^29.5.4",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.6",
+    "prettier": "^3.0.2",
+    "rimraf": "^5.0.1",
+    "grpc-tools": "^1.12.4"
+  },
+  "peerDependencies": {
+    "typescript": ">=4.5.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
