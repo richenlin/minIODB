@@ -9,3 +9,4 @@ test/performance/test_results/
 logs/
 examples/java/target
 *.out
+test/buffer/temp_parquet/
