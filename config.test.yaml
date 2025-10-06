@@ -1,0 +1,90 @@
+# Test Configuration for MinIODB
+# This file contains configuration specifically for running tests in isolation
+
+# Test-specific settings
+test:
+  # Enable test mode
+  enabled: true
+
+  # Use mock implementations instead of real services
+  use_mocks: true
+
+  # Test database settings (in-memory)
+  database:
+    type: "duckdb"
+    connection: ":memory:"
+
+  # Test storage settings (in-memory)
+  storage:
+    type: "memory"
+    base_path: "/tmp/miniodb_test"
+
+  # Test Redis settings (in-memory)
+  redis:
+    enabled: false
+    connection: ""
+
+  # Test MinIO settings (in-memory)
+  minio:
+    enabled: false
+    endpoint: ""
+    access_key: ""
+    secret_key: ""
+
+  # Test logging settings
+  logging:
+    level: "error"  # Reduce log noise during tests
+    format: "console"
+    output: "stdout"
+
+  # Test performance settings
+  performance:
+    # Disable metrics collection during tests
+    metrics_enabled: false
+
+    # Disable monitoring during tests
+    monitoring_enabled: false
+
+    # Use smaller buffer sizes for tests
+    buffer_size: 1000
+
+    # Use shorter flush intervals for tests
+    flush_interval: "1s"
+
+  # Test security settings
+  security:
+    # Disable authentication for tests
+    auth_enabled: false
+
+    # Disable rate limiting for tests
+    rate_limiting_enabled: false
+
+    # Disable TLS for tests
+    tls_enabled: false
+
+  # Test discovery settings
+  discovery:
+    # Disable service discovery for tests
+    enabled: false
+
+    # Use mock registry
+    registry_type: "mock"
+
+  # Test coordinator settings
+  coordinator:
+    # Disable distributed coordination for tests
+    enabled: false
+
+    # Use single-node mode
+    mode: "single"
+
+  # Test monitoring settings
+  monitoring:
+    # Disable health checks for tests
+    health_check_enabled: false
+
+    # Disable metrics collection for tests
+    metrics_collection_enabled: false
+
+    # Disable alerting for tests
+    alerting_enabled: false
