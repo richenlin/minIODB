@@ -16,6 +16,7 @@ import (
 	"minIODB/internal/metrics"
 	"minIODB/internal/pool"
 	"minIODB/internal/storage"
+	"minIODB/internal/utils"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/xitongsys/parquet-go-source/local"
@@ -795,7 +796,7 @@ func (cb *ConcurrentBuffer) GetBufferData(ctx context.Context, key string) []Dat
 	atomic.StoreInt64(&cb.lastQueryTime, time.Now().UnixNano())
 
 	// 触发自适应刷新检查
-	go cb.checkAdaptiveFlush(ctx)
+	go cb.CheckAdaptiveFlush(ctx)
 
 	rows, exists := cb.buffer[key]
 	if !exists {
@@ -808,8 +809,8 @@ func (cb *ConcurrentBuffer) GetBufferData(ctx context.Context, key string) []Dat
 	return result
 }
 
-// checkAdaptiveFlush 检查是否需要自适应刷新（优化3）
-func (cb *ConcurrentBuffer) checkAdaptiveFlush(ctx context.Context) {
+// CheckAdaptiveFlush 检查是否需要自适应刷新（优化3）
+func (cb *ConcurrentBuffer) CheckAdaptiveFlush(ctx context.Context) {
 	if !cb.adaptiveFlush {
 		return
 	}
@@ -854,8 +855,8 @@ func (cb *ConcurrentBuffer) checkAdaptiveFlush(ctx context.Context) {
 		if currentMemory > cb.config.MemoryThreshold {
 			shouldFlush = true
 			reason = fmt.Sprintf("memory pressure (current: %s, threshold: %s, utilization: %.1f%%)",
-				formatBytes(currentMemory),
-				formatBytes(cb.config.MemoryThreshold),
+				utils.FormatBytes(currentMemory),
+				utils.FormatBytes(cb.config.MemoryThreshold),
 				memoryUtilization*100)
 		}
 	}
@@ -876,20 +877,6 @@ func (cb *ConcurrentBuffer) checkAdaptiveFlush(ctx context.Context) {
 			go runtime.GC()
 		}
 	}
-}
-
-// formatBytes 格式化字节数为人类可读格式
-func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // AddDataPoint 添加数据点到缓冲区（兼容bufferManager接口）

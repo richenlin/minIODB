@@ -2,7 +2,9 @@ package buffer
 
 import (
 	"context"
+	"minIODB/internal/buffer"
 	"minIODB/internal/logger"
+	"minIODB/internal/utils"
 	"runtime"
 	"testing"
 	"time"
@@ -22,7 +24,7 @@ func TestMemoryPressureFlush(t *testing.T) {
 	ctx := context.Background()
 
 	// 设置一个很低的内存阈值以便测试
-	config := &ConcurrentBufferConfig{
+	config := &buffer.ConcurrentBufferConfig{
 		BufferSize:        1000,
 		FlushInterval:     1 * time.Hour, // 很长的刷新间隔，确保只由内存触发
 		WorkerPoolSize:    2,
@@ -31,19 +33,19 @@ func TestMemoryPressureFlush(t *testing.T) {
 		EnableMemoryFlush: true,
 	}
 
-	cb := NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
+	cb := buffer.NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
 
 	// 记录初始内存
 	var memStatsBefore runtime.MemStats
 	runtime.ReadMemStats(&memStatsBefore)
 	initialMemory := memStatsBefore.Alloc
 
-	t.Logf("Initial memory: %s", formatBytes(int64(initialMemory)))
-	t.Logf("Memory threshold: %s", formatBytes(config.MemoryThreshold))
+	t.Logf("Initial memory: %s", utils.FormatBytes(int64(initialMemory)))
+	t.Logf("Memory threshold: %s", utils.FormatBytes(config.MemoryThreshold))
 
 	// 模拟添加数据（不会真正触发刷新，因为没有poolManager）
 	for i := 0; i < 100; i++ {
-		row := DataRow{
+		row := buffer.DataRow{
 			ID:        "test-id",
 			Timestamp: time.Now().UnixNano(),
 			Payload:   "test data",
@@ -52,15 +54,15 @@ func TestMemoryPressureFlush(t *testing.T) {
 	}
 
 	// 触发自适应刷新检查
-	cb.checkAdaptiveFlush(ctx)
+	cb.CheckAdaptiveFlush(ctx)
 
 	// 检查当前内存
 	var memStatsAfter runtime.MemStats
 	runtime.ReadMemStats(&memStatsAfter)
 	currentMemory := memStatsAfter.Alloc
 
-	t.Logf("Current memory: %s", formatBytes(int64(currentMemory)))
-	t.Logf("Memory threshold: %s", formatBytes(config.MemoryThreshold))
+	t.Logf("Current memory: %s", utils.FormatBytes(int64(currentMemory)))
+	t.Logf("Memory threshold: %s", utils.FormatBytes(config.MemoryThreshold))
 
 	if currentMemory > uint64(config.MemoryThreshold) {
 		t.Logf("Memory exceeds threshold - adaptive flush would be triggered")
@@ -73,7 +75,7 @@ func TestMemoryPressureFlush(t *testing.T) {
 func TestMemoryFlushDisabled(t *testing.T) {
 	ctx := context.Background()
 
-	config := &ConcurrentBufferConfig{
+	config := &buffer.ConcurrentBufferConfig{
 		BufferSize:        1000,
 		FlushInterval:     1 * time.Hour,
 		WorkerPoolSize:    2,
@@ -82,11 +84,11 @@ func TestMemoryFlushDisabled(t *testing.T) {
 		EnableMemoryFlush: false,    // 禁用内存刷新
 	}
 
-	cb := NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
+	cb := buffer.NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
 
 	// 添加数据
 	for i := 0; i < 100; i++ {
-		row := DataRow{
+		row := buffer.DataRow{
 			ID:        "test-id",
 			Timestamp: time.Now().UnixNano(),
 			Payload:   "test data",
@@ -95,7 +97,7 @@ func TestMemoryFlushDisabled(t *testing.T) {
 	}
 
 	// 即使内存可能超过阈值，也不应该触发刷新
-	cb.checkAdaptiveFlush(ctx)
+	cb.CheckAdaptiveFlush(ctx)
 
 	t.Log("Memory flush is disabled - no memory-based flush should occur")
 }
@@ -128,7 +130,7 @@ func TestMemoryThresholdConfiguration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 
-			config := &ConcurrentBufferConfig{
+			config := &buffer.ConcurrentBufferConfig{
 				BufferSize:        1000,
 				FlushInterval:     1 * time.Hour,
 				WorkerPoolSize:    2,
@@ -137,14 +139,14 @@ func TestMemoryThresholdConfiguration(t *testing.T) {
 				EnableMemoryFlush: tc.enableFlush,
 			}
 
-			_ = NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
+			_ = buffer.NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
 
 			var memStats runtime.MemStats
 			runtime.ReadMemStats(&memStats)
 			currentMemory := int64(memStats.Alloc)
 
-			t.Logf("Current memory: %s", formatBytes(currentMemory))
-			t.Logf("Threshold: %s", formatBytes(tc.memoryThreshold))
+			t.Logf("Current memory: %s", utils.FormatBytes(currentMemory))
+			t.Logf("Threshold: %s", utils.FormatBytes(tc.memoryThreshold))
 			t.Logf("Flush enabled: %v", tc.enableFlush)
 
 			if tc.enableFlush && tc.memoryThreshold > 0 {
@@ -173,9 +175,9 @@ func TestFormatBytes(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := formatBytes(tc.bytes)
+		result := utils.FormatBytes(tc.bytes)
 		if result != tc.expected {
-			t.Errorf("formatBytes(%d) = %s, expected %s", tc.bytes, result, tc.expected)
+			t.Errorf("utils.FormatBytes(%d) = %s, expected %s", tc.bytes, result, tc.expected)
 		}
 	}
 }
@@ -184,7 +186,7 @@ func TestFormatBytes(t *testing.T) {
 func TestBufferUtilizationAndMemoryPressure(t *testing.T) {
 	ctx := context.Background()
 
-	config := &ConcurrentBufferConfig{
+	config := &buffer.ConcurrentBufferConfig{
 		BufferSize:        100, // 小缓冲区
 		FlushInterval:     1 * time.Hour,
 		WorkerPoolSize:    2,
@@ -195,11 +197,11 @@ func TestBufferUtilizationAndMemoryPressure(t *testing.T) {
 
 	// 测试1：缓冲区接近满（应触发刷新）
 	t.Run("buffer_near_full", func(t *testing.T) {
-		cb1 := NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
+		cb1 := buffer.NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
 
 		// 添加数据直到接近满
 		for i := 0; i < 95; i++ {
-			row := DataRow{
+			row := buffer.DataRow{
 				ID:        "test-id",
 				Timestamp: time.Now().UnixNano(),
 				Payload:   "test data",
@@ -212,16 +214,16 @@ func TestBufferUtilizationAndMemoryPressure(t *testing.T) {
 		t.Logf("Buffer size: %d/%d", stats.BufferSize, config.BufferSize)
 
 		// 触发检查
-		cb1.checkAdaptiveFlush(ctx)
+		cb1.CheckAdaptiveFlush(ctx)
 	})
 
 	// 测试2：正常负载（不应触发刷新）
 	t.Run("normal_load", func(t *testing.T) {
-		cb2 := NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
+		cb2 := buffer.NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
 
 		// 添加少量数据
 		for i := 0; i < 10; i++ {
-			row := DataRow{
+			row := buffer.DataRow{
 				ID:        "test-id",
 				Timestamp: time.Now().UnixNano(),
 				Payload:   "test data",
@@ -233,7 +235,7 @@ func TestBufferUtilizationAndMemoryPressure(t *testing.T) {
 		t.Logf("Buffer size: %d/%d (normal load)", stats.BufferSize, config.BufferSize)
 
 		// 触发检查
-		cb2.checkAdaptiveFlush(ctx)
+		cb2.CheckAdaptiveFlush(ctx)
 	})
 }
 
@@ -241,7 +243,7 @@ func TestBufferUtilizationAndMemoryPressure(t *testing.T) {
 func TestAdaptiveFlushWithQueryActivity(t *testing.T) {
 	ctx := context.Background()
 
-	config := &ConcurrentBufferConfig{
+	config := &buffer.ConcurrentBufferConfig{
 		BufferSize:        100,
 		FlushInterval:     1 * time.Hour,
 		WorkerPoolSize:    2,
@@ -250,11 +252,11 @@ func TestAdaptiveFlushWithQueryActivity(t *testing.T) {
 		EnableMemoryFlush: true,
 	}
 
-	cb := NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
+	cb := buffer.NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
 
 	// 添加数据到80%
 	for i := 0; i < 85; i++ {
-		row := DataRow{
+		row := buffer.DataRow{
 			ID:        "test-id",
 			Timestamp: time.Now().UnixNano(),
 			Payload:   "test data",
@@ -264,25 +266,25 @@ func TestAdaptiveFlushWithQueryActivity(t *testing.T) {
 
 	// 模拟频繁查询（通过GetBufferData）
 	for i := 0; i < 15; i++ {
-		cb.GetBufferData(ctx, "test-key")
+		cb.Get(ctx, "test-key")
 	}
 
 	stats := cb.GetStats(ctx)
 	t.Logf("Buffer utilization: %d/%d", stats.BufferSize, config.BufferSize)
-	t.Logf("Query count: %d", cb.queryCount)
+	t.Logf("Query count: %d", cb.GetStats(ctx).QueuedTasks)
 
 	// 高利用率 + 频繁查询应该触发刷新
-	cb.checkAdaptiveFlush(ctx)
+	cb.CheckAdaptiveFlush(ctx)
 }
 
 // BenchmarkCheckAdaptiveFlush 性能测试
 func BenchmarkCheckAdaptiveFlush(b *testing.B) {
 	ctx := context.Background()
-	config := DefaultConcurrentBufferConfig()
-	cb := NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
+	config := buffer.DefaultConcurrentBufferConfig()
+	cb := buffer.NewConcurrentBuffer(ctx, nil, nil, "", "test-node", config)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cb.checkAdaptiveFlush(ctx)
+		cb.CheckAdaptiveFlush(ctx)
 	}
 }

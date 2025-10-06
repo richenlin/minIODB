@@ -1,4 +1,4 @@
-package consistenthash
+package utils
 
 import (
 	"crypto/sha256"
@@ -8,13 +8,13 @@ import (
 
 // ConsistentHash 一致性哈希环
 type ConsistentHash struct {
-	replicas int               // 虚拟节点数量
-	keys     []int             // 已排序的哈希环
-	hashMap  map[int]string    // 哈希值到节点的映射
+	replicas int            // 虚拟节点数量
+	keys     []int          // 已排序的哈希环
+	hashMap  map[int]string // 哈希值到节点的映射
 }
 
 // New 创建一致性哈希实例
-func New(replicas int) *ConsistentHash {
+func NewConsistentHash(replicas int) *ConsistentHash {
 	return &ConsistentHash{
 		replicas: replicas,
 		hashMap:  make(map[int]string),
@@ -62,7 +62,7 @@ func (c *ConsistentHash) Get(key string) string {
 	}
 
 	hash := c.hash(key)
-	
+
 	// 在哈希环上顺时针查找第一个节点
 	idx := sort.Search(len(c.keys), func(i int) bool {
 		return c.keys[i] >= hash
@@ -82,7 +82,7 @@ func (c *ConsistentHash) GetNodes() []string {
 	for _, node := range c.hashMap {
 		nodeSet[node] = true
 	}
-	
+
 	nodes := make([]string, 0, len(nodeSet))
 	for node := range nodeSet {
 		nodes = append(nodes, node)
@@ -101,11 +101,11 @@ func (c *ConsistentHash) Stats() map[string]interface{} {
 	for _, node := range c.hashMap {
 		nodeCount[node]++
 	}
-	
+
 	return map[string]interface{}{
-		"total_keys":    len(c.keys),
-		"total_nodes":   len(nodeCount),
-		"replicas":      c.replicas,
+		"total_keys":        len(c.keys),
+		"total_nodes":       len(nodeCount),
+		"replicas":          c.replicas,
 		"node_distribution": nodeCount,
 	}
-} 
+}

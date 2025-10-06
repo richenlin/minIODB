@@ -8,45 +8,16 @@ import (
 
 	"minIODB/internal/config"
 	"minIODB/internal/logger"
+
 	"github.com/stretchr/testify/assert"
 )
 
 // TestConfig 功能测试统一配置
 var TestConfig = &config.Config{
 	Server: config.ServerConfig{
-		NodeID:      "test-node",
-		GrpcPort:    "8080",
-		RestPort:    "8081",
-		Environment: "test",
-		Mode:        "development",
-	},
-	Storage: config.StorageConfig{
-		Type: "minio",
-		Minio: config.MinioConfig{
-			Endpoint:  "localhost:9000",
-			AccessKey: "minioadmin",
-			SecretKey: "minioadmin",
-			UseSSL:    false,
-		},
-	},
-	Cache: config.CacheConfig{
-		Enabled: true,
-		Type:    "memory",
-		TTL:     3600,
-	},
-	Security: config.SecurityConfig{
-		Mode:        "none",
-		JWTSecret:   "test-secret-256-bits-for-testing-only",
-		Issuer:      "miniodb-test",
-		Audience:    "test-api",
-	},
-	Query: config.QueryConfig{
-		Timeout: 30,
-		Retries: 3,
-	},
-	Ingest: config.IngestConfig{
-		BufferSize: 1000,
-		FlushInterval: 5 * time.Second,
+		NodeID:   "test-node",
+		GrpcPort: "8080",
+		RestPort: "8081",
 	},
 }
 

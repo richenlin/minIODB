@@ -11,7 +11,7 @@ import (
 	"minIODB/internal/config"
 	"minIODB/internal/logger"
 	"minIODB/internal/pool"
-	"minIODB/pkg/consistenthash"
+	"minIODB/internal/utils"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -103,7 +103,7 @@ type ServiceRegistry struct {
 	redisEnabled bool
 
 	// 一致性哈希环
-	hashRing *consistenthash.ConsistentHash
+	hashRing *utils.ConsistentHash
 
 	// 节点信息
 	nodeInfo *NodeInfo
@@ -185,7 +185,7 @@ func NewServiceRegistry(ctx context.Context, cfg config.Config, nodeID, grpcPort
 		services:     make(map[string]*ServiceInfo),
 		stopChan:     make(chan struct{}),
 		redisEnabled: redisEnabled,
-		hashRing:     consistenthash.New(DefaultReplicas),
+		hashRing:     utils.NewConsistentHash(DefaultReplicas),
 		nodeInfo: &NodeInfo{
 			ID:       nodeID,
 			Address:  "localhost",
@@ -555,7 +555,7 @@ func getLocalIP() (string, error) {
 }
 
 // GetHashRing 获取当前哈希环
-func (sr *ServiceRegistry) GetHashRing() *consistenthash.ConsistentHash {
+func (sr *ServiceRegistry) GetHashRing() *utils.ConsistentHash {
 	return sr.hashRing
 }
 

@@ -16,7 +16,6 @@ import (
 	"minIODB/internal/query"
 	"minIODB/internal/storage"
 	"minIODB/internal/utils"
-	"minIODB/pkg/consistenthash"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -41,7 +40,7 @@ type QueryResult struct {
 // WriteCoordinator 写入协调器
 type WriteCoordinator struct {
 	registry       *discovery.ServiceRegistry
-	hashRing       *consistenthash.ConsistentHash
+	hashRing       *utils.ConsistentHash
 	circuitBreaker *utils.CircuitBreaker
 	mu             sync.RWMutex
 }
@@ -133,7 +132,7 @@ func NewWriteCoordinator(registry *discovery.ServiceRegistry) *WriteCoordinator 
 
 	return &WriteCoordinator{
 		registry:       registry,
-		hashRing:       consistenthash.New(150),
+		hashRing:       utils.NewConsistentHash(150),
 		circuitBreaker: cb,
 	}
 }
@@ -252,7 +251,7 @@ func (wc *WriteCoordinator) updateHashRing(nodes []*discovery.NodeInfo) {
 	defer wc.mu.Unlock()
 
 	// 创建新的哈希环
-	newHashRing := consistenthash.New(150)
+	newHashRing := utils.NewConsistentHash(150)
 	for _, node := range nodes {
 		nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
 		newHashRing.Add(nodeAddr)

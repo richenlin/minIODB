@@ -1,4 +1,4 @@
-package storage
+package test
 
 import (
 	"context"
@@ -14,6 +14,12 @@ import (
 type MockMinioClient struct {
 	buckets map[string]map[string]*MockObject
 	mutex   sync.RWMutex
+}
+
+type ObjectInfo struct {
+	Name         string
+	Size         int64
+	LastModified time.Time
 }
 
 // MockObject Mock对象存储

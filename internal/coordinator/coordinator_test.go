@@ -7,7 +7,7 @@ import (
 	"minIODB/internal/discovery"
 	"minIODB/internal/pool"
 	"minIODB/internal/storage"
-	"minIODB/pkg/consistenthash"
+	"minIODB/internal/utils"
 	"testing"
 
 	pb "minIODB/api/proto/miniodb/v1"
@@ -166,8 +166,8 @@ func (m *MockServiceRegistry) DiscoverNodes(ctx context.Context) ([]*discovery.S
 	return services, nil
 }
 
-func (m *MockServiceRegistry) GetHashRing() *consistenthash.ConsistentHash {
-	return consistenthash.New(150)
+func (m *MockServiceRegistry) GetHashRing() *utils.ConsistentHash {
+	return utils.NewConsistentHash(150)
 }
 
 // TestQueryCoordinatorQueryPlan 测试查询计划创建

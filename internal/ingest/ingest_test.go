@@ -31,8 +31,8 @@ func init() {
 }
 
 // 创建测试用的Mock缓冲区
-func createMockBuffer(t *testing.T) *buffer.MockConcurrentBuffer {
-	mockBuffer := buffer.NewMockConcurrentBuffer()
+func createMockBuffer(t *testing.T) *buffer.ConcurrentBuffer {
+	mockBuffer := buffer.NewConcurrentBuffer(context.Background(), nil, nil, "", "test-node", nil)
 	return mockBuffer
 }
 
@@ -157,7 +157,7 @@ func TestFlushBuffer(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 验证刷新次数增加
-	assert.Equal(t, 1, mockBuffer.GetFlushCount())
+	assert.Equal(t, 1, mockBuffer.GetStats(ctx).CompletedTasks)
 }
 
 func TestFlushBuffer_NilBuffer(t *testing.T) {

@@ -1,30 +1,32 @@
-package buffer
+package test
 
 import (
 	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	"minIODB/internal/buffer"
 )
 
 // MockConcurrentBuffer 是用于测试的Mock缓冲区实现
 type MockConcurrentBuffer struct {
-	data       map[string][]DataRow
+	data       map[string][]buffer.DataRow
 	mutex      sync.RWMutex
-	stats      *ConcurrentBufferStats
+	stats      *buffer.ConcurrentBufferStats
 	flushCount int
 }
 
 // NewMockConcurrentBuffer 创建新的Mock缓冲区
 func NewMockConcurrentBuffer() *MockConcurrentBuffer {
 	return &MockConcurrentBuffer{
-		data:  make(map[string][]DataRow),
-		stats: &ConcurrentBufferStats{},
+		data:  make(map[string][]buffer.DataRow),
+		stats: &buffer.ConcurrentBufferStats{},
 	}
 }
 
 // Add 添加数据到缓冲区
-func (m *MockConcurrentBuffer) Add(ctx context.Context, row DataRow) {
+func (m *MockConcurrentBuffer) Add(ctx context.Context, row buffer.DataRow) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -37,7 +39,7 @@ func (m *MockConcurrentBuffer) Add(ctx context.Context, row DataRow) {
 	bufferKey := fmt.Sprintf("%s/%s/%s", tableName, row.ID, dayStr)
 
 	m.data[bufferKey] = append(m.data[bufferKey], row)
-	m.updateStats(func(stats *ConcurrentBufferStats) {
+	m.updateStats(func(stats *buffer.ConcurrentBufferStats) {
 		stats.BufferSize = int64(len(m.data))
 		totalPending := int64(0)
 		for _, rows := range m.data {
@@ -48,11 +50,11 @@ func (m *MockConcurrentBuffer) Add(ctx context.Context, row DataRow) {
 }
 
 // Get 获取缓冲区数据
-func (m *MockConcurrentBuffer) Get(ctx context.Context, key string) []DataRow {
+func (m *MockConcurrentBuffer) Get(ctx context.Context, key string) []buffer.DataRow {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	rows := make([]DataRow, len(m.data[key]))
+	rows := make([]buffer.DataRow, len(m.data[key]))
 	copy(rows, m.data[key])
 	return rows
 }
@@ -85,26 +87,26 @@ func (m *MockConcurrentBuffer) GetTableKeys(ctx context.Context, tableName strin
 }
 
 // GetBufferData 获取指定键的缓冲区数据
-func (m *MockConcurrentBuffer) GetBufferData(ctx context.Context, key string) []DataRow {
+func (m *MockConcurrentBuffer) GetBufferData(ctx context.Context, key string) []buffer.DataRow {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
 	rows, exists := m.data[key]
 	if !exists {
-		return []DataRow{}
+		return []buffer.DataRow{}
 	}
 
-	result := make([]DataRow, len(rows))
+	result := make([]buffer.DataRow, len(rows))
 	copy(result, rows)
 	return result
 }
 
 // GetStats 获取统计信息
-func (m *MockConcurrentBuffer) GetStats(ctx context.Context) *ConcurrentBufferStats {
+func (m *MockConcurrentBuffer) GetStats(ctx context.Context) *buffer.ConcurrentBufferStats {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	return &ConcurrentBufferStats{
+	return &buffer.ConcurrentBufferStats{
 		TotalTasks:     m.stats.TotalTasks,
 		CompletedTasks: m.stats.CompletedTasks,
 		FailedTasks:    m.stats.FailedTasks,
@@ -119,7 +121,7 @@ func (m *MockConcurrentBuffer) GetStats(ctx context.Context) *ConcurrentBufferSt
 }
 
 // updateStats 更新统计信息
-func (m *MockConcurrentBuffer) updateStats(updater func(*ConcurrentBufferStats)) {
+func (m *MockConcurrentBuffer) updateStats(updater func(*buffer.ConcurrentBufferStats)) {
 	updater(m.stats)
 }
 
@@ -130,8 +132,8 @@ func (m *MockConcurrentBuffer) FlushDataPoints(ctx context.Context) error {
 
 	// 模拟刷新操作
 	m.flushCount++
-	m.data = make(map[string][]DataRow)
-	m.updateStats(func(stats *ConcurrentBufferStats) {
+	m.data = make(map[string][]buffer.DataRow)
+	m.updateStats(func(stats *buffer.ConcurrentBufferStats) {
 		stats.CompletedTasks++
 		stats.BufferSize = 0
 		stats.PendingWrites = 0
@@ -145,16 +147,16 @@ func (m *MockConcurrentBuffer) Stop(ctx context.Context) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	m.data = make(map[string][]DataRow)
+	m.data = make(map[string][]buffer.DataRow)
 }
 
 // SetCacheInvalidator 设置缓存失效器
-func (m *MockConcurrentBuffer) SetCacheInvalidator(invalidator CacheInvalidator) {
+func (m *MockConcurrentBuffer) SetCacheInvalidator(invalidator buffer.CacheInvalidator) {
 	// Mock实现，不需要实际操作
 }
 
 // WriteTempParquetFile 写入临时Parquet文件
-func (m *MockConcurrentBuffer) WriteTempParquetFile(ctx context.Context, filePath string, rows []DataRow) error {
+func (m *MockConcurrentBuffer) WriteTempParquetFile(ctx context.Context, filePath string, rows []buffer.DataRow) error {
 	// Mock实现，直接返回成功
 	return nil
 }
@@ -171,7 +173,7 @@ func (m *MockConcurrentBuffer) GetTableBufferKeys(ctx context.Context, tableName
 
 // AddDataPoint 添加数据点到缓冲区
 func (m *MockConcurrentBuffer) AddDataPoint(ctx context.Context, id string, data []byte, timestamp time.Time) {
-	row := DataRow{
+	row := buffer.DataRow{
 		ID:        id,
 		Timestamp: timestamp.UnixNano(),
 		Payload:   string(data),
