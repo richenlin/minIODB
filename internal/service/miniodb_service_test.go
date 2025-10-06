@@ -7,10 +7,10 @@ import (
 
 	pb "minIODB/api/proto/miniodb/v1"
 
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestMinIODBServiceBasicOperations 测试MinIODBService基本操作
@@ -22,7 +22,7 @@ func TestMinIODBServiceBasicOperations(t *testing.T) {
 	validWriteReq := &pb.WriteDataRequest{
 		Table: "test_table",
 		Data: &pb.DataRecord{
-			Id: "test_id",
+			Id:        "test_id",
 			Timestamp: timestamppb.New(time.Now()),
 			Payload: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
@@ -167,10 +167,10 @@ func TestMinIODBServiceHelperFunctions(t *testing.T) {
 
 	// 测试mapToProtobufStruct函数
 	testData := map[string]interface{}{
-		"id":    123,
+		"id":     123,
 		"name":   "test",
 		"active": true,
-		"score": 95.5,
+		"score":  95.5,
 	}
 
 	ctx := context.Background()
@@ -216,7 +216,7 @@ func TestMinIODBServiceValidationFailures(t *testing.T) {
 			req: &pb.WriteDataRequest{
 				Table: "",
 				Data: &pb.DataRecord{
-					Id: "test_id",
+					Id:        "test_id",
 					Timestamp: timestamppb.New(time.Now()),
 					Payload: &structpb.Struct{
 						Fields: map[string]*structpb.Value{
@@ -232,7 +232,7 @@ func TestMinIODBServiceValidationFailures(t *testing.T) {
 			req: &pb.WriteDataRequest{
 				Table: "test_table",
 				Data: &pb.DataRecord{
-					Id: "",
+					Id:        "",
 					Timestamp: timestamppb.New(time.Now()),
 					Payload: &structpb.Struct{
 						Fields: map[string]*structpb.Value{
