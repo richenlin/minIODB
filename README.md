@@ -122,7 +122,7 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-org/minIODB.git
+git clone https://github.com/richenlin/minIODB.git
 cd minIODB
 ```
 
