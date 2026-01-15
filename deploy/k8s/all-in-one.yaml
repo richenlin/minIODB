@@ -1,0 +1,486 @@
+# MinIODB Kubernetes 一体化部署配置
+# 包含所有必需的资源定义
+
+---
+# 命名空间
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: miniodb-system
+  labels:
+    name: miniodb-system
+    app.kubernetes.io/part-of: miniodb
+
+---
+# ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: miniodb-config
+  namespace: miniodb-system
+data:
+  # Redis 配置
+  redis-db: "0"
+  
+  # MinIO 配置
+  minio-bucket: "miniodb-data"
+  minio-backup-bucket: "miniodb-backup"
+  
+  # JWT 配置
+  jwt-expires-in: "24h"
+  
+  # 日志配置
+  log-level: "info"
+  log-format: "json"
+  
+  # 应用配置
+  buffer-size: "1000"
+  batch-size: "100"
+
+---
+# Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: miniodb-secrets
+  namespace: miniodb-system
+type: Opaque
+data:
+  # Redis 密码 (redis123)
+  redis-password: cmVkaXMxMjM=
+  
+  # MinIO 主存储凭据 (minioadmin/minioadmin123)
+  minio-access-key: bWluaW9hZG1pbg==
+  minio-secret-key: bWluaW9hZG1pbjEyMw==
+  
+  # MinIO 备份存储凭据
+  minio-backup-access-key: bWluaW9hZG1pbg==
+  minio-backup-secret-key: bWluaW9hZG1pbjEyMw==
+  
+  # JWT 密钥 (change-this-in-production)
+  jwt-secret: Y2hhbmdlLXRoaXMtaW4tcHJvZHVjdGlvbg==
+
+---
+# Redis StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: database
+spec:
+  serviceName: redis-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: redis-password
+        command:
+        - redis-server
+        - --requirepass
+        - $(REDIS_PASSWORD)
+        - --appendonly
+        - "yes"
+        - --maxmemory
+        - "1gb"
+        - --maxmemory-policy
+        - allkeys-lru
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app.kubernetes.io/name: redis
+
+---
+# MinIO StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: storage
+spec:
+  serviceName: minio-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-access-key
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-secret-key
+        command:
+        - minio
+        - server
+        - /data
+        - --console-address
+        - ":9001"
+        volumeMounts:
+        - name: minio-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: minio-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# MinIO Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-service
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: api
+  - port: 9001
+    targetPort: 9001
+    name: console
+  selector:
+    app.kubernetes.io/name: minio
+
+---
+# MinIO 初始化 Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: minio-init
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: minio-init
+        image: minio/mc:latest
+        env:
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-access-key
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-secret-key
+        - name: MINIO_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: miniodb-config
+              key: minio-bucket
+        - name: MINIO_BACKUP_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: miniodb-config
+              key: minio-backup-bucket
+        command:
+        - /bin/sh
+        - -c
+        - |
+          mc alias set minio http://minio-service:9000 $MINIO_ACCESS_KEY $MINIO_SECRET_KEY
+          mc mb minio/$MINIO_BUCKET --ignore-existing
+          mc mb minio/$MINIO_BACKUP_BUCKET --ignore-existing
+          echo "MinIO buckets created successfully"
+
+---
+# MinIODB Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miniodb
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: miniodb
+    app.kubernetes.io/component: application
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: miniodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: miniodb
+    spec:
+      containers:
+      - name: miniodb
+        image: miniodb:latest
+        ports:
+        - containerPort: 8080
+          name: grpc
+        - containerPort: 8081
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        # Redis 配置
+        - name: REDIS_HOST
+          value: "redis-service"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: redis-password
+        - name: REDIS_DB
+          valueFrom:
+            configMapKeyRef:
+              name: miniodb-config
+              key: redis-db
+        
+        # MinIO 配置
+        - name: MINIO_ENDPOINT
+          value: "minio-service:9000"
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-access-key
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: minio-secret-key
+        - name: MINIO_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: miniodb-config
+              key: minio-bucket
+        - name: MINIO_BACKUP_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: miniodb-config
+              key: minio-backup-bucket
+        
+        # 应用配置
+        - name: MINIODB_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: miniodb-config
+              key: log-level
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: miniodb-secrets
+              key: jwt-secret
+        - name: JWT_EXPIRATION
+          valueFrom:
+            configMapKeyRef:
+              name: miniodb-config
+              key: jwt-expires-in
+        
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        
+        livenessProbe:
+          httpGet:
+            path: /v1/health
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        
+        readinessProbe:
+          httpGet:
+            path: /v1/health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      
+      # 等待依赖服务
+      initContainers:
+      - name: wait-for-redis
+        image: busybox:1.35
+        command:
+        - sh
+        - -c
+        - |
+          until nc -z redis-service 6379; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+      - name: wait-for-minio
+        image: busybox:1.35
+        command:
+        - sh
+        - -c
+        - |
+          until nc -z minio-service 9000; do
+            echo "Waiting for MinIO..."
+            sleep 2
+          done
+
+---
+# MinIODB Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: miniodb-service
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: miniodb
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: grpc
+  - port: 8081
+    targetPort: 8081
+    name: http
+  - port: 9090
+    targetPort: 9090
+    name: metrics
+  selector:
+    app.kubernetes.io/name: miniodb
+
+---
+# MinIODB External Service (NodePort)
+apiVersion: v1
+kind: Service
+metadata:
+  name: miniodb-external
+  namespace: miniodb-system
+  labels:
+    app.kubernetes.io/name: miniodb
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080
+    name: grpc
+  - port: 8081
+    targetPort: 8081
+    nodePort: 30081
+    name: http
+  - port: 9090
+    targetPort: 9090
+    nodePort: 30090
+    name: metrics
+  selector:
+    app.kubernetes.io/name: miniodb
