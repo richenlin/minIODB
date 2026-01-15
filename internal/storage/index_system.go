@@ -21,11 +21,11 @@ type IndexSystem struct {
 	invertedIndexes  map[string]*InvertedIndex
 	bitmapIndexes    map[string]*BitmapIndex
 	compositeIndexes map[string]*CompositeIndex
-	
-	indexConfig      *IndexConfig
-	stats            *IndexStats
-	redisClient      *redis.Client
-	mutex            sync.RWMutex
+
+	indexConfig *IndexConfig
+	stats       *IndexStats
+	redisClient *redis.Client
+	mutex       sync.RWMutex
 }
 
 // IndexConfig 索引配置
@@ -35,54 +35,54 @@ type IndexConfig struct {
 	InvertedConfig    *InvertedConfig    `json:"inverted"`
 	BitmapConfig      *BitmapConfig      `json:"bitmap"`
 	CompositeConfig   *CompositeConfig   `json:"composite"`
-	
-	EnableAutoIndex   bool              `json:"enable_auto_index"`
-	IndexThreshold    int64             `json:"index_threshold"`
-	MaintenanceWindow string            `json:"maintenance_window"`
-	CompressionLevel  int               `json:"compression_level"`
-	CacheSize         int64             `json:"cache_size"`
+
+	EnableAutoIndex   bool   `json:"enable_auto_index"`
+	IndexThreshold    int64  `json:"index_threshold"`
+	MaintenanceWindow string `json:"maintenance_window"`
+	CompressionLevel  int    `json:"compression_level"`
+	CacheSize         int64  `json:"cache_size"`
 }
 
 // BloomFilterConfig BloomFilter配置
 type BloomFilterConfig struct {
-	FalsePositiveRate float64 `json:"false_positive_rate"`
-	EstimatedElements uint    `json:"estimated_elements"`
-	HashFunctions     uint    `json:"hash_functions"`
-	EnableCache       bool    `json:"enable_cache"`
+	FalsePositiveRate float64       `json:"false_positive_rate"`
+	EstimatedElements uint          `json:"estimated_elements"`
+	HashFunctions     uint          `json:"hash_functions"`
+	EnableCache       bool          `json:"enable_cache"`
 	TTL               time.Duration `json:"ttl"`
 }
 
 // MinMaxConfig MinMax索引配置
 type MinMaxConfig struct {
-	EnableStatistics  bool    `json:"enable_statistics"`
-	PrecisionDigits   int     `json:"precision_digits"`
-	CompressionType   string  `json:"compression_type"`
-	EnablePredicate   bool    `json:"enable_predicate"`
+	EnableStatistics bool   `json:"enable_statistics"`
+	PrecisionDigits  int    `json:"precision_digits"`
+	CompressionType  string `json:"compression_type"`
+	EnablePredicate  bool   `json:"enable_predicate"`
 }
 
 // InvertedConfig 倒排索引配置
 type InvertedConfig struct {
-	TokenizerType     string            `json:"tokenizer_type"`
-	EnableStemming    bool              `json:"enable_stemming"`
-	EnableStopWords   bool              `json:"enable_stop_words"`
-	MinTokenLength    int               `json:"min_token_length"`
-	MaxTokenLength    int               `json:"max_token_length"`
-	CustomStopWords   []string          `json:"custom_stop_words"`
-	FieldWeights      map[string]float64 `json:"field_weights"`
+	TokenizerType   string             `json:"tokenizer_type"`
+	EnableStemming  bool               `json:"enable_stemming"`
+	EnableStopWords bool               `json:"enable_stop_words"`
+	MinTokenLength  int                `json:"min_token_length"`
+	MaxTokenLength  int                `json:"max_token_length"`
+	CustomStopWords []string           `json:"custom_stop_words"`
+	FieldWeights    map[string]float64 `json:"field_weights"`
 }
 
 // BitmapConfig 位图索引配置
 type BitmapConfig struct {
-	CompressionType   string `json:"compression_type"`  // roaring, wah, ewah
-	EnableOptimization bool  `json:"enable_optimization"`
-	ChunkSize         int    `json:"chunk_size"`
+	CompressionType    string `json:"compression_type"` // roaring, wah, ewah
+	EnableOptimization bool   `json:"enable_optimization"`
+	ChunkSize          int    `json:"chunk_size"`
 }
 
 // CompositeConfig 复合索引配置
 type CompositeConfig struct {
-	MaxColumns        int      `json:"max_columns"`
-	EnablePartialMatch bool    `json:"enable_partial_match"`
-	SortOrder         []string `json:"sort_order"`
+	MaxColumns         int      `json:"max_columns"`
+	EnablePartialMatch bool     `json:"enable_partial_match"`
+	SortOrder          []string `json:"sort_order"`
 }
 
 // BloomFilterIndex BloomFilter索引
@@ -98,45 +98,45 @@ type BloomFilterIndex struct {
 
 // BloomStats BloomFilter统计
 type BloomStats struct {
-	TotalQueries     int64   `json:"total_queries"`
-	TruePositives    int64   `json:"true_positives"`
-	FalsePositives   int64   `json:"false_positives"`
-	TrueNegatives    int64   `json:"true_negatives"`
-	ActualFPRate     float64 `json:"actual_fp_rate"`
-	FilterSize       uint    `json:"filter_size"`
-	HashFunctions    uint    `json:"hash_functions"`
-	ElementCount     uint    `json:"element_count"`
-	LastReset        time.Time `json:"last_reset"`
+	TotalQueries   int64     `json:"total_queries"`
+	TruePositives  int64     `json:"true_positives"`
+	FalsePositives int64     `json:"false_positives"`
+	TrueNegatives  int64     `json:"true_negatives"`
+	ActualFPRate   float64   `json:"actual_fp_rate"`
+	FilterSize     uint      `json:"filter_size"`
+	HashFunctions  uint      `json:"hash_functions"`
+	ElementCount   uint      `json:"element_count"`
+	LastReset      time.Time `json:"last_reset"`
 }
 
 // MinMaxIndex MinMax索引
 type MinMaxIndex struct {
-	name        string
-	columnName  string
-	dataType    string
-	minValue    interface{}
-	maxValue    interface{}
-	nullCount   int64
-	totalCount  int64
-	config      *MinMaxConfig
-	statistics  *ColumnStatistics
-	lastUpdate  time.Time
-	mutex       sync.RWMutex
+	name       string
+	columnName string
+	dataType   string
+	minValue   interface{}
+	maxValue   interface{}
+	nullCount  int64
+	totalCount int64
+	config     *MinMaxConfig
+	statistics *ColumnStatistics
+	lastUpdate time.Time
+	mutex      sync.RWMutex
 }
 
 // ColumnStatistics 列统计信息
 type ColumnStatistics struct {
-	Mean            float64            `json:"mean"`
-	Median          float64            `json:"median"`
-	Mode            interface{}        `json:"mode"`
-	StandardDev     float64            `json:"standard_deviation"`
-	Variance        float64            `json:"variance"`
-	Percentiles     map[int]float64    `json:"percentiles"`
-	Histogram       map[string]int64   `json:"histogram"`
-	DistinctCount   int64              `json:"distinct_count"`
-	Cardinality     float64            `json:"cardinality"`
-	Skewness        float64            `json:"skewness"`
-	Kurtosis        float64            `json:"kurtosis"`
+	Mean          float64          `json:"mean"`
+	Median        float64          `json:"median"`
+	Mode          interface{}      `json:"mode"`
+	StandardDev   float64          `json:"standard_deviation"`
+	Variance      float64          `json:"variance"`
+	Percentiles   map[int]float64  `json:"percentiles"`
+	Histogram     map[string]int64 `json:"histogram"`
+	DistinctCount int64            `json:"distinct_count"`
+	Cardinality   float64          `json:"cardinality"`
+	Skewness      float64          `json:"skewness"`
+	Kurtosis      float64          `json:"kurtosis"`
 }
 
 // InvertedIndex 倒排索引
@@ -155,108 +155,108 @@ type InvertedIndex struct {
 
 // PostingList 倒排列表
 type PostingList struct {
-	Term           string         `json:"term"`
-	DocumentFreq   int64          `json:"document_frequency"`
-	TotalFreq      int64          `json:"total_frequency"`
-	Postings       []*Posting     `json:"postings"`
-	LastUpdate     time.Time      `json:"last_update"`
+	Term         string     `json:"term"`
+	DocumentFreq int64      `json:"document_frequency"`
+	TotalFreq    int64      `json:"total_frequency"`
+	Postings     []*Posting `json:"postings"`
+	LastUpdate   time.Time  `json:"last_update"`
 }
 
 // Posting 倒排记录
 type Posting struct {
-	DocumentID     string    `json:"document_id"`
-	TermFreq       int       `json:"term_frequency"`
-	Positions      []int     `json:"positions"`
-	Score          float64   `json:"score"`
-	LastAccessed   time.Time `json:"last_accessed"`
+	DocumentID   string    `json:"document_id"`
+	TermFreq     int       `json:"term_frequency"`
+	Positions    []int     `json:"positions"`
+	Score        float64   `json:"score"`
+	LastAccessed time.Time `json:"last_accessed"`
 }
 
 // InvertedStats 倒排索引统计
 type InvertedStats struct {
-	TotalTerms       int64             `json:"total_terms"`
-	TotalDocuments   int64             `json:"total_documents"`
-	TotalPostings    int64             `json:"total_postings"`
-	AvgDocLength     float64           `json:"avg_doc_length"`
-	VocabularySize   int64             `json:"vocabulary_size"`
-	IndexSize        int64             `json:"index_size"`
-	CompressionRatio float64           `json:"compression_ratio"`
+	TotalTerms       int64                    `json:"total_terms"`
+	TotalDocuments   int64                    `json:"total_documents"`
+	TotalPostings    int64                    `json:"total_postings"`
+	AvgDocLength     float64                  `json:"avg_doc_length"`
+	VocabularySize   int64                    `json:"vocabulary_size"`
+	IndexSize        int64                    `json:"index_size"`
+	CompressionRatio float64                  `json:"compression_ratio"`
 	QueryPerformance map[string]time.Duration `json:"query_performance"`
 }
 
 // BitmapIndex 位图索引
 type BitmapIndex struct {
-	name          string
-	columnName    string
-	bitmaps       map[interface{}]*RoaringBitmap
-	cardinality   int64
-	config        *BitmapConfig
-	stats         *BitmapStats
-	lastUpdate    time.Time
-	mutex         sync.RWMutex
+	name        string
+	columnName  string
+	bitmaps     map[interface{}]*RoaringBitmap
+	cardinality int64
+	config      *BitmapConfig
+	stats       *BitmapStats
+	lastUpdate  time.Time
+	mutex       sync.RWMutex
 }
 
 // RoaringBitmap Roaring位图
 type RoaringBitmap struct {
-	bits         map[uint32]bool
-	cardinality  uint32
-	compressed   bool
-	lastAccess   time.Time
+	bits        map[uint32]bool
+	cardinality uint32
+	compressed  bool
+	lastAccess  time.Time
 }
 
 // BitmapStats 位图索引统计
 type BitmapStats struct {
-	TotalBitmaps     int64   `json:"total_bitmaps"`
-	TotalBits        int64   `json:"total_bits"`
-	CompressionRatio float64 `json:"compression_ratio"`
+	TotalBitmaps     int64         `json:"total_bitmaps"`
+	TotalBits        int64         `json:"total_bits"`
+	CompressionRatio float64       `json:"compression_ratio"`
 	QueryTime        time.Duration `json:"avg_query_time"`
 	UpdateTime       time.Duration `json:"avg_update_time"`
-	MemoryUsage      int64   `json:"memory_usage"`
+	MemoryUsage      int64         `json:"memory_usage"`
 }
 
 // CompositeIndex 复合索引
 type CompositeIndex struct {
-	name          string
-	columns       []string
-	keyIndex      map[string]*CompositeKey
-	config        *CompositeConfig
-	stats         *CompositeStats
-	lastUpdate    time.Time
-	mutex         sync.RWMutex
+	name       string
+	columns    []string
+	keyIndex   map[string]*CompositeKey
+	config     *CompositeConfig
+	stats      *CompositeStats
+	lastUpdate time.Time
+	mutex      sync.RWMutex
 }
 
 // CompositeKey 复合键
 type CompositeKey struct {
-	Values        []interface{} `json:"values"`
-	DocumentIDs   []string      `json:"document_ids"`
-	KeyHash       string        `json:"key_hash"`
-	Cardinality   int64         `json:"cardinality"`
-	LastAccessed  time.Time     `json:"last_accessed"`
+	Values       []interface{} `json:"values"`
+	DocumentIDs  []string      `json:"document_ids"`
+	KeyHash      string        `json:"key_hash"`
+	Cardinality  int64         `json:"cardinality"`
+	LastAccessed time.Time     `json:"last_accessed"`
 }
 
 // CompositeStats 复合索引统计
 type CompositeStats struct {
-	TotalKeys        int64         `json:"total_keys"`
-	TotalDocuments   int64         `json:"total_documents"`
-	AvgKeyLength     float64       `json:"avg_key_length"`
-	KeyDistribution  map[int]int64 `json:"key_distribution"`
+	TotalKeys        int64                    `json:"total_keys"`
+	TotalDocuments   int64                    `json:"total_documents"`
+	AvgKeyLength     float64                  `json:"avg_key_length"`
+	KeyDistribution  map[int]int64            `json:"key_distribution"`
 	QueryPerformance map[string]time.Duration `json:"query_performance"`
-	IndexEfficiency  float64       `json:"index_efficiency"`
+	IndexEfficiency  float64                  `json:"index_efficiency"`
 }
 
 // IndexStats 索引系统统计
 type IndexStats struct {
-	TotalIndexes     int64                    `json:"total_indexes"`
-	IndexTypes       map[string]int64         `json:"index_types"`
-	TotalQueries     int64                    `json:"total_queries"`
-	CacheHitRate     float64                  `json:"cache_hit_rate"`
-	AvgQueryTime     time.Duration            `json:"avg_query_time"`
-	IndexSizes       map[string]int64         `json:"index_sizes"`
-	MemoryUsage      int64                    `json:"memory_usage"`
-	DiskUsage        int64                    `json:"disk_usage"`
-	MaintenanceTime  time.Duration            `json:"maintenance_time"`
-	LastMaintenance  time.Time                `json:"last_maintenance"`
-	IndexEfficiency  map[string]float64       `json:"index_efficiency"`
-	mutex            sync.RWMutex
+	TotalIndexes    int64              `json:"total_indexes"`
+	IndexTypes      map[string]int64   `json:"index_types"`
+	TotalQueries    int64              `json:"total_queries"`
+	CacheHitRate    float64            `json:"cache_hit_rate"`
+	AvgQueryTime    time.Duration      `json:"avg_query_time"`
+	IndexSizes      map[string]int64   `json:"index_sizes"`
+	MemoryUsage     int64              `json:"memory_usage"`
+	DiskUsage       int64              `json:"disk_usage"`
+	MaintenanceTime time.Duration      `json:"maintenance_time"`
+	LastMaintenance time.Time          `json:"last_maintenance"`
+	IndexEfficiency map[string]float64 `json:"index_efficiency"`
+	mutex           sync.RWMutex
 }
 
 // Tokenizer 分词器
@@ -275,33 +275,33 @@ type Stemmer struct {
 
 // QueryPredicate 查询谓词
 type QueryPredicate struct {
-	Column     string      `json:"column"`
-	Operator   string      `json:"operator"`    // =, !=, <, <=, >, >=, IN, LIKE, CONTAINS
-	Value      interface{} `json:"value"`
-	Values     []interface{} `json:"values"`    // for IN operator
-	CaseSensitive bool     `json:"case_sensitive"`
+	Column        string        `json:"column"`
+	Operator      string        `json:"operator"` // =, !=, <, <=, >, >=, IN, LIKE, CONTAINS
+	Value         interface{}   `json:"value"`
+	Values        []interface{} `json:"values"` // for IN operator
+	CaseSensitive bool          `json:"case_sensitive"`
 }
 
 // IndexQuery 索引查询
 type IndexQuery struct {
-	IndexName    string            `json:"index_name"`
-	Predicates   []*QueryPredicate `json:"predicates"`
-	LogicalOp    string            `json:"logical_op"` // AND, OR, NOT
-	OrderBy      []string          `json:"order_by"`
-	Limit        int               `json:"limit"`
-	Offset       int               `json:"offset"`
+	IndexName  string            `json:"index_name"`
+	Predicates []*QueryPredicate `json:"predicates"`
+	LogicalOp  string            `json:"logical_op"` // AND, OR, NOT
+	OrderBy    []string          `json:"order_by"`
+	Limit      int               `json:"limit"`
+	Offset     int               `json:"offset"`
 }
 
 // QueryResult 查询结果
 type QueryResult struct {
-	DocumentIDs    []string          `json:"document_ids"`
-	TotalMatches   int64             `json:"total_matches"`
-	QueryTime      time.Duration     `json:"query_time"`
-	IndexesUsed    []string          `json:"indexes_used"`
-	EstimatedCost  float64           `json:"estimated_cost"`
-	ActualCost     float64           `json:"actual_cost"`
-	CacheHit       bool              `json:"cache_hit"`
-	Metadata       map[string]interface{} `json:"metadata"`
+	DocumentIDs   []string               `json:"document_ids"`
+	TotalMatches  int64                  `json:"total_matches"`
+	QueryTime     time.Duration          `json:"query_time"`
+	IndexesUsed   []string               `json:"indexes_used"`
+	EstimatedCost float64                `json:"estimated_cost"`
+	ActualCost    float64                `json:"actual_cost"`
+	CacheHit      bool                   `json:"cache_hit"`
+	Metadata      map[string]interface{} `json:"metadata"`
 }
 
 // NewIndexSystem 创建索引系统
@@ -353,9 +353,9 @@ func NewDefaultIndexConfig() *IndexConfig {
 			ChunkSize:          1024,
 		},
 		CompositeConfig: &CompositeConfig{
-			MaxColumns:        5,
+			MaxColumns:         5,
 			EnablePartialMatch: true,
-			SortOrder:         []string{"asc"},
+			SortOrder:          []string{"asc"},
 		},
 		EnableAutoIndex:   true,
 		IndexThreshold:    10000,
@@ -422,7 +422,7 @@ func (is *IndexSystem) CreateInvertedIndex(name, columnName string) error {
 	defer is.mutex.Unlock()
 
 	config := is.indexConfig.InvertedConfig
-	
+
 	index := &InvertedIndex{
 		name:       name,
 		columnName: columnName,
@@ -470,7 +470,7 @@ func (is *IndexSystem) CreateCompositeIndex(name string, columns []string) error
 	defer is.mutex.Unlock()
 
 	if len(columns) > is.indexConfig.CompositeConfig.MaxColumns {
-		return fmt.Errorf("too many columns for composite index: %d > %d", 
+		return fmt.Errorf("too many columns for composite index: %d > %d",
 			len(columns), is.indexConfig.CompositeConfig.MaxColumns)
 	}
 
@@ -527,7 +527,7 @@ func (is *IndexSystem) TestBloomFilter(indexName string, value string) (bool, er
 	defer index.mutex.RUnlock()
 
 	result := index.bloomFilter.TestString(value)
-	
+
 	// 更新统计信息
 	index.stats.TotalQueries++
 	if result {
@@ -637,8 +637,8 @@ func (is *IndexSystem) QueryMinMaxIndex(indexName string, predicate *QueryPredic
 	switch predicate.Operator {
 	case "=":
 		// 值必须在min和max之间
-		return is.compareValues(predicate.Value, index.minValue) >= 0 && 
-		       is.compareValues(predicate.Value, index.maxValue) <= 0, nil
+		return is.compareValues(predicate.Value, index.minValue) >= 0 &&
+			is.compareValues(predicate.Value, index.maxValue) <= 0, nil
 	case "<":
 		// 如果最小值都大于等于查询值，则没有匹配
 		return is.compareValues(index.minValue, predicate.Value) < 0, nil
@@ -669,7 +669,7 @@ func (is *IndexSystem) AddToInvertedIndex(indexName, documentID, text string) er
 
 	// 分词
 	tokens := index.tokenizer.Tokenize(text)
-	
+
 	// 词干提取
 	if index.stemmer.enabled {
 		tokens = index.stemmer.StemTokens(tokens)
@@ -680,9 +680,9 @@ func (is *IndexSystem) AddToInvertedIndex(indexName, documentID, text string) er
 		postingList, exists := index.termIndex[token]
 		if !exists {
 			postingList = &PostingList{
-				Term:         token,
-				Postings:     make([]*Posting, 0),
-				LastUpdate:   time.Now(),
+				Term:       token,
+				Postings:   make([]*Posting, 0),
+				LastUpdate: time.Now(),
 			}
 			index.termIndex[token] = postingList
 		}
@@ -768,24 +768,24 @@ func (is *IndexSystem) QueryInvertedIndex(indexName, query string) ([]*Posting, 
 func (is *IndexSystem) calculateTFIDF(posting *Posting, totalDocs int64) float64 {
 	// TF: term frequency
 	tf := float64(posting.TermFreq)
-	
+
 	// IDF: inverse document frequency (简化计算)
 	// 这里需要知道包含该term的文档数，简化起见使用posting的文档频率
 	idf := math.Log(float64(totalDocs) / (1.0 + 1.0)) // 简化计算
-	
+
 	return tf * idf
 }
 
 // NewTokenizer 创建分词器
 func NewTokenizer(config *InvertedConfig) *Tokenizer {
 	stopWords := make(map[string]bool)
-	
+
 	// 默认停用词
 	defaultStopWords := []string{"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by"}
 	for _, word := range defaultStopWords {
 		stopWords[word] = true
 	}
-	
+
 	// 自定义停用词
 	for _, word := range config.CustomStopWords {
 		stopWords[word] = true
@@ -803,25 +803,25 @@ func NewTokenizer(config *InvertedConfig) *Tokenizer {
 func (t *Tokenizer) Tokenize(text string) []string {
 	// 简单的空格分词（实际应用中可以使用更复杂的分词器）
 	words := strings.Fields(strings.ToLower(text))
-	
+
 	var tokens []string
 	for _, word := range words {
 		// 去除标点符号
 		word = strings.Trim(word, ".,!?;:\"'()[]{}'-")
-		
+
 		// 检查长度
 		if len(word) < t.minLength || len(word) > t.maxLength {
 			continue
 		}
-		
+
 		// 检查停用词
 		if t.stopWords[word] {
 			continue
 		}
-		
+
 		tokens = append(tokens, word)
 	}
-	
+
 	return tokens
 }
 
@@ -838,13 +838,13 @@ func (s *Stemmer) StemTokens(tokens []string) []string {
 	if !s.enabled {
 		return tokens
 	}
-	
+
 	// 简单的英语词干提取（实际应用中可以使用Porter Stemmer等算法）
 	stemmed := make([]string, len(tokens))
 	for i, token := range tokens {
 		stemmed[i] = s.stemWord(token)
 	}
-	
+
 	return stemmed
 }
 
@@ -852,13 +852,13 @@ func (s *Stemmer) StemTokens(tokens []string) []string {
 func (s *Stemmer) stemWord(word string) string {
 	// 简单的后缀去除规则
 	suffixes := []string{"ing", "ed", "er", "est", "ly", "s"}
-	
+
 	for _, suffix := range suffixes {
 		if strings.HasSuffix(word, suffix) && len(word) > len(suffix)+2 {
 			return word[:len(word)-len(suffix)]
 		}
 	}
-	
+
 	return word
 }
 
@@ -866,7 +866,7 @@ func (s *Stemmer) stemWord(word string) string {
 func (is *IndexSystem) updateIndexStats(indexType string, delta int64) {
 	is.stats.mutex.Lock()
 	defer is.stats.mutex.Unlock()
-	
+
 	is.stats.TotalIndexes += delta
 	is.stats.IndexTypes[indexType] += delta
 }
@@ -875,13 +875,21 @@ func (is *IndexSystem) updateIndexStats(indexType string, delta int64) {
 func (is *IndexSystem) GetStats() *IndexStats {
 	is.stats.mutex.RLock()
 	defer is.stats.mutex.RUnlock()
-	
-	// 创建副本
-	statsCopy := *is.stats
-	statsCopy.IndexTypes = make(map[string]int64)
-	statsCopy.IndexSizes = make(map[string]int64)
-	statsCopy.IndexEfficiency = make(map[string]float64)
-	
+
+	statsCopy := &IndexStats{
+		TotalIndexes:    is.stats.TotalIndexes,
+		TotalQueries:    is.stats.TotalQueries,
+		CacheHitRate:    is.stats.CacheHitRate,
+		AvgQueryTime:    is.stats.AvgQueryTime,
+		MemoryUsage:     is.stats.MemoryUsage,
+		DiskUsage:       is.stats.DiskUsage,
+		MaintenanceTime: is.stats.MaintenanceTime,
+		LastMaintenance: is.stats.LastMaintenance,
+		IndexTypes:      make(map[string]int64),
+		IndexSizes:      make(map[string]int64),
+		IndexEfficiency: make(map[string]float64),
+	}
+
 	for k, v := range is.stats.IndexTypes {
 		statsCopy.IndexTypes[k] = v
 	}
@@ -891,37 +899,37 @@ func (is *IndexSystem) GetStats() *IndexStats {
 	for k, v := range is.stats.IndexEfficiency {
 		statsCopy.IndexEfficiency[k] = v
 	}
-	
-	return &statsCopy
+
+	return statsCopy
 }
 
 // OptimizeIndexes 优化索引
 func (is *IndexSystem) OptimizeIndexes(ctx context.Context) error {
 	log.Println("Starting index optimization...")
-	
+
 	startTime := time.Now()
-	
+
 	// 优化BloomFilter索引
 	if err := is.optimizeBloomFilters(); err != nil {
 		log.Printf("Failed to optimize bloom filters: %v", err)
 	}
-	
+
 	// 优化MinMax索引
 	if err := is.optimizeMinMaxIndexes(); err != nil {
 		log.Printf("Failed to optimize minmax indexes: %v", err)
 	}
-	
+
 	// 优化倒排索引
 	if err := is.optimizeInvertedIndexes(); err != nil {
 		log.Printf("Failed to optimize inverted indexes: %v", err)
 	}
-	
+
 	// 更新统计信息
 	is.stats.mutex.Lock()
 	is.stats.MaintenanceTime = time.Since(startTime)
 	is.stats.LastMaintenance = time.Now()
 	is.stats.mutex.Unlock()
-	
+
 	log.Printf("Index optimization completed in %v", time.Since(startTime))
 	return nil
 }
@@ -934,15 +942,15 @@ func (is *IndexSystem) optimizeBloomFilters() error {
 		filters = append(filters, filter)
 	}
 	is.mutex.RUnlock()
-	
+
 	for _, filter := range filters {
 		filter.mutex.Lock()
-		
+
 		// 检查是否需要重建（false positive rate过高）
 		if filter.stats.ActualFPRate > filter.config.FalsePositiveRate*2 {
-			log.Printf("Rebuilding bloom filter %s due to high FP rate: %.4f", 
+			log.Printf("Rebuilding bloom filter %s due to high FP rate: %.4f",
 				filter.name, filter.stats.ActualFPRate)
-			
+
 			// 重建过程（这里简化处理）
 			newSize := filter.stats.ElementCount * 2
 			filter.bloomFilter = bloom.NewWithEstimates(uint(newSize), filter.config.FalsePositiveRate)
@@ -950,10 +958,10 @@ func (is *IndexSystem) optimizeBloomFilters() error {
 			filter.stats.FalsePositives = 0
 			filter.stats.TotalQueries = 0
 		}
-		
+
 		filter.mutex.Unlock()
 	}
-	
+
 	return nil
 }
 
@@ -965,20 +973,20 @@ func (is *IndexSystem) optimizeMinMaxIndexes() error {
 		indexes = append(indexes, index)
 	}
 	is.mutex.RUnlock()
-	
+
 	for _, index := range indexes {
 		index.mutex.Lock()
-		
+
 		// 更新统计信息
 		if index.config.EnableStatistics && index.totalCount > 0 {
 			// 计算列统计信息（这里简化处理）
 			index.statistics.DistinctCount = index.totalCount // 简化
 			index.statistics.Cardinality = float64(index.statistics.DistinctCount) / float64(index.totalCount)
 		}
-		
+
 		index.mutex.Unlock()
 	}
-	
+
 	return nil
 }
 
@@ -990,10 +998,10 @@ func (is *IndexSystem) optimizeInvertedIndexes() error {
 		indexes = append(indexes, index)
 	}
 	is.mutex.RUnlock()
-	
+
 	for _, index := range indexes {
 		index.mutex.Lock()
-		
+
 		// 清理过期的posting
 		for term, postingList := range index.termIndex {
 			filteredPostings := make([]*Posting, 0, len(postingList.Postings))
@@ -1005,19 +1013,19 @@ func (is *IndexSystem) optimizeInvertedIndexes() error {
 			}
 			postingList.Postings = filteredPostings
 			postingList.DocumentFreq = int64(len(filteredPostings))
-			
+
 			// 如果没有posting了，删除这个term
 			if len(filteredPostings) == 0 {
 				delete(index.termIndex, term)
 			}
 		}
-		
+
 		// 更新统计信息
 		index.stats.TotalTerms = int64(len(index.termIndex))
 		index.stats.VocabularySize = index.stats.TotalTerms
-		
+
 		index.mutex.Unlock()
 	}
-	
+
 	return nil
-} 
+}

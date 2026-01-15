@@ -15,6 +15,7 @@ import (
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
 	"minIODB/internal/query"
+	"minIODB/internal/security"
 
 	"github.com/go-redis/redis/v8"
 	"google.golang.org/grpc/codes"
@@ -187,23 +188,9 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 
 // validateQueryRequest 验证查询请求
 func (s *MinIODBService) validateQueryRequest(req *miniodb.QueryDataRequest) error {
-	if req.Sql == "" {
-		return status.Error(codes.InvalidArgument, "SQL query is required and cannot be empty")
+	if err := security.DefaultSanitizer.ValidateSelectQuery(req.Sql); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
-
-	if len(req.Sql) > 10000 {
-		return status.Error(codes.InvalidArgument, "SQL query cannot exceed 10000 characters")
-	}
-
-	// 基本的SQL注入防护（简单检查）
-	lowerSQL := strings.ToLower(req.Sql)
-	dangerousKeywords := []string{"drop", "delete", "truncate", "alter", "create", "insert", "update"}
-	for _, keyword := range dangerousKeywords {
-		if strings.Contains(lowerSQL, keyword) {
-			return status.Error(codes.InvalidArgument, fmt.Sprintf("SQL contains dangerous keyword: %s", keyword))
-		}
-	}
-
 	return nil
 }
 
@@ -242,11 +229,17 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 	// OLAP系统中的更新策略：先删除后重新插入
 	// 1. 首先尝试删除现有记录
 	if s.querier != nil {
-		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE id = '%s'", tableName, req.Id)
-		_, err := s.querier.ExecuteQuery(deleteSQL)
+		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
+		if err != nil {
+			log.Printf("ERROR: Failed to build safe delete SQL: %v", err)
+			return &miniodb.UpdateDataResponse{
+				Success: false,
+				Message: fmt.Sprintf("Invalid parameters: %v", err),
+			}, nil
+		}
+		_, err = s.querier.ExecuteQuery(deleteSQL)
 		if err != nil {
 			log.Printf("WARN: Delete query during update failed: %v", err)
-			// 即使删除失败，我们仍然可以继续插入（可能是新记录）
 		}
 	}
 
@@ -374,10 +367,15 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 
 	// 1. 从已持久化的数据中删除（通过DuckDB执行DELETE语句）
 	if s.querier != nil {
-		// 构建DELETE SQL语句
-		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE id = '%s'", tableName, req.Id)
+		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
+		if err != nil {
+			log.Printf("ERROR: Failed to build safe delete SQL: %v", err)
+			return &miniodb.DeleteDataResponse{
+				Success: false,
+				Message: fmt.Sprintf("Invalid parameters: %v", err),
+			}, nil
+		}
 
-		// 执行删除操作
 		result, err := s.querier.ExecuteQuery(deleteSQL)
 		if err != nil {
 			log.Printf("WARN: Delete query failed: %v", err)

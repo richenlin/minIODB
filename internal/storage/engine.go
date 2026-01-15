@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/internal/config"
 	"github.com/go-redis/redis/v8"
+	"minIODB/internal/config"
 )
 
 // StorageEngine 存储引擎优化器 - 第四阶段集成器
@@ -17,23 +17,23 @@ type StorageEngine struct {
 	shardOptimizer   *ShardOptimizer
 	indexSystem      *IndexSystem
 	memoryOptimizer  *MemoryOptimizer
-	
-	config           *EngineConfig
-	stats            *EngineStats
-	scheduler        *OptimizationScheduler
-	monitor          *PerformanceMonitor
-	
-	isRunning        bool
-	mutex            sync.RWMutex
+
+	config    *EngineConfig
+	stats     *EngineStats
+	scheduler *OptimizationScheduler
+	monitor   *PerformanceMonitor
+
+	isRunning bool
+	mutex     sync.RWMutex
 }
 
 // EngineConfig 引擎配置
 type EngineConfig struct {
-	ParquetConfig    *ParquetConfig `json:"parquet"`
-	ShardingConfig   *ShardingOptimizerConfig `json:"sharding"`
-	IndexConfig      *IndexSystemConfig      `json:"indexing"`
-	MemoryConfig     *MemoryOptimizerConfig  `json:"memory"`
-	
+	ParquetConfig  *ParquetConfig           `json:"parquet"`
+	ShardingConfig *ShardingOptimizerConfig `json:"sharding"`
+	IndexConfig    *IndexSystemConfig       `json:"indexing"`
+	MemoryConfig   *MemoryOptimizerConfig   `json:"memory"`
+
 	AutoOptimization bool          `json:"auto_optimization"`
 	OptimizeInterval time.Duration `json:"optimize_interval"`
 	PerformanceMode  string        `json:"performance_mode"` // balanced, throughput, latency, storage
@@ -53,108 +53,108 @@ type ParquetConfig struct {
 
 // ShardingOptimizerConfig 分片优化配置
 type ShardingOptimizerConfig struct {
-	DefaultStrategy     string  `json:"default_strategy"`
-	AutoRebalance       bool    `json:"auto_rebalance"`
-	HotColdSeparation   bool    `json:"hot_cold_separation"`
-	LocalityOptimization bool   `json:"locality_optimization"`
-	RebalanceThreshold  float64 `json:"rebalance_threshold"`
-	MigrationLimit      int     `json:"migration_limit"`
+	DefaultStrategy      string  `json:"default_strategy"`
+	AutoRebalance        bool    `json:"auto_rebalance"`
+	HotColdSeparation    bool    `json:"hot_cold_separation"`
+	LocalityOptimization bool    `json:"locality_optimization"`
+	RebalanceThreshold   float64 `json:"rebalance_threshold"`
+	MigrationLimit       int     `json:"migration_limit"`
 }
 
 // IndexSystemConfig 索引系统配置
 type IndexSystemConfig struct {
-	AutoIndexCreation   bool              `json:"auto_index_creation"`
-	IndexTypes          []string          `json:"index_types"`
-	BloomFilterEnabled  bool              `json:"bloom_filter_enabled"`
-	MinMaxEnabled       bool              `json:"minmax_enabled"`
-	InvertedEnabled     bool              `json:"inverted_enabled"`
-	CompositeEnabled    bool              `json:"composite_enabled"`
-	MaintenanceInterval time.Duration     `json:"maintenance_interval"`
+	AutoIndexCreation   bool                   `json:"auto_index_creation"`
+	IndexTypes          []string               `json:"index_types"`
+	BloomFilterEnabled  bool                   `json:"bloom_filter_enabled"`
+	MinMaxEnabled       bool                   `json:"minmax_enabled"`
+	InvertedEnabled     bool                   `json:"inverted_enabled"`
+	CompositeEnabled    bool                   `json:"composite_enabled"`
+	MaintenanceInterval time.Duration          `json:"maintenance_interval"`
 	CustomConfig        map[string]interface{} `json:"custom_config"`
 }
 
 // MemoryOptimizerConfig 内存优化配置
 type MemoryOptimizerConfig struct {
-	EnablePooling       bool              `json:"enable_pooling"`
-	EnableZeroCopy      bool              `json:"enable_zero_copy"`
-	BufferOptimization  bool              `json:"buffer_optimization"`
-	GCOptimization      bool              `json:"gc_optimization"`
-	MaxMemoryUsage      int64             `json:"max_memory_usage"`
-	MemoryPoolSizes     map[string]int    `json:"memory_pool_sizes"`
-	GCInterval          time.Duration     `json:"gc_interval"`
+	EnablePooling      bool           `json:"enable_pooling"`
+	EnableZeroCopy     bool           `json:"enable_zero_copy"`
+	BufferOptimization bool           `json:"buffer_optimization"`
+	GCOptimization     bool           `json:"gc_optimization"`
+	MaxMemoryUsage     int64          `json:"max_memory_usage"`
+	MemoryPoolSizes    map[string]int `json:"memory_pool_sizes"`
+	GCInterval         time.Duration  `json:"gc_interval"`
 }
 
 // EngineStats 引擎统计
 type EngineStats struct {
 	// 性能指标
-	QueryLatency        time.Duration     `json:"query_latency"`
-	WriteLatency        time.Duration     `json:"write_latency"`
-	Throughput          float64           `json:"throughput"`        // queries/second
-	CompressionRatio    float64           `json:"compression_ratio"`
-	StorageEfficiency   float64           `json:"storage_efficiency"`
-	CacheHitRate        float64           `json:"cache_hit_rate"`
-	
+	QueryLatency      time.Duration `json:"query_latency"`
+	WriteLatency      time.Duration `json:"write_latency"`
+	Throughput        float64       `json:"throughput"` // queries/second
+	CompressionRatio  float64       `json:"compression_ratio"`
+	StorageEfficiency float64       `json:"storage_efficiency"`
+	CacheHitRate      float64       `json:"cache_hit_rate"`
+
 	// 优化效果
-	PerformanceGain     float64           `json:"performance_gain"`  // percentage
-	StorageSavings      float64           `json:"storage_savings"`   // percentage
-	MemoryEfficiency    float64           `json:"memory_efficiency"`
-	IndexEffectiveness  float64           `json:"index_effectiveness"`
-	
+	PerformanceGain    float64 `json:"performance_gain"` // percentage
+	StorageSavings     float64 `json:"storage_savings"`  // percentage
+	MemoryEfficiency   float64 `json:"memory_efficiency"`
+	IndexEffectiveness float64 `json:"index_effectiveness"`
+
 	// 系统状态
-	TotalOptimizations  int64             `json:"total_optimizations"`
-	LastOptimization    time.Time         `json:"last_optimization"`
-	OptimizationTime    time.Duration     `json:"optimization_time"`
-	SystemHealth        float64           `json:"system_health"`     // 0.0-1.0
-	
+	TotalOptimizations int64         `json:"total_optimizations"`
+	LastOptimization   time.Time     `json:"last_optimization"`
+	OptimizationTime   time.Duration `json:"optimization_time"`
+	SystemHealth       float64       `json:"system_health"` // 0.0-1.0
+
 	// 组件统计
-	ParquetStats        *ParquetStats     `json:"parquet_stats"`
-	ShardStats          *ShardStats       `json:"shard_stats"`
-	IndexStats          *IndexStats       `json:"index_stats"`
-	MemoryStats         *MemoryStats      `json:"memory_stats"`
-	
-	mutex               sync.RWMutex
+	ParquetStats *ParquetStats `json:"parquet_stats"`
+	ShardStats   *ShardStats   `json:"shard_stats"`
+	IndexStats   *IndexStats   `json:"index_stats"`
+	MemoryStats  *MemoryStats  `json:"memory_stats"`
+
+	mutex sync.RWMutex
 }
 
 // OptimizationScheduler 优化调度器
 type OptimizationScheduler struct {
-	tasks            []*OptimizationTask
-	runningTasks     map[string]*OptimizationTask
-	scheduler        *time.Ticker
-	taskQueue        chan *OptimizationTask
-	workers          []*OptimizationWorker
-	workerCount      int
-	isRunning        bool
-	mutex            sync.RWMutex
+	tasks        []*OptimizationTask
+	runningTasks map[string]*OptimizationTask
+	scheduler    *time.Ticker
+	taskQueue    chan *OptimizationTask
+	workers      []*OptimizationWorker
+	workerCount  int
+	isRunning    bool
+	mutex        sync.RWMutex
 }
 
 // OptimizationTask 优化任务
 type OptimizationTask struct {
-	ID          string            `json:"id"`
-	Type        string            `json:"type"`        // parquet, shard, index, memory, composite
-	Priority    int               `json:"priority"`    // 1-10
-	Schedule    string            `json:"schedule"`    // cron expression or "immediate"
-	Target      string            `json:"target"`      // specific component or "all"
-	Parameters  map[string]interface{} `json:"parameters"`
-	Status      string            `json:"status"`      // pending, running, completed, failed
-	Progress    float64           `json:"progress"`    // 0.0-1.0
-	StartTime   time.Time         `json:"start_time"`
-	EndTime     time.Time         `json:"end_time"`
-	Duration    time.Duration     `json:"duration"`
-	Result      *OptimizationResult `json:"result"`
-	Error       string            `json:"error"`
+	ID         string                 `json:"id"`
+	Type       string                 `json:"type"`     // parquet, shard, index, memory, composite
+	Priority   int                    `json:"priority"` // 1-10
+	Schedule   string                 `json:"schedule"` // cron expression or "immediate"
+	Target     string                 `json:"target"`   // specific component or "all"
+	Parameters map[string]interface{} `json:"parameters"`
+	Status     string                 `json:"status"`   // pending, running, completed, failed
+	Progress   float64                `json:"progress"` // 0.0-1.0
+	StartTime  time.Time              `json:"start_time"`
+	EndTime    time.Time              `json:"end_time"`
+	Duration   time.Duration          `json:"duration"`
+	Result     *OptimizationResult    `json:"result"`
+	Error      string                 `json:"error"`
 }
 
 // OptimizationResult 优化结果
 type OptimizationResult struct {
-	Success             bool              `json:"success"`
-	PerformanceImprovement float64        `json:"performance_improvement"` // percentage
-	StorageSavings      float64           `json:"storage_savings"`         // bytes
-	MemorySavings       float64           `json:"memory_savings"`          // bytes
-	IndexesCreated      int               `json:"indexes_created"`
-	ShardsRebalanced    int               `json:"shards_rebalanced"`
-	CompressionGain     float64           `json:"compression_gain"`        // percentage
-	Metrics             map[string]float64 `json:"metrics"`
-	Recommendations     []string          `json:"recommendations"`
+	Success                bool               `json:"success"`
+	PerformanceImprovement float64            `json:"performance_improvement"` // percentage
+	StorageSavings         float64            `json:"storage_savings"`         // bytes
+	MemorySavings          float64            `json:"memory_savings"`          // bytes
+	IndexesCreated         int                `json:"indexes_created"`
+	ShardsRebalanced       int                `json:"shards_rebalanced"`
+	CompressionGain        float64            `json:"compression_gain"` // percentage
+	Metrics                map[string]float64 `json:"metrics"`
+	Recommendations        []string           `json:"recommendations"`
 }
 
 // OptimizationWorker 优化工作器
@@ -167,44 +167,44 @@ type OptimizationWorker struct {
 
 // PerformanceMonitor 性能监控器
 type PerformanceMonitor struct {
-	metrics          map[string]*MetricHistory
-	alerts           []*PerformanceAlert
-	thresholds       map[string]*Threshold
-	isMonitoring     bool
-	monitorInterval  time.Duration
-	stopChan         chan struct{}
-	mutex            sync.RWMutex
+	metrics         map[string]*MetricHistory
+	alerts          []*PerformanceAlert
+	thresholds      map[string]*Threshold
+	isMonitoring    bool
+	monitorInterval time.Duration
+	stopChan        chan struct{}
+	mutex           sync.RWMutex
 }
 
 // MetricHistory 指标历史
 type MetricHistory struct {
-	Name        string      `json:"name"`
-	Values      []float64   `json:"values"`
-	Timestamps  []time.Time `json:"timestamps"`
-	MaxSize     int         `json:"max_size"`
-	Current     float64     `json:"current"`
-	Average     float64     `json:"average"`
-	Trend       string      `json:"trend"`      // increasing, decreasing, stable
+	Name       string      `json:"name"`
+	Values     []float64   `json:"values"`
+	Timestamps []time.Time `json:"timestamps"`
+	MaxSize    int         `json:"max_size"`
+	Current    float64     `json:"current"`
+	Average    float64     `json:"average"`
+	Trend      string      `json:"trend"` // increasing, decreasing, stable
 }
 
 // PerformanceAlert 性能告警
 type PerformanceAlert struct {
-	ID          string    `json:"id"`
-	Type        string    `json:"type"`        // threshold, trend, anomaly
-	Severity    string    `json:"severity"`    // low, medium, high, critical
-	Metric      string    `json:"metric"`
-	Message     string    `json:"message"`
-	Timestamp   time.Time `json:"timestamp"`
-	Resolved    bool      `json:"resolved"`
-	ResolvedAt  time.Time `json:"resolved_at"`
+	ID         string    `json:"id"`
+	Type       string    `json:"type"`     // threshold, trend, anomaly
+	Severity   string    `json:"severity"` // low, medium, high, critical
+	Metric     string    `json:"metric"`
+	Message    string    `json:"message"`
+	Timestamp  time.Time `json:"timestamp"`
+	Resolved   bool      `json:"resolved"`
+	ResolvedAt time.Time `json:"resolved_at"`
 }
 
 // Threshold 阈值
 type Threshold struct {
-	Metric      string  `json:"metric"`
-	MinValue    float64 `json:"min_value"`
-	MaxValue    float64 `json:"max_value"`
-	WarningValue float64 `json:"warning_value"`
+	Metric        string  `json:"metric"`
+	MinValue      float64 `json:"min_value"`
+	MaxValue      float64 `json:"max_value"`
+	WarningValue  float64 `json:"warning_value"`
 	CriticalValue float64 `json:"critical_value"`
 }
 
@@ -212,7 +212,7 @@ type Threshold struct {
 func NewStorageEngine(appConfig *config.Config, redisClient *redis.Client) *StorageEngine {
 	// 创建默认配置
 	engineConfig := NewDefaultEngineConfig()
-	
+
 	// 从应用配置中覆盖设置
 	if appConfig.QueryOptimization.DuckDB.Performance.MemoryLimit != "" {
 		// 解析内存限制配置
@@ -223,13 +223,13 @@ func NewStorageEngine(appConfig *config.Config, redisClient *redis.Client) *Stor
 		parquetOptimizer: NewParquet(),
 		shardOptimizer:   NewShardOptimizer(),
 		indexSystem:      NewIndexSystem(redisClient),
-		memoryOptimizer:  NewMemoryOptimizer(&MemoryConfig{
-			MaxMemoryUsage: engineConfig.MemoryConfig.MaxMemoryUsage,
-			PoolSizes:      engineConfig.MemoryConfig.MemoryPoolSizes,
-			GCInterval:     engineConfig.MemoryConfig.GCInterval,
+		memoryOptimizer: NewMemoryOptimizer(&MemoryConfig{
+			MaxMemoryUsage:  engineConfig.MemoryConfig.MaxMemoryUsage,
+			PoolSizes:       engineConfig.MemoryConfig.MemoryPoolSizes,
+			GCInterval:      engineConfig.MemoryConfig.GCInterval,
 			ZeroCopyEnabled: engineConfig.MemoryConfig.EnableZeroCopy,
 		}),
-		
+
 		config:    engineConfig,
 		stats:     &EngineStats{},
 		scheduler: NewOptimizationScheduler(),
@@ -283,13 +283,13 @@ func NewDefaultEngineConfig() *EngineConfig {
 			CustomConfig:        make(map[string]interface{}),
 		},
 		MemoryConfig: &MemoryOptimizerConfig{
-			EnablePooling:       true,
-			EnableZeroCopy:      true,
-			BufferOptimization:  true,
-			GCOptimization:      true,
-			MaxMemoryUsage:      4 * 1024 * 1024 * 1024, // 4GB
-			MemoryPoolSizes:     map[string]int{"small": 1000, "medium": 500, "large": 100},
-			GCInterval:          5 * time.Minute,
+			EnablePooling:      true,
+			EnableZeroCopy:     true,
+			BufferOptimization: true,
+			GCOptimization:     true,
+			MaxMemoryUsage:     4 * 1024 * 1024 * 1024, // 4GB
+			MemoryPoolSizes:    map[string]int{"small": 1000, "medium": 500, "large": 100},
+			GCInterval:         5 * time.Minute,
 		},
 		AutoOptimization: true,
 		OptimizeInterval: 30 * time.Minute,
@@ -331,7 +331,7 @@ func (seo *StorageEngine) StartAutoOptimization() error {
 	}
 
 	seo.isRunning = true
-	
+
 	// 启动调度器
 	seo.scheduler.Start(seo)
 
@@ -358,7 +358,7 @@ func (seo *StorageEngine) StopAutoOptimization() error {
 // OptimizeStorage 执行存储优化
 func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *OptimizationOptions) (*OptimizationResult, error) {
 	log.Println("Starting comprehensive storage optimization...")
-	
+
 	startTime := time.Now()
 	result := &OptimizationResult{
 		Metrics:         make(map[string]float64),
@@ -423,12 +423,12 @@ func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *Optimiza
 
 // OptimizationOptions 优化选项
 type OptimizationOptions struct {
-	EnableParquetOptimization bool `json:"enable_parquet"`
-	EnableShardOptimization   bool `json:"enable_shard"`
-	EnableIndexOptimization   bool `json:"enable_index"`
-	EnableMemoryOptimization  bool `json:"enable_memory"`
-	PerformanceMode          string `json:"performance_mode"`
-	MaxOptimizationTime      time.Duration `json:"max_time"`
+	EnableParquetOptimization bool          `json:"enable_parquet"`
+	EnableShardOptimization   bool          `json:"enable_shard"`
+	EnableIndexOptimization   bool          `json:"enable_index"`
+	EnableMemoryOptimization  bool          `json:"enable_memory"`
+	PerformanceMode           string        `json:"performance_mode"`
+	MaxOptimizationTime       time.Duration `json:"max_time"`
 }
 
 // optimizeParquetStorage 优化Parquet存储
@@ -448,7 +448,7 @@ func (seo *StorageEngine) optimizeParquetStorage(ctx context.Context, result *Op
 		result.Metrics["compression_ratio"] = bestResult.CompressionRatio
 	}
 
-	result.Recommendations = append(result.Recommendations, 
+	result.Recommendations = append(result.Recommendations,
 		fmt.Sprintf("Use %s compression for optimal performance", optimalStrategy.Name))
 
 	return nil
@@ -472,7 +472,7 @@ func (seo *StorageEngine) optimizeSharding(ctx context.Context, result *Optimiza
 		result.PerformanceImprovement += 10.0 // 估算10%性能提升
 	}
 
-	result.Recommendations = append(result.Recommendations, 
+	result.Recommendations = append(result.Recommendations,
 		"Sharding strategy optimized for better load balancing")
 
 	return nil
@@ -495,7 +495,7 @@ func (seo *StorageEngine) optimizeIndexes(ctx context.Context, result *Optimizat
 		result.PerformanceImprovement += 15.0 // 估算15%查询性能提升
 	}
 
-	result.Recommendations = append(result.Recommendations, 
+	result.Recommendations = append(result.Recommendations,
 		"Indexes optimized for better query performance")
 
 	return nil
@@ -518,7 +518,7 @@ func (seo *StorageEngine) optimizeMemory(ctx context.Context, result *Optimizati
 		result.PerformanceImprovement += 8.0 // 估算8%性能提升
 	}
 
-	result.Recommendations = append(result.Recommendations, 
+	result.Recommendations = append(result.Recommendations,
 		"Memory pools optimized for better allocation efficiency")
 
 	return nil
@@ -578,7 +578,7 @@ func (seo *StorageEngine) calculateSystemHealth() float64 {
 	if components > 0 {
 		return healthScore / float64(components)
 	}
-	
+
 	return 0.5 // 默认健康度
 }
 
@@ -597,24 +597,37 @@ func (seo *StorageEngine) GetEngineStats() *EngineStats {
 	seo.stats.mutex.RLock()
 	defer seo.stats.mutex.RUnlock()
 
-	// 创建深拷贝
-	statsCopy := *seo.stats
-	
-	// 复制组件统计（需要深拷贝）
-	if seo.stats.ParquetStats != nil {
+	statsCopy := &EngineStats{
+		QueryLatency:       seo.stats.QueryLatency,
+		WriteLatency:       seo.stats.WriteLatency,
+		Throughput:         seo.stats.Throughput,
+		CompressionRatio:   seo.stats.CompressionRatio,
+		StorageEfficiency:  seo.stats.StorageEfficiency,
+		CacheHitRate:       seo.stats.CacheHitRate,
+		PerformanceGain:    seo.stats.PerformanceGain,
+		StorageSavings:     seo.stats.StorageSavings,
+		MemoryEfficiency:   seo.stats.MemoryEfficiency,
+		IndexEffectiveness: seo.stats.IndexEffectiveness,
+		TotalOptimizations: seo.stats.TotalOptimizations,
+		LastOptimization:   seo.stats.LastOptimization,
+		OptimizationTime:   seo.stats.OptimizationTime,
+		SystemHealth:       seo.stats.SystemHealth,
+	}
+
+	if seo.parquetOptimizer != nil {
 		statsCopy.ParquetStats = seo.parquetOptimizer.GetStats()
 	}
-	if seo.stats.ShardStats != nil {
+	if seo.shardOptimizer != nil {
 		statsCopy.ShardStats = seo.shardOptimizer.GetStats()
 	}
-	if seo.stats.IndexStats != nil {
+	if seo.indexSystem != nil {
 		statsCopy.IndexStats = seo.indexSystem.GetStats()
 	}
-	if seo.stats.MemoryStats != nil {
+	if seo.memoryOptimizer != nil {
 		statsCopy.MemoryStats = seo.memoryOptimizer.GetStats()
 	}
 
-	return &statsCopy
+	return statsCopy
 }
 
 // Start 启动调度器
@@ -689,7 +702,7 @@ func (os *OptimizationScheduler) scheduleLoop(engine *StorageEngine) {
 			Target:   "all",
 			Status:   "pending",
 			Parameters: map[string]interface{}{
-				"auto_generated": true,
+				"auto_generated":    true,
 				"optimization_mode": engine.config.PerformanceMode,
 			},
 		}
@@ -706,7 +719,7 @@ func (os *OptimizationScheduler) scheduleLoop(engine *StorageEngine) {
 // run 工作器运行
 func (ow *OptimizationWorker) run(taskQueue <-chan *OptimizationTask) {
 	log.Printf("Optimization worker %d started", ow.id)
-	
+
 	for {
 		select {
 		case task := <-taskQueue:
@@ -724,7 +737,7 @@ func (ow *OptimizationWorker) run(taskQueue <-chan *OptimizationTask) {
 // processTask 处理优化任务
 func (ow *OptimizationWorker) processTask(task *OptimizationTask) {
 	log.Printf("Worker %d processing task: %s", ow.id, task.ID)
-	
+
 	task.Status = "running"
 	task.StartTime = time.Now()
 
@@ -734,11 +747,11 @@ func (ow *OptimizationWorker) processTask(task *OptimizationTask) {
 		EnableShardOptimization:   true,
 		EnableIndexOptimization:   true,
 		EnableMemoryOptimization:  true,
-		PerformanceMode:          ow.engine.config.PerformanceMode,
+		PerformanceMode:           ow.engine.config.PerformanceMode,
 	}
 
 	result, err := ow.engine.OptimizeStorage(ctx, options)
-	
+
 	task.EndTime = time.Now()
 	task.Duration = task.EndTime.Sub(task.StartTime)
 
@@ -802,15 +815,15 @@ func (pm *PerformanceMonitor) monitorLoop() {
 // collectMetrics 收集指标
 func (pm *PerformanceMonitor) collectMetrics() {
 	now := time.Now()
-	
+
 	// 这里应该收集各种性能指标
 	// 简化实现，添加一些模拟指标
-	
-	pm.addMetric("query_latency", 25.5, now)       // ms
-	pm.addMetric("write_latency", 15.2, now)       // ms
-	pm.addMetric("throughput", 1500.0, now)        // queries/second
-	pm.addMetric("cache_hit_rate", 0.85, now)      // percentage
-	pm.addMetric("memory_usage", 0.75, now)        // percentage
+
+	pm.addMetric("query_latency", 25.5, now)  // ms
+	pm.addMetric("write_latency", 15.2, now)  // ms
+	pm.addMetric("throughput", 1500.0, now)   // queries/second
+	pm.addMetric("cache_hit_rate", 0.85, now) // percentage
+	pm.addMetric("memory_usage", 0.75, now)   // percentage
 }
 
 // addMetric 添加指标
@@ -858,4 +871,4 @@ func (pm *PerformanceMonitor) addMetric(name string, value float64, timestamp ti
 			history.Trend = "stable"
 		}
 	}
-} 
+}

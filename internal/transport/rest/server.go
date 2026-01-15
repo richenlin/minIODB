@@ -23,7 +23,7 @@ import (
 
 // Server RESTful API服务器
 type Server struct {
-	miniodbService   *service.MinIODBService // 统一服务接口
+	miniodbService   *service.MinIODBService
 	writeCoordinator *coordinator.WriteCoordinator
 	queryCoordinator *coordinator.QueryCoordinator
 	metadataManager  *metadata.Manager
@@ -31,10 +31,10 @@ type Server struct {
 	router           *gin.Engine
 	server           *http.Server
 
-	// 安全相关
 	authManager        *security.AuthManager
 	securityMiddleware *security.SecurityMiddleware
-	smartRateLimiter   *security.SmartRateLimiter // 新增智能限流器
+	smartRateLimiter   *security.SmartRateLimiter
+	tokenManager       *security.TokenManager
 }
 
 // WriteRequest REST API写入请求
@@ -365,6 +365,8 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 		log.Println("REST smart rate limiter disabled")
 	}
 
+	tokenManager := security.NewTokenManager(nil)
+
 	server := &Server{
 		miniodbService:     miniodbService,
 		cfg:                cfg,
@@ -372,6 +374,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 		authManager:        authManager,
 		securityMiddleware: securityMiddleware,
 		smartRateLimiter:   smartRateLimiter,
+		tokenManager:       tokenManager,
 	}
 
 	server.setupMiddleware()
@@ -616,28 +619,44 @@ func (s *Server) deleteData(c *gin.Context) {
 		return
 	}
 
-	// 处理批量删除：目前API只支持单个ID，这里取第一个
-	var deleteID string
-	if len(req.IDs) > 0 {
-		deleteID = req.IDs[0]
-	}
-
-	protoReq := &miniodbv1.DeleteDataRequest{
-		Table: req.Table,
-		Id:    deleteID,
-	}
-
-	// 调用统一服务
-	resp, err := s.miniodbService.DeleteData(c.Request.Context(), protoReq)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if len(req.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one ID is required"})
 		return
 	}
 
+	var totalDeleted int32
+	var errors []string
+
+	for _, id := range req.IDs {
+		protoReq := &miniodbv1.DeleteDataRequest{
+			Table: req.Table,
+			Id:    id,
+		}
+
+		resp, err := s.miniodbService.DeleteData(c.Request.Context(), protoReq)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("failed to delete %s: %v", id, err))
+			continue
+		}
+
+		if resp.Success {
+			totalDeleted += resp.DeletedCount
+		} else {
+			errors = append(errors, fmt.Sprintf("failed to delete %s: %s", id, resp.Message))
+		}
+	}
+
+	success := len(errors) == 0
+	message := fmt.Sprintf("deleted %d records from table %s", totalDeleted, req.Table)
+	if len(errors) > 0 {
+		message = fmt.Sprintf("deleted %d records with %d errors", totalDeleted, len(errors))
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"success":       resp.Success,
-		"message":       resp.Message,
-		"deleted_count": resp.DeletedCount,
+		"success":       success,
+		"message":       message,
+		"deleted_count": totalDeleted,
+		"errors":        errors,
 	})
 }
 
@@ -693,22 +712,30 @@ func (s *Server) getToken(c *gin.Context) {
 		return
 	}
 
-	// 简单验证API密钥和密码
 	if req.APIKey == "" || req.APISecret == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "API key and secret are required"})
 		return
 	}
 
-	// 生成JWT token
 	accessToken, err := s.authManager.GenerateToken(req.APIKey, req.APIKey)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
+	refreshToken, err := s.tokenManager.GenerateRefreshToken()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
+		return
+	}
+
+	if err := s.tokenManager.StoreRefreshToken(c.Request.Context(), refreshToken, req.APIKey); err != nil {
+		log.Printf("WARN: Failed to store refresh token: %v", err)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  accessToken,
-		"refresh_token": "refresh_" + accessToken,
+		"refresh_token": refreshToken,
 		"expires_in":    3600,
 		"token_type":    "Bearer",
 	})
@@ -725,22 +752,40 @@ func (s *Server) refreshToken(c *gin.Context) {
 		return
 	}
 
-	// 简单实现：验证refresh token并生成新token
 	if req.RefreshToken == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Refresh token is required"})
 		return
 	}
 
-	// 生成新token
-	accessToken, err := s.authManager.GenerateToken("refresh_user", "refresh_user")
+	userID, err := s.tokenManager.ValidateRefreshToken(c.Request.Context(), req.RefreshToken)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
 		return
+	}
+
+	if err := s.tokenManager.RevokeRefreshToken(c.Request.Context(), req.RefreshToken); err != nil {
+		log.Printf("WARN: Failed to revoke old refresh token: %v", err)
+	}
+
+	accessToken, err := s.authManager.GenerateToken(userID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate new token"})
+		return
+	}
+
+	newRefreshToken, err := s.tokenManager.GenerateRefreshToken()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
+		return
+	}
+
+	if err := s.tokenManager.StoreRefreshToken(c.Request.Context(), newRefreshToken, userID); err != nil {
+		log.Printf("WARN: Failed to store new refresh token: %v", err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  accessToken,
-		"refresh_token": "refresh_" + accessToken,
+		"refresh_token": newRefreshToken,
 		"expires_in":    3600,
 		"token_type":    "Bearer",
 	})
@@ -757,13 +802,20 @@ func (s *Server) revokeToken(c *gin.Context) {
 		return
 	}
 
-	// 简单实现：记录token撤销
 	if req.Token == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Token is required"})
 		return
 	}
 
-	log.Printf("INFO: Token revoked via REST API: %s", req.Token[:10]+"...")
+	if err := s.tokenManager.RevokeAccessToken(c.Request.Context(), req.Token); err != nil {
+		log.Printf("WARN: Failed to revoke token: %v", err)
+	}
+
+	tokenPreview := req.Token
+	if len(tokenPreview) > 10 {
+		tokenPreview = tokenPreview[:10] + "..."
+	}
+	log.Printf("INFO: Token revoked via REST API: %s", tokenPreview)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -930,13 +982,11 @@ func (s *Server) getMetadataStatus(c *gin.Context) {
 // jwtAuthMiddleware JWT认证中间件
 func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
 	return gin.HandlerFunc(func(c *gin.Context) {
-		// 如果认证被禁用，直接通过
 		if s.authManager == nil || !s.authManager.IsEnabled() {
 			c.Next()
 			return
 		}
 
-		// 从Header中获取Authorization token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
@@ -944,7 +994,6 @@ func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 验证Bearer token格式
 		const bearerPrefix = "Bearer "
 		if !strings.HasPrefix(authHeader, bearerPrefix) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
@@ -952,7 +1001,6 @@ func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 提取token
 		token := strings.TrimPrefix(authHeader, bearerPrefix)
 		if token == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token is required"})
@@ -960,7 +1008,12 @@ func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 验证token
+		if s.tokenManager != nil && s.tokenManager.IsTokenRevoked(c.Request.Context(), token) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token has been revoked"})
+			c.Abort()
+			return
+		}
+
 		claims, err := s.authManager.ValidateToken(token)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
@@ -968,7 +1021,6 @@ func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 将用户信息存储到context中
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
 

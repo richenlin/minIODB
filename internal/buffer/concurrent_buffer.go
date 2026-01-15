@@ -342,8 +342,32 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 		}
 	}
 
-	// 更新Redis索引
-	return w.updateRedisIndex(ctx, bufferKey, objectName)
+	if err := w.updateRedisIndex(ctx, bufferKey, objectName); err != nil {
+		log.Printf("ERROR: Redis index update failed, rolling back MinIO upload: %v", err)
+		w.rollbackMinIOUpload(ctx, primaryBucket, objectName)
+		return fmt.Errorf("failed to update metadata, upload rolled back: %w", err)
+	}
+
+	return nil
+}
+
+func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName string) {
+	minioPool := w.buffer.poolManager.GetMinIOPool()
+	if minioPool == nil {
+		log.Printf("ERROR: cannot rollback MinIO upload - pool unavailable")
+		return
+	}
+
+	err := minioPool.ExecuteWithRetry(ctx, func() error {
+		client := minioPool.GetClient()
+		return client.RemoveObject(ctx, bucket, objectName, minio.RemoveObjectOptions{})
+	})
+
+	if err != nil {
+		log.Printf("ERROR: failed to rollback MinIO upload for %s/%s: %v", bucket, objectName, err)
+	} else {
+		log.Printf("INFO: successfully rolled back MinIO upload for %s/%s", bucket, objectName)
+	}
 }
 
 // Worker.updateRedisIndex 更新Redis索引
