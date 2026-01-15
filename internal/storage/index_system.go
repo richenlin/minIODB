@@ -13,6 +13,7 @@ import (
 	"minIODB/internal/pool"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/go-redis/redis/v8"
 )
 
 // IndexSystem 索引系统
@@ -25,7 +26,7 @@ type IndexSystem struct {
 
 	indexConfig *IndexConfig
 	stats       *IndexStats
-	redisPool   *pool.RedisPool
+	redisClient *redis.Client
 	mutex       sync.RWMutex
 }
 
@@ -877,11 +878,19 @@ func (is *IndexSystem) GetStats() *IndexStats {
 	is.stats.mutex.RLock()
 	defer is.stats.mutex.RUnlock()
 
-	// 创建副本
-	statsCopy := *is.stats
-	statsCopy.IndexTypes = make(map[string]int64)
-	statsCopy.IndexSizes = make(map[string]int64)
-	statsCopy.IndexEfficiency = make(map[string]float64)
+	statsCopy := &IndexStats{
+		TotalIndexes:    is.stats.TotalIndexes,
+		TotalQueries:    is.stats.TotalQueries,
+		CacheHitRate:    is.stats.CacheHitRate,
+		AvgQueryTime:    is.stats.AvgQueryTime,
+		MemoryUsage:     is.stats.MemoryUsage,
+		DiskUsage:       is.stats.DiskUsage,
+		MaintenanceTime: is.stats.MaintenanceTime,
+		LastMaintenance: is.stats.LastMaintenance,
+		IndexTypes:      make(map[string]int64),
+		IndexSizes:      make(map[string]int64),
+		IndexEfficiency: make(map[string]float64),
+	}
 
 	for k, v := range is.stats.IndexTypes {
 		statsCopy.IndexTypes[k] = v
@@ -893,7 +902,7 @@ func (is *IndexSystem) GetStats() *IndexStats {
 		statsCopy.IndexEfficiency[k] = v
 	}
 
-	return &statsCopy
+	return statsCopy
 }
 
 // OptimizeIndexes 优化索引

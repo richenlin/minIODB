@@ -13,47 +13,47 @@ import (
 
 // ShardOptimizer 智能分片优化器
 type ShardOptimizer struct {
-	shardStrategies   map[string]*ShardStrategy
-	consistentHashRing *ConsistentHashRing
+	shardStrategies     map[string]*ShardStrategy
+	consistentHashRing  *ConsistentHashRing
 	dataLocalityManager *DataLocalityManager
-	hotColdSeparator  *HotColdSeparator
-	rebalancer        *ShardRebalancer
-	stats             *ShardStats
-	mutex             sync.RWMutex
+	hotColdSeparator    *HotColdSeparator
+	rebalancer          *ShardRebalancer
+	stats               *ShardStats
+	mutex               sync.RWMutex
 }
 
 // ShardStrategy 分片策略
 type ShardStrategy struct {
-	Name              string            `json:"name"`
-	Algorithm         string            `json:"algorithm"`         // hash, range, list, composite
-	ShardingKeys      []string          `json:"sharding_keys"`     // 分片键
-	ShardCount        int               `json:"shard_count"`       // 分片数量
-	ReplicationFactor int               `json:"replication_factor"` // 副本因子
-	LoadBalancing     bool              `json:"load_balancing"`    // 负载均衡
-	AutoRebalance     bool              `json:"auto_rebalance"`    // 自动重平衡
-	ConsistencyLevel  string            `json:"consistency_level"` // consistency level
-	DataDistribution  string            `json:"data_distribution"` // uniform, weighted, adaptive
-	AffinityRules     []AffinityRule    `json:"affinity_rules"`    // 亲和性规则
-	Predicates        []string          `json:"predicates"`        // 查询谓词
-	PartitionTolerance bool             `json:"partition_tolerance"` // 分区容错
-	Properties        map[string]string `json:"properties"`        // 自定义属性
+	Name               string            `json:"name"`
+	Algorithm          string            `json:"algorithm"`           // hash, range, list, composite
+	ShardingKeys       []string          `json:"sharding_keys"`       // 分片键
+	ShardCount         int               `json:"shard_count"`         // 分片数量
+	ReplicationFactor  int               `json:"replication_factor"`  // 副本因子
+	LoadBalancing      bool              `json:"load_balancing"`      // 负载均衡
+	AutoRebalance      bool              `json:"auto_rebalance"`      // 自动重平衡
+	ConsistencyLevel   string            `json:"consistency_level"`   // consistency level
+	DataDistribution   string            `json:"data_distribution"`   // uniform, weighted, adaptive
+	AffinityRules      []AffinityRule    `json:"affinity_rules"`      // 亲和性规则
+	Predicates         []string          `json:"predicates"`          // 查询谓词
+	PartitionTolerance bool              `json:"partition_tolerance"` // 分区容错
+	Properties         map[string]string `json:"properties"`          // 自定义属性
 }
 
 // AffinityRule 亲和性规则
 type AffinityRule struct {
-	Type        string   `json:"type"`         // node, rack, region
-	Constraint  string   `json:"constraint"`   // required, preferred
-	Keys        []string `json:"keys"`         // 关联键
-	Values      []string `json:"values"`       // 关联值
-	Weight      float64  `json:"weight"`       // 权重
+	Type       string   `json:"type"`       // node, rack, region
+	Constraint string   `json:"constraint"` // required, preferred
+	Keys       []string `json:"keys"`       // 关联键
+	Values     []string `json:"values"`     // 关联值
+	Weight     float64  `json:"weight"`     // 权重
 }
 
 // ConsistentHashRing 一致性哈希环
 type ConsistentHashRing struct {
-	ring         map[uint32]string         // 哈希环
-	sortedHashes []uint32                  // 排序的哈希值
-	nodes        map[string]*ShardNode     // 节点信息
-	virtualNodes int                       // 虚拟节点数
+	ring         map[uint32]string     // 哈希环
+	sortedHashes []uint32              // 排序的哈希值
+	nodes        map[string]*ShardNode // 节点信息
+	virtualNodes int                   // 虚拟节点数
 	mutex        sync.RWMutex
 }
 
@@ -66,24 +66,24 @@ type ShardNode struct {
 	Weight       float64           `json:"weight"`
 	Capacity     int64             `json:"capacity"`
 	UsedCapacity int64             `json:"used_capacity"`
-	Status       string            `json:"status"`        // active, inactive, maintenance
+	Status       string            `json:"status"` // active, inactive, maintenance
 	LoadFactor   float64           `json:"load_factor"`
-	Health       float64           `json:"health"`        // 0.0-1.0
+	Health       float64           `json:"health"` // 0.0-1.0
 	LastSeen     time.Time         `json:"last_seen"`
 	Properties   map[string]string `json:"properties"`
-	Shards       []string          `json:"shards"`        // 管理的分片
+	Shards       []string          `json:"shards"` // 管理的分片
 }
 
 // DataLocalityManager 数据局部性管理器
 type DataLocalityManager struct {
-	affinityMap     map[string][]string       // 数据亲和性映射
-	localityScores  map[string]float64        // 局部性得分
-	accessPatterns  map[string]*AccessPattern // 访问模式
-	cacheStrategy   *LocalityCache            // 局部性缓存策略
-	migrationQueue  chan *MigrationTask       // 迁移任务队列
-	migrationWorkers int                      // 迁移工作线程数
-	stats           *LocalityStats            // 局部性统计
-	mutex           sync.RWMutex
+	affinityMap      map[string][]string       // 数据亲和性映射
+	localityScores   map[string]float64        // 局部性得分
+	accessPatterns   map[string]*AccessPattern // 访问模式
+	cacheStrategy    *LocalityCache            // 局部性缓存策略
+	migrationQueue   chan *MigrationTask       // 迁移任务队列
+	migrationWorkers int                       // 迁移工作线程数
+	stats            *LocalityStats            // 局部性统计
+	mutex            sync.RWMutex
 }
 
 // AccessPattern 访问模式
@@ -101,119 +101,119 @@ type AccessPattern struct {
 
 // LocalityCache 局部性缓存
 type LocalityCache struct {
-	CacheSize     int                       `json:"cache_size"`
-	TTL           time.Duration             `json:"ttl"`
-	EvictionPolicy string                   `json:"eviction_policy"` // lru, lfu, fifo
-	HotDataRatio  float64                   `json:"hot_data_ratio"`
-	WarmDataRatio float64                   `json:"warm_data_ratio"`
-	ColdDataRatio float64                   `json:"cold_data_ratio"`
-	CacheEntries  map[string]*CacheEntry    `json:"cache_entries"`
-	mutex         sync.RWMutex
+	CacheSize      int                    `json:"cache_size"`
+	TTL            time.Duration          `json:"ttl"`
+	EvictionPolicy string                 `json:"eviction_policy"` // lru, lfu, fifo
+	HotDataRatio   float64                `json:"hot_data_ratio"`
+	WarmDataRatio  float64                `json:"warm_data_ratio"`
+	ColdDataRatio  float64                `json:"cold_data_ratio"`
+	CacheEntries   map[string]*CacheEntry `json:"cache_entries"`
+	mutex          sync.RWMutex
 }
 
 // CacheEntry 缓存条目
 type CacheEntry struct {
-	Key          string    `json:"key"`
-	Value        interface{} `json:"value"`
-	Size         int64     `json:"size"`
-	AccessCount  int64     `json:"access_count"`
-	LastAccess   time.Time `json:"last_access"`
-	Temperature  string    `json:"temperature"`
-	ExpiryTime   time.Time `json:"expiry_time"`
+	Key         string      `json:"key"`
+	Value       interface{} `json:"value"`
+	Size        int64       `json:"size"`
+	AccessCount int64       `json:"access_count"`
+	LastAccess  time.Time   `json:"last_access"`
+	Temperature string      `json:"temperature"`
+	ExpiryTime  time.Time   `json:"expiry_time"`
 }
 
 // HotColdSeparator 冷热数据分离器
 type HotColdSeparator struct {
-	hotThreshold    float64                    `json:"hot_threshold"`     // 热数据阈值
-	coldThreshold   float64                    `json:"cold_threshold"`    // 冷数据阈值
-	temperatureMap  map[string]*DataTemperature `json:"temperature_map"`   // 数据温度映射
-	storageStrategy map[string]*StorageClass   `json:"storage_strategy"`  // 存储策略
-	migrationRules  []MigrationRule            `json:"migration_rules"`   // 迁移规则
-	migrationStats  *MigrationStats            `json:"migration_stats"`   // 迁移统计
-	analyzer        *TemperatureAnalyzer       `json:"analyzer"`          // 温度分析器
+	hotThreshold    float64                     `json:"hot_threshold"`    // 热数据阈值
+	coldThreshold   float64                     `json:"cold_threshold"`   // 冷数据阈值
+	temperatureMap  map[string]*DataTemperature `json:"temperature_map"`  // 数据温度映射
+	storageStrategy map[string]*StorageClass    `json:"storage_strategy"` // 存储策略
+	migrationRules  []MigrationRule             `json:"migration_rules"`  // 迁移规则
+	migrationStats  *MigrationStats             `json:"migration_stats"`  // 迁移统计
+	analyzer        *TemperatureAnalyzer        `json:"analyzer"`         // 温度分析器
 	mutex           sync.RWMutex
 }
 
 // DataTemperature 数据温度
 type DataTemperature struct {
 	DataKey         string    `json:"data_key"`
-	Temperature     float64   `json:"temperature"`    // 0.0-1.0 (cold-hot)
+	Temperature     float64   `json:"temperature"` // 0.0-1.0 (cold-hot)
 	AccessFrequency float64   `json:"access_frequency"`
 	LastAccess      time.Time `json:"last_access"`
 	FirstAccess     time.Time `json:"first_access"`
 	AccessCount     int64     `json:"access_count"`
 	DataSize        int64     `json:"data_size"`
-	StorageClass    string    `json:"storage_class"`  // hot, warm, cold, archive
-	Prediction      float64   `json:"prediction"`     // 温度预测
-	Confidence      float64   `json:"confidence"`     // 预测置信度
+	StorageClass    string    `json:"storage_class"` // hot, warm, cold, archive
+	Prediction      float64   `json:"prediction"`    // 温度预测
+	Confidence      float64   `json:"confidence"`    // 预测置信度
 }
 
 // StorageClass 存储类别
 type StorageClass struct {
-	Name            string        `json:"name"`
-	Type            string        `json:"type"`             // ssd, hdd, cloud, archive
-	Performance     float64       `json:"performance"`      // 性能得分
-	Cost            float64       `json:"cost"`             // 成本
-	Availability    float64       `json:"availability"`     // 可用性
-	Durability      float64       `json:"durability"`       // 持久性
-	AccessTime      time.Duration `json:"access_time"`      // 访问时间
-	Throughput      int64         `json:"throughput"`       // 吞吐量 MB/s
-	Capacity        int64         `json:"capacity"`         // 容量
-	Compression     bool          `json:"compression"`      // 压缩支持
-	Encryption      bool          `json:"encryption"`       // 加密支持
-	ReplicationFactor int         `json:"replication_factor"` // 副本因子
+	Name              string        `json:"name"`
+	Type              string        `json:"type"`               // ssd, hdd, cloud, archive
+	Performance       float64       `json:"performance"`        // 性能得分
+	Cost              float64       `json:"cost"`               // 成本
+	Availability      float64       `json:"availability"`       // 可用性
+	Durability        float64       `json:"durability"`         // 持久性
+	AccessTime        time.Duration `json:"access_time"`        // 访问时间
+	Throughput        int64         `json:"throughput"`         // 吞吐量 MB/s
+	Capacity          int64         `json:"capacity"`           // 容量
+	Compression       bool          `json:"compression"`        // 压缩支持
+	Encryption        bool          `json:"encryption"`         // 加密支持
+	ReplicationFactor int           `json:"replication_factor"` // 副本因子
 }
 
 // MigrationRule 迁移规则
 type MigrationRule struct {
-	Name           string        `json:"name"`
-	TriggerCondition string      `json:"trigger_condition"`  // time, access, size, temperature
-	SourceClass    string        `json:"source_class"`
-	TargetClass    string        `json:"target_class"`
-	Schedule       string        `json:"schedule"`            // cron expression
-	Priority       int           `json:"priority"`            // 1-10
-	Throttling     float64       `json:"throttling"`          // 节流 0.0-1.0
-	Conditions     []string      `json:"conditions"`
-	Actions        []string      `json:"actions"`
+	Name             string   `json:"name"`
+	TriggerCondition string   `json:"trigger_condition"` // time, access, size, temperature
+	SourceClass      string   `json:"source_class"`
+	TargetClass      string   `json:"target_class"`
+	Schedule         string   `json:"schedule"`   // cron expression
+	Priority         int      `json:"priority"`   // 1-10
+	Throttling       float64  `json:"throttling"` // 节流 0.0-1.0
+	Conditions       []string `json:"conditions"`
+	Actions          []string `json:"actions"`
 }
 
 // ShardRebalancer 分片重平衡器
 type ShardRebalancer struct {
-	rebalanceStrategy string                    `json:"rebalance_strategy"` // manual, automatic, scheduled
-	triggerThreshold  float64                  `json:"trigger_threshold"`  // 触发阈值
-	migrationLimit    int                      `json:"migration_limit"`    // 同时迁移限制
-	rebalanceTasks    chan *RebalanceTask      `json:"-"`                 // 重平衡任务
-	taskHistory       []*RebalanceHistory      `json:"task_history"`      // 任务历史
+	rebalanceStrategy string              `json:"rebalance_strategy"` // manual, automatic, scheduled
+	triggerThreshold  float64             `json:"trigger_threshold"`  // 触发阈值
+	migrationLimit    int                 `json:"migration_limit"`    // 同时迁移限制
+	rebalanceTasks    chan *RebalanceTask `json:"-"`                  // 重平衡任务
+	taskHistory       []*RebalanceHistory `json:"task_history"`       // 任务历史
 	mutex             sync.RWMutex
 }
 
 // RebalanceTask 重平衡任务
 type RebalanceTask struct {
-	TaskID      string            `json:"task_id"`
-	TaskType    string            `json:"task_type"`    // shard_move, replica_add, replica_remove
-	SourceNode  string            `json:"source_node"`
-	TargetNode  string            `json:"target_node"`
-	ShardID     string            `json:"shard_id"`
-	DataSize    int64             `json:"data_size"`
-	Priority    int               `json:"priority"`
-	Status      string            `json:"status"`       // pending, running, completed, failed
-	Progress    float64           `json:"progress"`     // 0.0-1.0
-	StartTime   time.Time         `json:"start_time"`
-	EndTime     time.Time         `json:"end_time"`
-	Error       string            `json:"error"`
-	Properties  map[string]string `json:"properties"`
+	TaskID     string            `json:"task_id"`
+	TaskType   string            `json:"task_type"` // shard_move, replica_add, replica_remove
+	SourceNode string            `json:"source_node"`
+	TargetNode string            `json:"target_node"`
+	ShardID    string            `json:"shard_id"`
+	DataSize   int64             `json:"data_size"`
+	Priority   int               `json:"priority"`
+	Status     string            `json:"status"`   // pending, running, completed, failed
+	Progress   float64           `json:"progress"` // 0.0-1.0
+	StartTime  time.Time         `json:"start_time"`
+	EndTime    time.Time         `json:"end_time"`
+	Error      string            `json:"error"`
+	Properties map[string]string `json:"properties"`
 }
 
 // RebalanceHistory 重平衡历史
 type RebalanceHistory struct {
-	TaskID       string        `json:"task_id"`
-	TaskType     string        `json:"task_type"`
-	Status       string        `json:"status"`
-	DataMoved    int64         `json:"data_moved"`
-	Duration     time.Duration `json:"duration"`
-	CompletedAt  time.Time     `json:"completed_at"`
-	NodesAffected []string     `json:"nodes_affected"`
-	Reason       string        `json:"reason"`
+	TaskID        string        `json:"task_id"`
+	TaskType      string        `json:"task_type"`
+	Status        string        `json:"status"`
+	DataMoved     int64         `json:"data_moved"`
+	Duration      time.Duration `json:"duration"`
+	CompletedAt   time.Time     `json:"completed_at"`
+	NodesAffected []string      `json:"nodes_affected"`
+	Reason        string        `json:"reason"`
 }
 
 // MigrationTask 迁移任务
@@ -231,12 +231,12 @@ type MigrationTask struct {
 
 // TemperatureAnalyzer 温度分析器
 type TemperatureAnalyzer struct {
-	analysisWindow   time.Duration              `json:"analysis_window"`
-	predictionModel  string                     `json:"prediction_model"`  // linear, exponential, ml
+	analysisWindow     time.Duration                  `json:"analysis_window"`
+	predictionModel    string                         `json:"prediction_model"` // linear, exponential, ml
 	temperatureHistory map[string][]TemperatureRecord `json:"temperature_history"`
-	modelAccuracy    float64                    `json:"model_accuracy"`
-	lastAnalysis     time.Time                  `json:"last_analysis"`
-	mutex            sync.RWMutex
+	modelAccuracy      float64                        `json:"model_accuracy"`
+	lastAnalysis       time.Time                      `json:"last_analysis"`
+	mutex              sync.RWMutex
 }
 
 // TemperatureRecord 温度记录
@@ -249,58 +249,58 @@ type TemperatureRecord struct {
 
 // ShardStats 分片统计
 type ShardStats struct {
-	TotalShards       int64             `json:"total_shards"`
-	ActiveShards      int64             `json:"active_shards"`
-	RebalanceCount    int64             `json:"rebalance_count"`
-	MigrationCount    int64             `json:"migration_count"`
-	HotDataRatio      float64           `json:"hot_data_ratio"`
-	ColdDataRatio     float64           `json:"cold_data_ratio"`
-	LocalityScore     float64           `json:"locality_score"`
-	LoadBalance       float64           `json:"load_balance"`
-	PerformanceGain   float64           `json:"performance_gain"`
-	StorageSavings    float64           `json:"storage_savings"`
-	LastOptimization  time.Time         `json:"last_optimization"`
-	OptimizationCount int64             `json:"optimization_count"`
+	TotalShards       int64                 `json:"total_shards"`
+	ActiveShards      int64                 `json:"active_shards"`
+	RebalanceCount    int64                 `json:"rebalance_count"`
+	MigrationCount    int64                 `json:"migration_count"`
+	HotDataRatio      float64               `json:"hot_data_ratio"`
+	ColdDataRatio     float64               `json:"cold_data_ratio"`
+	LocalityScore     float64               `json:"locality_score"`
+	LoadBalance       float64               `json:"load_balance"`
+	PerformanceGain   float64               `json:"performance_gain"`
+	StorageSavings    float64               `json:"storage_savings"`
+	LastOptimization  time.Time             `json:"last_optimization"`
+	OptimizationCount int64                 `json:"optimization_count"`
 	NodeStats         map[string]*NodeStats `json:"node_stats"`
 	mutex             sync.RWMutex
 }
 
 // NodeStats 节点统计
 type NodeStats struct {
-	NodeID          string    `json:"node_id"`
-	ShardCount      int       `json:"shard_count"`
-	DataSize        int64     `json:"data_size"`
-	LoadFactor      float64   `json:"load_factor"`
-	HealthScore     float64   `json:"health_score"`
-	LocalityScore   float64   `json:"locality_score"`
-	LastRebalance   time.Time `json:"last_rebalance"`
-	MigrationCount  int64     `json:"migration_count"`
+	NodeID         string    `json:"node_id"`
+	ShardCount     int       `json:"shard_count"`
+	DataSize       int64     `json:"data_size"`
+	LoadFactor     float64   `json:"load_factor"`
+	HealthScore    float64   `json:"health_score"`
+	LocalityScore  float64   `json:"locality_score"`
+	LastRebalance  time.Time `json:"last_rebalance"`
+	MigrationCount int64     `json:"migration_count"`
 }
 
 // LocalityStats 局部性统计
 type LocalityStats struct {
-	TotalDataKeys     int64     `json:"total_data_keys"`
-	LocalHits         int64     `json:"local_hits"`
-	RemoteHits        int64     `json:"remote_hits"`
-	LocalityRatio     float64   `json:"locality_ratio"`
-	AvgAccessTime     time.Duration `json:"avg_access_time"`
-	CacheHitRate      float64   `json:"cache_hit_rate"`
-	MigrationSuccess  int64     `json:"migration_success"`
-	MigrationFailure  int64     `json:"migration_failure"`
-	LastOptimization  time.Time `json:"last_optimization"`
+	TotalDataKeys    int64         `json:"total_data_keys"`
+	LocalHits        int64         `json:"local_hits"`
+	RemoteHits       int64         `json:"remote_hits"`
+	LocalityRatio    float64       `json:"locality_ratio"`
+	AvgAccessTime    time.Duration `json:"avg_access_time"`
+	CacheHitRate     float64       `json:"cache_hit_rate"`
+	MigrationSuccess int64         `json:"migration_success"`
+	MigrationFailure int64         `json:"migration_failure"`
+	LastOptimization time.Time     `json:"last_optimization"`
 }
 
 // MigrationStats 迁移统计
 type MigrationStats struct {
-	TotalMigrations   int64     `json:"total_migrations"`
-	HotToCold         int64     `json:"hot_to_cold"`
-	ColdToHot         int64     `json:"cold_to_hot"`
-	WarmMigrations    int64     `json:"warm_migrations"`
-	DataMoved         int64     `json:"data_moved"`       // bytes
-	CostSavings       float64   `json:"cost_savings"`     // cost units
-	PerformanceGain   float64   `json:"performance_gain"` // percentage
-	LastMigration     time.Time `json:"last_migration"`
-	SuccessRate       float64   `json:"success_rate"`
+	TotalMigrations int64     `json:"total_migrations"`
+	HotToCold       int64     `json:"hot_to_cold"`
+	ColdToHot       int64     `json:"cold_to_hot"`
+	WarmMigrations  int64     `json:"warm_migrations"`
+	DataMoved       int64     `json:"data_moved"`       // bytes
+	CostSavings     float64   `json:"cost_savings"`     // cost units
+	PerformanceGain float64   `json:"performance_gain"` // percentage
+	LastMigration   time.Time `json:"last_migration"`
+	SuccessRate     float64   `json:"success_rate"`
 }
 
 // NewShardOptimizer 创建分片优化器
@@ -543,19 +543,19 @@ func (so *ShardOptimizer) GetShardingStrategy(dataPattern string, workloadType s
 func (so *ShardOptimizer) OptimizeDataPlacement(ctx context.Context, dataKey string, dataSize int64, accessPattern *AccessPattern) (string, error) {
 	// 分析访问模式
 	temperature := so.hotColdSeparator.AnalyzeTemperature(dataKey, accessPattern)
-	
+
 	// 选择存储类别
 	storageClass := so.hotColdSeparator.SelectStorageClass(temperature)
-	
+
 	// 选择最优节点
 	optimalNode := so.selectOptimalNode(dataKey, temperature, storageClass)
-	
+
 	// 更新局部性信息
 	so.dataLocalityManager.UpdateAffinityMap(dataKey, optimalNode, accessPattern)
-	
+
 	log.Printf("Optimized data placement for key %s: node=%s, storage_class=%s, temperature=%.2f",
 		dataKey, optimalNode, storageClass, temperature.Temperature)
-	
+
 	return optimalNode, nil
 }
 
@@ -563,7 +563,7 @@ func (so *ShardOptimizer) OptimizeDataPlacement(ctx context.Context, dataKey str
 func (so *ShardOptimizer) selectOptimalNode(dataKey string, temperature *DataTemperature, storageClass string) string {
 	// 使用一致性哈希环获取基础节点
 	baseNode := so.consistentHashRing.GetNode(dataKey)
-	
+
 	// 根据温度和存储类别调整节点选择
 	if temperature.Temperature > so.hotColdSeparator.hotThreshold {
 		// 热数据：选择高性能节点
@@ -572,66 +572,68 @@ func (so *ShardOptimizer) selectOptimalNode(dataKey string, temperature *DataTem
 		// 冷数据：选择低成本节点
 		return so.selectLowCostNode(baseNode)
 	}
-	
+
 	return baseNode
 }
 
 // selectHighPerformanceNode 选择高性能节点
 func (so *ShardOptimizer) selectHighPerformanceNode(fallbackNode string) string {
-	so.consistentHashRing.mutex.RLock()
-	defer so.consistentHashRing.mutex.RUnlock()
-	
+	nodesCopy := so.copyActiveNodes()
+
 	var bestNode string
 	var bestScore float64
-	
-	for nodeID, node := range so.consistentHashRing.nodes {
-		if node.Status != "active" {
-			continue
-		}
-		
-		// 计算性能得分：健康度 + (1 - 负载因子) + 权重
+
+	for nodeID, node := range nodesCopy {
 		score := node.Health + (1.0 - node.LoadFactor) + node.Weight*0.5
-		
+
 		if bestNode == "" || score > bestScore {
 			bestScore = score
 			bestNode = nodeID
 		}
 	}
-	
+
 	if bestNode == "" {
 		return fallbackNode
 	}
-	
+
 	return bestNode
+}
+
+func (so *ShardOptimizer) copyActiveNodes() map[string]*ShardNode {
+	so.consistentHashRing.mutex.RLock()
+	defer so.consistentHashRing.mutex.RUnlock()
+
+	result := make(map[string]*ShardNode)
+	for nodeID, node := range so.consistentHashRing.nodes {
+		if node.Status == "active" {
+			nodeCopy := *node
+			result[nodeID] = &nodeCopy
+		}
+	}
+	return result
 }
 
 // selectLowCostNode 选择低成本节点
 func (so *ShardOptimizer) selectLowCostNode(fallbackNode string) string {
-	so.consistentHashRing.mutex.RLock()
-	defer so.consistentHashRing.mutex.RUnlock()
-	
+	nodesCopy := so.copyActiveNodes()
+
 	var bestNode string
 	var bestScore float64
-	
-	for nodeID, node := range so.consistentHashRing.nodes {
-		if node.Status != "active" {
-			continue
-		}
-		
-		// 计算成本效益得分：容量利用率 + 健康度 - 负载因子
+
+	for nodeID, node := range nodesCopy {
 		utilizationRatio := float64(node.UsedCapacity) / float64(node.Capacity)
 		score := (1.0 - utilizationRatio) + node.Health - node.LoadFactor
-		
+
 		if bestNode == "" || score > bestScore {
 			bestScore = score
 			bestNode = nodeID
 		}
 	}
-	
+
 	if bestNode == "" {
 		return fallbackNode
 	}
-	
+
 	return bestNode
 }
 
@@ -639,51 +641,51 @@ func (so *ShardOptimizer) selectLowCostNode(fallbackNode string) string {
 func (hcs *HotColdSeparator) AnalyzeTemperature(dataKey string, accessPattern *AccessPattern) *DataTemperature {
 	hcs.mutex.Lock()
 	defer hcs.mutex.Unlock()
-	
+
 	// 获取现有温度记录或创建新记录
 	temperature, exists := hcs.temperatureMap[dataKey]
 	if !exists {
 		temperature = &DataTemperature{
-			DataKey:     dataKey,
-			FirstAccess: time.Now(),
+			DataKey:      dataKey,
+			FirstAccess:  time.Now(),
 			StorageClass: "warm", // 默认为温数据
 		}
 		hcs.temperatureMap[dataKey] = temperature
 	}
-	
+
 	// 更新访问信息
 	temperature.LastAccess = time.Now()
 	temperature.AccessCount = accessPattern.AccessCount
 	temperature.AccessFrequency = accessPattern.Frequency
-	
+
 	// 计算温度值
 	temperature.Temperature = hcs.calculateTemperature(accessPattern)
-	
+
 	// 分析器预测
 	prediction := hcs.analyzer.PredictTemperature(dataKey, temperature)
 	temperature.Prediction = prediction.Temperature
 	temperature.Confidence = prediction.Confidence
-	
+
 	return temperature
 }
 
 // calculateTemperature 计算数据温度
 func (hcs *HotColdSeparator) calculateTemperature(accessPattern *AccessPattern) float64 {
 	now := time.Now()
-	
+
 	// 时间衰减因子
 	timeSinceLastAccess := now.Sub(accessPattern.LastAccess)
 	timeDecay := math.Exp(-timeSinceLastAccess.Hours() / 24.0) // 24小时半衰期
-	
+
 	// 频率权重
-	frequencyWeight := math.Min(accessPattern.Frequency / 100.0, 1.0) // 归一化到0-1
-	
+	frequencyWeight := math.Min(accessPattern.Frequency/100.0, 1.0) // 归一化到0-1
+
 	// 局部性权重
 	localityWeight := accessPattern.Locality
-	
+
 	// 综合温度计算
 	temperature := (timeDecay*0.4 + frequencyWeight*0.4 + localityWeight*0.2)
-	
+
 	return math.Max(0.0, math.Min(1.0, temperature))
 }
 
@@ -702,7 +704,7 @@ func (hcs *HotColdSeparator) SelectStorageClass(temperature *DataTemperature) st
 func (ta *TemperatureAnalyzer) PredictTemperature(dataKey string, current *DataTemperature) *DataTemperature {
 	ta.mutex.Lock()
 	defer ta.mutex.Unlock()
-	
+
 	// 获取历史温度记录
 	history, exists := ta.temperatureHistory[dataKey]
 	if !exists || len(history) < 2 {
@@ -712,11 +714,11 @@ func (ta *TemperatureAnalyzer) PredictTemperature(dataKey string, current *DataT
 			Confidence:  0.5, // 低置信度
 		}
 	}
-	
+
 	// 使用指数衰减模型预测
 	var prediction float64
 	var confidence float64
-	
+
 	switch ta.predictionModel {
 	case "linear":
 		prediction, confidence = ta.linearPrediction(history)
@@ -726,7 +728,7 @@ func (ta *TemperatureAnalyzer) PredictTemperature(dataKey string, current *DataT
 		prediction = current.Temperature
 		confidence = 0.5
 	}
-	
+
 	return &DataTemperature{
 		Temperature: prediction,
 		Confidence:  confidence,
@@ -738,11 +740,11 @@ func (ta *TemperatureAnalyzer) linearPrediction(history []TemperatureRecord) (fl
 	if len(history) < 2 {
 		return 0.0, 0.0
 	}
-	
+
 	// 简单线性回归
 	n := float64(len(history))
 	sumX, sumY, sumXY, sumX2 := 0.0, 0.0, 0.0, 0.0
-	
+
 	for i, record := range history {
 		x := float64(i)
 		y := record.Temperature
@@ -751,19 +753,19 @@ func (ta *TemperatureAnalyzer) linearPrediction(history []TemperatureRecord) (fl
 		sumXY += x * y
 		sumX2 += x * x
 	}
-	
+
 	// 计算斜率和截距
 	slope := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
 	intercept := (sumY - slope*sumX) / n
-	
+
 	// 预测下一个点
 	nextX := n
 	prediction := slope*nextX + intercept
-	
+
 	// 计算置信度（基于R²）
 	// 这里简化为基于历史数据的稳定性
 	confidence := math.Min(0.9, ta.modelAccuracy)
-	
+
 	return math.Max(0.0, math.Min(1.0, prediction)), confidence
 }
 
@@ -772,17 +774,17 @@ func (ta *TemperatureAnalyzer) exponentialPrediction(history []TemperatureRecord
 	if len(history) < 2 {
 		return 0.0, 0.0
 	}
-	
+
 	// 指数平滑
 	alpha := 0.3 // 平滑因子
 	prediction := history[0].Temperature
-	
+
 	for i := 1; i < len(history); i++ {
 		prediction = alpha*history[i].Temperature + (1-alpha)*prediction
 	}
-	
+
 	confidence := math.Min(0.85, ta.modelAccuracy)
-	
+
 	return prediction, confidence
 }
 
@@ -790,7 +792,7 @@ func (ta *TemperatureAnalyzer) exponentialPrediction(history []TemperatureRecord
 func (dlm *DataLocalityManager) UpdateAffinityMap(dataKey, nodeID string, accessPattern *AccessPattern) {
 	dlm.mutex.Lock()
 	defer dlm.mutex.Unlock()
-	
+
 	// 更新数据键的节点亲和性
 	if nodes, exists := dlm.affinityMap[dataKey]; exists {
 		// 检查节点是否已存在
@@ -807,10 +809,10 @@ func (dlm *DataLocalityManager) UpdateAffinityMap(dataKey, nodeID string, access
 	} else {
 		dlm.affinityMap[dataKey] = []string{nodeID}
 	}
-	
+
 	// 更新局部性得分
 	dlm.localityScores[dataKey] = dlm.calculateLocalityScore(accessPattern)
-	
+
 	// 更新访问模式
 	dlm.accessPatterns[dataKey] = accessPattern
 }
@@ -820,25 +822,25 @@ func (dlm *DataLocalityManager) calculateLocalityScore(accessPattern *AccessPatt
 	if accessPattern == nil {
 		return 0.5
 	}
-	
+
 	// 基于访问节点的分布计算局部性
 	totalAccess := int64(0)
 	maxNodeAccess := int64(0)
-	
+
 	for _, count := range accessPattern.AccessNodes {
 		totalAccess += count
 		if count > maxNodeAccess {
 			maxNodeAccess = count
 		}
 	}
-	
+
 	if totalAccess == 0 {
 		return 0.5
 	}
-	
+
 	// 局部性得分 = 最大节点访问数 / 总访问数
 	localityScore := float64(maxNodeAccess) / float64(totalAccess)
-	
+
 	return localityScore
 }
 
@@ -846,9 +848,9 @@ func (dlm *DataLocalityManager) calculateLocalityScore(accessPattern *AccessPatt
 func (sr *ShardRebalancer) TriggerRebalance(reason string) {
 	sr.mutex.Lock()
 	defer sr.mutex.Unlock()
-	
+
 	taskID := fmt.Sprintf("rebalance_%d", time.Now().Unix())
-	
+
 	task := &RebalanceTask{
 		TaskID:     taskID,
 		TaskType:   "shard_rebalance",
@@ -857,7 +859,7 @@ func (sr *ShardRebalancer) TriggerRebalance(reason string) {
 		StartTime:  time.Now(),
 		Properties: map[string]string{"reason": reason},
 	}
-	
+
 	select {
 	case sr.rebalanceTasks <- task:
 		log.Printf("Rebalance task %s queued: %s", taskID, reason)
@@ -870,35 +872,56 @@ func (sr *ShardRebalancer) TriggerRebalance(reason string) {
 func (so *ShardOptimizer) GetStats() *ShardStats {
 	so.stats.mutex.RLock()
 	defer so.stats.mutex.RUnlock()
-	
-	// 创建统计信息副本
-	statsCopy := *so.stats
-	statsCopy.NodeStats = make(map[string]*NodeStats)
-	for nodeID, nodeStats := range so.stats.NodeStats {
-		nodeStatsCopy := *nodeStats
-		statsCopy.NodeStats[nodeID] = &nodeStatsCopy
+
+	statsCopy := &ShardStats{
+		TotalShards:       so.stats.TotalShards,
+		ActiveShards:      so.stats.ActiveShards,
+		RebalanceCount:    so.stats.RebalanceCount,
+		MigrationCount:    so.stats.MigrationCount,
+		HotDataRatio:      so.stats.HotDataRatio,
+		ColdDataRatio:     so.stats.ColdDataRatio,
+		LocalityScore:     so.stats.LocalityScore,
+		LoadBalance:       so.stats.LoadBalance,
+		PerformanceGain:   so.stats.PerformanceGain,
+		StorageSavings:    so.stats.StorageSavings,
+		LastOptimization:  so.stats.LastOptimization,
+		OptimizationCount: so.stats.OptimizationCount,
+		NodeStats:         make(map[string]*NodeStats),
 	}
-	
-	return &statsCopy
+
+	for nodeID, nodeStats := range so.stats.NodeStats {
+		statsCopy.NodeStats[nodeID] = &NodeStats{
+			NodeID:         nodeStats.NodeID,
+			ShardCount:     nodeStats.ShardCount,
+			DataSize:       nodeStats.DataSize,
+			LoadFactor:     nodeStats.LoadFactor,
+			HealthScore:    nodeStats.HealthScore,
+			LocalityScore:  nodeStats.LocalityScore,
+			LastRebalance:  nodeStats.LastRebalance,
+			MigrationCount: nodeStats.MigrationCount,
+		}
+	}
+
+	return statsCopy
 }
 
 // UpdateStats 更新统计信息
 func (so *ShardOptimizer) UpdateStats() {
 	so.stats.mutex.Lock()
 	defer so.stats.mutex.Unlock()
-	
+
 	// 统计分片信息
 	so.stats.TotalShards = int64(len(so.consistentHashRing.nodes))
-	
+
 	// 计算负载均衡度
 	so.stats.LoadBalance = so.calculateLoadBalance()
-	
+
 	// 计算局部性得分
 	so.stats.LocalityScore = so.dataLocalityManager.calculateOverallLocalityScore()
-	
+
 	// 统计冷热数据比例
 	so.updateTemperatureRatios()
-	
+
 	so.stats.LastOptimization = time.Now()
 	so.stats.OptimizationCount++
 }
@@ -907,49 +930,49 @@ func (so *ShardOptimizer) UpdateStats() {
 func (so *ShardOptimizer) calculateLoadBalance() float64 {
 	so.consistentHashRing.mutex.RLock()
 	defer so.consistentHashRing.mutex.RUnlock()
-	
+
 	if len(so.consistentHashRing.nodes) == 0 {
 		return 1.0
 	}
-	
+
 	loadFactors := make([]float64, 0, len(so.consistentHashRing.nodes))
 	for _, node := range so.consistentHashRing.nodes {
 		loadFactors = append(loadFactors, node.LoadFactor)
 	}
-	
+
 	// 计算标准差
 	mean := 0.0
 	for _, lf := range loadFactors {
 		mean += lf
 	}
 	mean /= float64(len(loadFactors))
-	
+
 	variance := 0.0
 	for _, lf := range loadFactors {
 		variance += (lf - mean) * (lf - mean)
 	}
 	variance /= float64(len(loadFactors))
-	
+
 	stdDev := math.Sqrt(variance)
-	
+
 	// 负载均衡度 = 1 - 标准差（标准差越小，均衡度越高）
-	return math.Max(0.0, 1.0 - stdDev)
+	return math.Max(0.0, 1.0-stdDev)
 }
 
 // calculateOverallLocalityScore 计算整体局部性得分
 func (dlm *DataLocalityManager) calculateOverallLocalityScore() float64 {
 	dlm.mutex.RLock()
 	defer dlm.mutex.RUnlock()
-	
+
 	if len(dlm.localityScores) == 0 {
 		return 0.5
 	}
-	
+
 	totalScore := 0.0
 	for _, score := range dlm.localityScores {
 		totalScore += score
 	}
-	
+
 	return totalScore / float64(len(dlm.localityScores))
 }
 
@@ -957,16 +980,16 @@ func (dlm *DataLocalityManager) calculateOverallLocalityScore() float64 {
 func (so *ShardOptimizer) updateTemperatureRatios() {
 	so.hotColdSeparator.mutex.RLock()
 	defer so.hotColdSeparator.mutex.RUnlock()
-	
+
 	if len(so.hotColdSeparator.temperatureMap) == 0 {
 		so.stats.HotDataRatio = 0.0
 		so.stats.ColdDataRatio = 0.0
 		return
 	}
-	
+
 	hotCount := 0
 	coldCount := 0
-	
+
 	for _, temp := range so.hotColdSeparator.temperatureMap {
 		if temp.Temperature >= so.hotColdSeparator.hotThreshold {
 			hotCount++
@@ -974,8 +997,8 @@ func (so *ShardOptimizer) updateTemperatureRatios() {
 			coldCount++
 		}
 	}
-	
+
 	total := float64(len(so.hotColdSeparator.temperatureMap))
 	so.stats.HotDataRatio = float64(hotCount) / total
 	so.stats.ColdDataRatio = float64(coldCount) / total
-} 
+}

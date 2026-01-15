@@ -35,6 +35,8 @@ type Server struct {
 	authManager     *security.AuthManager
 	grpcInterceptor *security.GRPCInterceptor
 	grpcServer      *grpc.Server
+	tokenManager    *security.TokenManager
+	jwtManager      *security.JWTManager
 
 	// 智能限流相关
 	smartRateLimiter     *security.SmartRateLimiter
@@ -106,6 +108,18 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Serv
 		log.Println("gRPC smart rate limiter disabled")
 	}
 
+	// 创建JWT管理器
+	jwtManager := security.NewJWTManager(cfg.Security.JWTSecret, cfg.Security.TokenExpiration)
+	
+	// 创建令牌管理器 (假设有Redis客户端可用)
+	var tokenManager *security.TokenManager
+	if miniodbService != nil {
+		// 从服务中获取Redis客户端
+		tokenManager = security.NewTokenManager(nil) // 暂时使用本地存储
+	} else {
+		tokenManager = security.NewTokenManager(nil)
+	}
+
 	server := &Server{
 		miniodbService:       miniodbService,
 		cfg:                  cfg,
@@ -113,6 +127,8 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Serv
 		grpcInterceptor:      grpcInterceptor,
 		smartRateLimiter:     smartRateLimiter,
 		grpcSmartRateLimiter: grpcSmartRateLimiter,
+		tokenManager:         tokenManager,
+		jwtManager:           jwtManager,
 	}
 
 	// 构建拦截器链
@@ -619,10 +635,21 @@ func (s *Server) GetToken(ctx context.Context, req *miniodb.GetTokenRequest) (*m
 		return nil, fmt.Errorf("invalid credentials: %w", err)
 	}
 
+	// 生成安全的刷新令牌
+	refreshToken, err := s.tokenManager.GenerateRefreshToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+
+	// 存储刷新令牌
+	if err := s.tokenManager.StoreRefreshToken(ctx, refreshToken, username); err != nil {
+		return nil, fmt.Errorf("failed to store refresh token: %w", err)
+	}
+
 	return &miniodb.GetTokenResponse{
 		AccessToken:  accessToken,
-		RefreshToken: "refresh_" + accessToken, // 简单实现
-		ExpiresIn:    3600,                     // 1小时
+		RefreshToken: refreshToken,
+		ExpiresIn:    3600, // 1小时
 		TokenType:    "Bearer",
 	}, nil
 }
@@ -641,9 +668,38 @@ func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequ
 		return nil, fmt.Errorf("invalid refresh token: %w", err)
 	}
 
+	// 验证刷新令牌
+	userID, err := s.tokenManager.ValidateRefreshToken(ctx, req.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("invalid refresh token: %w", err)
+	}
+
+	// 生成新的访问令牌
+	accessToken, err := s.jwtManager.GenerateToken(userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate access token: %w", err)
+	}
+
+	// 生成新的刷新令牌
+	newRefreshToken, err := s.tokenManager.GenerateRefreshToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+
+	// 撤销旧的刷新令牌
+	if err := s.tokenManager.RevokeRefreshToken(ctx, req.RefreshToken); err != nil {
+		// 记录错误但不阻止流程
+		log.Printf("WARN: Failed to revoke old refresh token: %v", err)
+	}
+
+	// 存储新的刷新令牌
+	if err := s.tokenManager.StoreRefreshToken(ctx, newRefreshToken, userID); err != nil {
+		return nil, fmt.Errorf("failed to store refresh token: %w", err)
+	}
+
 	return &miniodb.RefreshTokenResponse{
 		AccessToken:  accessToken,
-		RefreshToken: "refresh_" + accessToken,
+		RefreshToken: newRefreshToken,
 		ExpiresIn:    3600,
 		TokenType:    "Bearer",
 	}, nil

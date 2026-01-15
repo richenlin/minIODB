@@ -14,6 +14,7 @@ import (
 	"minIODB/internal/buffer"
 	"minIODB/internal/config"
 	"minIODB/internal/pool"
+	"minIODB/internal/security"
 	"minIODB/internal/storage"
 
 	"github.com/go-redis/redis/v8"
@@ -318,8 +319,11 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 		return nil
 	}
 
-	// 删除可能存在的旧视图
-	dropViewSQL := fmt.Sprintf("DROP VIEW IF EXISTS %s", tableName)
+	// 使用安全的 SQL 构建器删除旧视图
+	dropViewSQL, err := security.DefaultSanitizer.BuildSafeDropViewSQL(tableName)
+	if err != nil {
+		return fmt.Errorf("invalid table name for drop view: %w", err)
+	}
 	log.Printf("Executing DROP VIEW SQL: %s", dropViewSQL)
 	if _, err := db.Exec(dropViewSQL); err != nil {
 		log.Printf("WARN: failed to drop existing view for table %s: %v", tableName, err)
@@ -327,23 +331,15 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 		log.Printf("Successfully dropped existing view (if any) for table %s", tableName)
 	}
 
-	// 构建文件列表
-	var filePaths []string
-	for _, file := range files {
-		filePaths = append(filePaths, fmt.Sprintf("'%s'", file))
+	// 使用安全的 SQL 构建器创建视图
+	createViewSQL, err := security.DefaultSanitizer.BuildSafeCreateViewSQL(tableName, files)
+	if err != nil {
+		return fmt.Errorf("invalid parameters for create view: %w", err)
 	}
-
-	// 创建新视图，支持多个Parquet文件
-	createViewSQL := fmt.Sprintf(
-		"CREATE VIEW %s AS SELECT * FROM read_parquet([%s])",
-		tableName,
-		strings.Join(filePaths, ", "),
-	)
 
 	log.Printf("Creating view for table %s with %d files using provided DB connection", tableName, len(files))
 	log.Printf("Executing CREATE VIEW SQL: %s", createViewSQL)
 
-	// 执行SQL并详细记录结果
 	if _, err := db.Exec(createViewSQL); err != nil {
 		log.Printf("ERROR: Failed to create view for table %s with SQL: %s", tableName, createViewSQL)
 		log.Printf("ERROR: SQL execution error: %v", err)
@@ -353,8 +349,12 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 
 	log.Printf("Successfully created view for table %s", tableName)
 
-	// 验证视图是否真的创建成功
-	testSQL := fmt.Sprintf("SELECT COUNT(*) FROM %s LIMIT 0", tableName)
+	// 使用安全的方式验证视图
+	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, nil, "")
+	if err != nil {
+		return fmt.Errorf("invalid table name for verification: %w", err)
+	}
+	testSQL = testSQL + " LIMIT 0"
 	log.Printf("Testing view existence with SQL: %s", testSQL)
 	if _, err := db.Query(testSQL); err != nil {
 		log.Printf("ERROR: View verification failed for table %s: %v", tableName, err)

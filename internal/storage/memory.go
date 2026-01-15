@@ -23,32 +23,32 @@ type MemoryOptimizer struct {
 
 // MemoryConfig 内存配置
 type MemoryConfig struct {
-	MaxMemoryUsage    int64         `json:"max_memory_usage"`
-	PoolSizes         map[string]int `json:"pool_sizes"`
-	GCInterval        time.Duration `json:"gc_interval"`
-	ZeroCopyEnabled   bool          `json:"zero_copy_enabled"`
-	CompressionLevel  int           `json:"compression_level"`
-	EnableProfiling   bool          `json:"enable_profiling"`
+	MaxMemoryUsage   int64          `json:"max_memory_usage"`
+	PoolSizes        map[string]int `json:"pool_sizes"`
+	GCInterval       time.Duration  `json:"gc_interval"`
+	ZeroCopyEnabled  bool           `json:"zero_copy_enabled"`
+	CompressionLevel int            `json:"compression_level"`
+	EnableProfiling  bool           `json:"enable_profiling"`
 }
 
 // MemoryPool 内存池
 type MemoryPool struct {
-	name        string
-	bufferSize  int
-	maxBuffers  int
-	buffers     chan []byte
-	allocated   int64
-	stats       *PoolStats
-	mutex       sync.RWMutex
+	name       string
+	bufferSize int
+	maxBuffers int
+	buffers    chan []byte
+	allocated  int64
+	stats      *PoolStats
+	mutex      sync.RWMutex
 }
 
 // PoolStats 内存池统计
 type PoolStats struct {
-	TotalAllocated   int64 `json:"total_allocated"`
-	CurrentInUse     int64 `json:"current_in_use"`
-	PoolHits         int64 `json:"pool_hits"`
-	PoolMisses       int64 `json:"pool_misses"`
-	AllocationCount  int64 `json:"allocation_count"`
+	TotalAllocated    int64 `json:"total_allocated"`
+	CurrentInUse      int64 `json:"current_in_use"`
+	PoolHits          int64 `json:"pool_hits"`
+	PoolMisses        int64 `json:"pool_misses"`
+	AllocationCount   int64 `json:"allocation_count"`
 	DeallocationCount int64 `json:"deallocation_count"`
 }
 
@@ -63,37 +63,37 @@ type BufferOptimizer struct {
 
 // BufferConfig 缓冲区配置
 type BufferConfig struct {
-	ReadBufferSize    int           `json:"read_buffer_size"`
-	WriteBufferSize   int           `json:"write_buffer_size"`
-	FlushThreshold    float64       `json:"flush_threshold"`
-	CompressionType   string        `json:"compression_type"`
-	EnableBatching    bool          `json:"enable_batching"`
-	BatchSize         int           `json:"batch_size"`
+	ReadBufferSize  int     `json:"read_buffer_size"`
+	WriteBufferSize int     `json:"write_buffer_size"`
+	FlushThreshold  float64 `json:"flush_threshold"`
+	CompressionType string  `json:"compression_type"`
+	EnableBatching  bool    `json:"enable_batching"`
+	BatchSize       int     `json:"batch_size"`
 }
 
 // ReadBuffer 读取缓冲区
 type ReadBuffer struct {
-	name         string
-	data         []byte
-	size         int
-	position     int
-	hits         int64
-	misses       int64
-	lastAccess   time.Time
-	compressed   bool
-	mutex        sync.RWMutex
+	name       string
+	data       []byte
+	size       int
+	position   int
+	hits       int64
+	misses     int64
+	lastAccess time.Time
+	compressed bool
+	mutex      sync.RWMutex
 }
 
 // WriteBuffer 写入缓冲区
 type WriteBuffer struct {
-	name         string
-	data         []byte
-	size         int
-	position     int
-	flushCount   int64
-	lastFlush    time.Time
-	dirty        bool
-	mutex        sync.RWMutex
+	name       string
+	data       []byte
+	size       int
+	position   int
+	flushCount int64
+	lastFlush  time.Time
+	dirty      bool
+	mutex      sync.RWMutex
 }
 
 // BufferStats 缓冲区统计
@@ -114,20 +114,20 @@ type ZeroCopyManager struct {
 
 // MappedRegion 内存映射区域
 type MappedRegion struct {
-	name      string
-	data      []byte
-	size      int64
-	readonly  bool
-	mapped    bool
-	refCount  int32
-	lastUsed  time.Time
+	name     string
+	data     []byte
+	size     int64
+	readonly bool
+	mapped   bool
+	refCount int32
+	lastUsed time.Time
 }
 
 // CopyStats 拷贝统计
 type CopyStats struct {
-	ZeroCopyOperations int64 `json:"zero_copy_operations"`
-	StandardCopyOps    int64 `json:"standard_copy_operations"`
-	BytesSaved         int64 `json:"bytes_saved"`
+	ZeroCopyOperations int64         `json:"zero_copy_operations"`
+	StandardCopyOps    int64         `json:"standard_copy_operations"`
+	BytesSaved         int64         `json:"bytes_saved"`
 	TimeSaved          time.Duration `json:"time_saved"`
 }
 
@@ -144,23 +144,23 @@ type GCManager struct {
 
 // GCStats 垃圾回收统计
 type GCStats struct {
-	GCCount       int64         `json:"gc_count"`
-	TotalGCTime   time.Duration `json:"total_gc_time"`
-	AvgGCTime     time.Duration `json:"avg_gc_time"`
-	MemoryFreed   int64         `json:"memory_freed"`
-	LastGC        time.Time     `json:"last_gc"`
+	GCCount     int64         `json:"gc_count"`
+	TotalGCTime time.Duration `json:"total_gc_time"`
+	AvgGCTime   time.Duration `json:"avg_gc_time"`
+	MemoryFreed int64         `json:"memory_freed"`
+	LastGC      time.Time     `json:"last_gc"`
 }
 
 // MemoryStats 内存统计
 type MemoryStats struct {
-	TotalAllocated    int64         `json:"total_allocated"`
-	CurrentUsage      int64         `json:"current_usage"`
-	PeakUsage         int64         `json:"peak_usage"`
-	PoolEfficiency    float64       `json:"pool_efficiency"`
-	FragmentationRatio float64      `json:"fragmentation_ratio"`
-	GCEfficiency      float64       `json:"gc_efficiency"`
-	LastOptimization  time.Time     `json:"last_optimization"`
-	mutex             sync.RWMutex
+	TotalAllocated     int64     `json:"total_allocated"`
+	CurrentUsage       int64     `json:"current_usage"`
+	PeakUsage          int64     `json:"peak_usage"`
+	PoolEfficiency     float64   `json:"pool_efficiency"`
+	FragmentationRatio float64   `json:"fragmentation_ratio"`
+	GCEfficiency       float64   `json:"gc_efficiency"`
+	LastOptimization   time.Time `json:"last_optimization"`
+	mutex              sync.RWMutex
 }
 
 // NewMemoryOptimizer 创建内存优化器
@@ -189,9 +189,9 @@ func NewBufferOptimizer() *BufferOptimizer {
 		readBuffers:  make(map[string]*ReadBuffer),
 		writeBuffers: make(map[string]*WriteBuffer),
 		config: &BufferConfig{
-			ReadBufferSize:  64 * 1024,   // 64KB
-			WriteBufferSize: 128 * 1024,  // 128KB
-			FlushThreshold:  0.8,         // 80%
+			ReadBufferSize:  64 * 1024,  // 64KB
+			WriteBufferSize: 128 * 1024, // 128KB
+			FlushThreshold:  0.8,        // 80%
 			CompressionType: "lz4",
 			EnableBatching:  true,
 			BatchSize:       100,
@@ -225,9 +225,9 @@ func (mo *MemoryOptimizer) initMemoryPools() {
 		bufferSize int
 		maxBuffers int
 	}{
-		"small":  {4 * 1024, 1000},     // 4KB buffers
-		"medium": {64 * 1024, 500},     // 64KB buffers
-		"large":  {1024 * 1024, 100},   // 1MB buffers
+		"small":  {4 * 1024, 1000},      // 4KB buffers
+		"medium": {64 * 1024, 500},      // 64KB buffers
+		"large":  {1024 * 1024, 100},    // 1MB buffers
 		"xlarge": {4 * 1024 * 1024, 25}, // 4MB buffers
 	}
 
@@ -252,7 +252,7 @@ func (mo *MemoryOptimizer) initMemoryPools() {
 		}
 
 		mo.memoryPools[name] = pool
-		log.Printf("Initialized memory pool: %s (bufferSize: %d, maxBuffers: %d)", 
+		log.Printf("Initialized memory pool: %s (bufferSize: %d, maxBuffers: %d)",
 			name, config.bufferSize, config.maxBuffers)
 	}
 }
@@ -263,7 +263,10 @@ func (mo *MemoryOptimizer) GetBuffer(size int) []byte {
 	pool := mo.memoryPools[poolName]
 
 	if pool == nil {
-		// 直接分配
+		if !mo.checkMemoryLimit(int64(size)) {
+			log.Printf("WARN: memory limit exceeded, returning nil buffer")
+			return nil
+		}
 		atomic.AddInt64(&mo.stats.TotalAllocated, int64(size))
 		return make([]byte, size)
 	}
@@ -274,14 +277,25 @@ func (mo *MemoryOptimizer) GetBuffer(size int) []byte {
 		atomic.AddInt64(&pool.stats.CurrentInUse, int64(pool.bufferSize))
 		return buffer[:size]
 	default:
-		// 池中无可用buffer，分配新的
+		if !mo.checkMemoryLimit(int64(pool.bufferSize)) {
+			log.Printf("WARN: memory limit exceeded, returning nil buffer")
+			return nil
+		}
 		atomic.AddInt64(&pool.stats.PoolMisses, 1)
 		atomic.AddInt64(&pool.stats.AllocationCount, 1)
 		atomic.AddInt64(&pool.allocated, int64(pool.bufferSize))
 		atomic.AddInt64(&mo.stats.TotalAllocated, int64(pool.bufferSize))
-		
+
 		return make([]byte, size)
 	}
+}
+
+func (mo *MemoryOptimizer) checkMemoryLimit(requestedSize int64) bool {
+	if mo.config == nil || mo.config.MaxMemoryUsage <= 0 {
+		return true
+	}
+	currentUsage := atomic.LoadInt64(&mo.stats.TotalAllocated)
+	return currentUsage+requestedSize <= mo.config.MaxMemoryUsage
 }
 
 // ReturnBuffer 归还缓冲区
@@ -337,7 +351,7 @@ func (mo *MemoryOptimizer) CreateReadBuffer(name string, size int) *ReadBuffer {
 
 	mo.bufferOptimizer.readBuffers[name] = buffer
 	log.Printf("Created read buffer: %s (size: %d)", name, size)
-	
+
 	return buffer
 }
 
@@ -357,7 +371,7 @@ func (mo *MemoryOptimizer) CreateWriteBuffer(name string, size int) *WriteBuffer
 
 	mo.bufferOptimizer.writeBuffers[name] = buffer
 	log.Printf("Created write buffer: %s (size: %d)", name, size)
-	
+
 	return buffer
 }
 
@@ -374,7 +388,7 @@ func (rb *ReadBuffer) Read(data []byte) (int, error) {
 
 	n := copy(data, rb.data[rb.position:])
 	rb.position += n
-	
+
 	if n > 0 {
 		atomic.AddInt64(&rb.hits, 1)
 	} else {
@@ -534,18 +548,18 @@ func (gcm *GCManager) gcLoop() {
 // performGC 执行垃圾回收
 func (gcm *GCManager) performGC() {
 	startTime := time.Now()
-	
+
 	var memBefore runtime.MemStats
 	runtime.ReadMemStats(&memBefore)
-	
+
 	runtime.GC()
-	
+
 	var memAfter runtime.MemStats
 	runtime.ReadMemStats(&memAfter)
-	
+
 	gcTime := time.Since(startTime)
 	memoryFreed := int64(memBefore.Alloc - memAfter.Alloc)
-	
+
 	gcm.mutex.Lock()
 	gcm.gcStats.GCCount++
 	gcm.gcStats.TotalGCTime += gcTime
@@ -554,7 +568,7 @@ func (gcm *GCManager) performGC() {
 	gcm.gcStats.LastGC = time.Now()
 	gcm.lastGC = time.Now()
 	gcm.mutex.Unlock()
-	
+
 	log.Printf("GC completed: freed %d bytes in %v", memoryFreed, gcTime)
 }
 
@@ -570,29 +584,29 @@ func (gcm *GCManager) ForceGC() {
 // OptimizeMemory 优化内存使用
 func (mo *MemoryOptimizer) OptimizeMemory(ctx context.Context) error {
 	log.Println("Starting memory optimization...")
-	
+
 	startTime := time.Now()
-	
+
 	// 优化内存池
 	mo.optimizeMemoryPools()
-	
+
 	// 优化缓冲区
 	mo.optimizeBuffers()
-	
+
 	// 清理零拷贝区域
 	mo.cleanupZeroCopyRegions()
-	
+
 	// 强制GC
 	mo.gcManager.ForceGC()
-	
+
 	// 更新统计信息
 	mo.updateMemoryStats()
-	
+
 	optimizationTime := time.Since(startTime)
 	mo.stats.mutex.Lock()
 	mo.stats.LastOptimization = time.Now()
 	mo.stats.mutex.Unlock()
-	
+
 	log.Printf("Memory optimization completed in %v", optimizationTime)
 	return nil
 }
@@ -601,13 +615,13 @@ func (mo *MemoryOptimizer) OptimizeMemory(ctx context.Context) error {
 func (mo *MemoryOptimizer) optimizeMemoryPools() {
 	for name, pool := range mo.memoryPools {
 		pool.mutex.Lock()
-		
+
 		// 计算池效率
 		totalOps := pool.stats.PoolHits + pool.stats.PoolMisses
 		if totalOps > 0 {
 			hitRate := float64(pool.stats.PoolHits) / float64(totalOps)
 			log.Printf("Pool %s hit rate: %.2f%%", name, hitRate*100)
-			
+
 			// 如果命中率过低，考虑调整池大小
 			if hitRate < 0.5 && len(pool.buffers) < pool.maxBuffers {
 				// 增加预分配的buffer
@@ -622,7 +636,7 @@ func (mo *MemoryOptimizer) optimizeMemoryPools() {
 				}
 			}
 		}
-		
+
 		pool.mutex.Unlock()
 	}
 }
@@ -631,9 +645,9 @@ func (mo *MemoryOptimizer) optimizeMemoryPools() {
 func (mo *MemoryOptimizer) optimizeBuffers() {
 	mo.bufferOptimizer.mutex.Lock()
 	defer mo.bufferOptimizer.mutex.Unlock()
-	
+
 	now := time.Now()
-	
+
 	// 清理长时间未使用的读取缓冲区
 	for name, buffer := range mo.bufferOptimizer.readBuffers {
 		if now.Sub(buffer.lastAccess) > time.Hour {
@@ -641,7 +655,7 @@ func (mo *MemoryOptimizer) optimizeBuffers() {
 			log.Printf("Removed unused read buffer: %s", name)
 		}
 	}
-	
+
 	// 刷新写入缓冲区
 	for name, buffer := range mo.bufferOptimizer.writeBuffers {
 		if buffer.dirty && now.Sub(buffer.lastFlush) > 5*time.Minute {
@@ -655,9 +669,9 @@ func (mo *MemoryOptimizer) optimizeBuffers() {
 func (mo *MemoryOptimizer) cleanupZeroCopyRegions() {
 	mo.zeroCopyManager.mutex.Lock()
 	defer mo.zeroCopyManager.mutex.Unlock()
-	
+
 	now := time.Now()
-	
+
 	for name, region := range mo.zeroCopyManager.mappedRegions {
 		if atomic.LoadInt32(&region.refCount) <= 0 && now.Sub(region.lastUsed) > time.Hour {
 			delete(mo.zeroCopyManager.mappedRegions, name)
@@ -670,28 +684,28 @@ func (mo *MemoryOptimizer) cleanupZeroCopyRegions() {
 func (mo *MemoryOptimizer) updateMemoryStats() {
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
-	
+
 	mo.stats.mutex.Lock()
 	defer mo.stats.mutex.Unlock()
-	
+
 	mo.stats.CurrentUsage = int64(stats.Alloc)
 	if int64(stats.Alloc) > mo.stats.PeakUsage {
 		mo.stats.PeakUsage = int64(stats.Alloc)
 	}
-	
+
 	// 计算池效率
 	totalHits := int64(0)
 	totalOps := int64(0)
-	
+
 	for _, pool := range mo.memoryPools {
 		totalHits += pool.stats.PoolHits
 		totalOps += pool.stats.PoolHits + pool.stats.PoolMisses
 	}
-	
+
 	if totalOps > 0 {
 		mo.stats.PoolEfficiency = float64(totalHits) / float64(totalOps)
 	}
-	
+
 	// 计算碎片化比例（简化计算）
 	mo.stats.FragmentationRatio = float64(stats.Sys-stats.Alloc) / float64(stats.Sys)
 }
@@ -700,22 +714,29 @@ func (mo *MemoryOptimizer) updateMemoryStats() {
 func (mo *MemoryOptimizer) GetStats() *MemoryStats {
 	mo.stats.mutex.RLock()
 	defer mo.stats.mutex.RUnlock()
-	
-	statsCopy := *mo.stats
-	return &statsCopy
+
+	return &MemoryStats{
+		TotalAllocated:     mo.stats.TotalAllocated,
+		CurrentUsage:       mo.stats.CurrentUsage,
+		PeakUsage:          mo.stats.PeakUsage,
+		PoolEfficiency:     mo.stats.PoolEfficiency,
+		FragmentationRatio: mo.stats.FragmentationRatio,
+		GCEfficiency:       mo.stats.GCEfficiency,
+		LastOptimization:   mo.stats.LastOptimization,
+	}
 }
 
 // GetPoolStats 获取内存池统计信息
 func (mo *MemoryOptimizer) GetPoolStats() map[string]*PoolStats {
 	mo.mutex.RLock()
 	defer mo.mutex.RUnlock()
-	
+
 	stats := make(map[string]*PoolStats)
 	for name, pool := range mo.memoryPools {
 		poolStats := *pool.stats
 		stats[name] = &poolStats
 	}
-	
+
 	return stats
 }
 
@@ -723,7 +744,7 @@ func (mo *MemoryOptimizer) GetPoolStats() map[string]*PoolStats {
 func (mo *MemoryOptimizer) GetGCStats() *GCStats {
 	mo.gcManager.mutex.RLock()
 	defer mo.gcManager.mutex.RUnlock()
-	
+
 	statsCopy := *mo.gcManager.gcStats
 	return &statsCopy
-} 
+}

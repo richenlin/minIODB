@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -19,46 +20,47 @@ import (
 
 // FileCache 本地文件缓存管理器
 type FileCache struct {
-	cacheDir      string
-	maxCacheSize  int64
-	maxFileAge    time.Duration
-	redisClient   *redis.Client
-	logger        *zap.Logger
-	mu            sync.RWMutex
-	currentSize   int64
-	cacheIndex    map[string]*FileCacheEntry
-	accessStats   map[string]time.Time
+	cacheDir     string
+	maxCacheSize int64
+	maxFileAge   time.Duration
+	redisClient  *redis.Client
+	logger       *zap.Logger
+	mu           sync.RWMutex
+	currentSize  int64
+	cacheIndex   map[string]*FileCacheEntry
+	accessStats  map[string]time.Time
+	stopChan     chan struct{}
 }
 
 // FileCacheConfig 文件缓存配置
 type FileCacheConfig struct {
-	CacheDir     string        `yaml:"cache_dir"`      // 缓存目录
-	MaxCacheSize int64         `yaml:"max_cache_size"` // 最大缓存大小（字节）
-	MaxFileAge   time.Duration `yaml:"max_file_age"`   // 文件最大保留时间
+	CacheDir        string        `yaml:"cache_dir"`        // 缓存目录
+	MaxCacheSize    int64         `yaml:"max_cache_size"`   // 最大缓存大小（字节）
+	MaxFileAge      time.Duration `yaml:"max_file_age"`     // 文件最大保留时间
 	CleanupInterval time.Duration `yaml:"cleanup_interval"` // 清理间隔
 }
 
 // FileCacheEntry 文件缓存条目
 type FileCacheEntry struct {
-	ObjectName    string    `json:"object_name"`    // 对象存储中的文件名
-	LocalPath     string    `json:"local_path"`     // 本地文件路径
-	Size          int64     `json:"size"`           // 文件大小
-	CreatedAt     time.Time `json:"created_at"`     // 创建时间
-	LastAccessed  time.Time `json:"last_accessed"`  // 最后访问时间
-	AccessCount   int64     `json:"access_count"`   // 访问次数
-	Hash          string    `json:"hash"`           // 文件哈希
+	ObjectName   string    `json:"object_name"`   // 对象存储中的文件名
+	LocalPath    string    `json:"local_path"`    // 本地文件路径
+	Size         int64     `json:"size"`          // 文件大小
+	CreatedAt    time.Time `json:"created_at"`    // 创建时间
+	LastAccessed time.Time `json:"last_accessed"` // 最后访问时间
+	AccessCount  int64     `json:"access_count"`  // 访问次数
+	Hash         string    `json:"hash"`          // 文件哈希
 }
 
 // FileCacheStats 文件缓存统计
 type FileCacheStats struct {
-	TotalFiles    int64   `json:"total_files"`
-	TotalSize     int64   `json:"total_size"`
-	CacheHits     int64   `json:"cache_hits"`
-	CacheMisses   int64   `json:"cache_misses"`
-	HitRatio      float64 `json:"hit_ratio"`
-	OldestFile    string  `json:"oldest_file"`
-	NewestFile    string  `json:"newest_file"`
-	AvgFileSize   int64   `json:"avg_file_size"`
+	TotalFiles  int64   `json:"total_files"`
+	TotalSize   int64   `json:"total_size"`
+	CacheHits   int64   `json:"cache_hits"`
+	CacheMisses int64   `json:"cache_misses"`
+	HitRatio    float64 `json:"hit_ratio"`
+	OldestFile  string  `json:"oldest_file"`
+	NewestFile  string  `json:"newest_file"`
+	AvgFileSize int64   `json:"avg_file_size"`
 }
 
 // NewFileCache 创建文件缓存管理器
@@ -85,6 +87,7 @@ func NewFileCache(config *FileCacheConfig, redisClient *redis.Client, logger *za
 		logger:       logger,
 		cacheIndex:   make(map[string]*FileCacheEntry),
 		accessStats:  make(map[string]time.Time),
+		stopChan:     make(chan struct{}),
 	}
 
 	// 初始化缓存索引
@@ -102,7 +105,7 @@ func NewFileCache(config *FileCacheConfig, redisClient *redis.Client, logger *za
 func (fc *FileCache) Get(ctx context.Context, objectName string, downloadFunc func(string) (string, error)) (string, error) {
 	// 生成缓存键
 	cacheKey := fc.generateCacheKey(objectName)
-	
+
 	fc.mu.RLock()
 	entry, exists := fc.cacheIndex[cacheKey]
 	fc.mu.RUnlock()
@@ -117,7 +120,7 @@ func (fc *FileCache) Get(ctx context.Context, objectName string, downloadFunc fu
 
 	// 缓存未命中，需要下载文件
 	log.Printf("File cache MISS: %s", objectName)
-	
+
 	// 下载文件
 	tempPath, err := downloadFunc(objectName)
 	if err != nil {
@@ -200,13 +203,13 @@ func (fc *FileCache) generateCacheKey(objectName string) string {
 	// 使用MD5哈希生成文件名，避免路径问题
 	hash := md5.Sum([]byte(objectName))
 	hashStr := hex.EncodeToString(hash[:])
-	
+
 	// 保留原始文件扩展名
 	ext := filepath.Ext(objectName)
 	if ext == "" {
 		ext = ".parquet" // 默认扩展名
 	}
-	
+
 	return hashStr + ext
 }
 
@@ -222,14 +225,38 @@ func (fc *FileCache) isCacheValid(entry *FileCacheEntry) bool {
 		return false
 	}
 
+	// 检查文件内容完整性（如果有哈希值）
+	if entry.Hash != "" {
+		if !fc.validateFileHash(entry.LocalPath, entry.Hash) {
+			return false
+		}
+	}
+
 	return true
+}
+
+// validateFileHash 验证文件哈希值
+func (fc *FileCache) validateFileHash(filePath, expectedHash string) bool {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return false
+	}
+
+	actualHash := hex.EncodeToString(hasher.Sum(nil))
+	return actualHash == expectedHash
 }
 
 // updateAccessStats 更新访问统计
 func (fc *FileCache) updateAccessStats(cacheKey string, entry *FileCacheEntry) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
-	
+
 	entry.LastAccessed = time.Now()
 	entry.AccessCount++
 	fc.accessStats[cacheKey] = time.Now()
@@ -247,7 +274,7 @@ func (fc *FileCache) ensureCacheSpace(requiredSpace int64) error {
 
 	// 需要清理空间，按LRU策略删除文件
 	freedSpace := int64(0)
-	
+
 	// 按最后访问时间排序
 	var entries []*FileCacheEntry
 	for _, entry := range fc.cacheIndex {
@@ -261,11 +288,11 @@ func (fc *FileCache) ensureCacheSpace(requiredSpace int64) error {
 		}
 
 		if err := fc.removeFromCache(entry); err != nil {
-			fc.logger.Warn("Failed to remove file from cache", 
+			fc.logger.Warn("Failed to remove file from cache",
 				zap.String("file", entry.ObjectName), zap.Error(err))
 			continue
 		}
-		
+
 		freedSpace += entry.Size
 		log.Printf("Evicted cached file: %s (size: %d)", entry.ObjectName, entry.Size)
 	}
@@ -307,7 +334,7 @@ func (fc *FileCache) copyFile(src, dst string) error {
 	return err
 }
 
-// calculateFileHash 计算文件哈希
+// calculateFileHash 计算文件哈希（使用SHA256）
 func (fc *FileCache) calculateFileHash(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -315,7 +342,7 @@ func (fc *FileCache) calculateFileHash(filePath string) (string, error) {
 	}
 	defer file.Close()
 
-	hash := md5.New()
+	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
 	}
@@ -349,7 +376,7 @@ func (fc *FileCache) loadCacheIndex() error {
 		// 从Redis加载缓存元数据（如果存在）
 		cacheKey := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
 		metadataKey := "file_cache_meta:" + cacheKey
-		
+
 		var objectName string
 		var createdAt time.Time
 		var accessCount int64
@@ -386,7 +413,7 @@ func (fc *FileCache) loadCacheIndex() error {
 		fc.currentSize += fileInfo.Size()
 	}
 
-	log.Printf("Loaded file cache index: %d files, total size: %d bytes", 
+	log.Printf("Loaded file cache index: %d files, total size: %d bytes",
 		len(fc.cacheIndex), fc.currentSize)
 	return nil
 }
@@ -400,7 +427,7 @@ func (fc *FileCache) saveCacheIndex() error {
 	ctx := context.Background()
 	for cacheKey, entry := range fc.cacheIndex {
 		metadataKey := "file_cache_meta:" + strings.TrimSuffix(cacheKey, filepath.Ext(cacheKey))
-		
+
 		metadata := map[string]interface{}{
 			"object_name":   entry.ObjectName,
 			"local_path":    entry.LocalPath,
@@ -411,10 +438,10 @@ func (fc *FileCache) saveCacheIndex() error {
 		}
 
 		if err := fc.redisClient.HMSet(ctx, metadataKey, metadata).Err(); err != nil {
-			fc.logger.Warn("Failed to save cache metadata", 
+			fc.logger.Warn("Failed to save cache metadata",
 				zap.String("key", metadataKey), zap.Error(err))
 		}
-		
+
 		// 设置TTL
 		fc.redisClient.Expire(ctx, metadataKey, fc.maxFileAge*2)
 	}
@@ -427,8 +454,13 @@ func (fc *FileCache) startCleanupRoutine(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		fc.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			fc.cleanup()
+		case <-fc.stopChan:
+			return
+		}
 	}
 }
 
@@ -450,7 +482,7 @@ func (fc *FileCache) cleanup() {
 	// 移除过期文件
 	for _, entry := range toRemove {
 		if err := fc.removeFromCache(entry); err != nil {
-			fc.logger.Warn("Failed to remove expired file", 
+			fc.logger.Warn("Failed to remove expired file",
 				zap.String("file", entry.ObjectName), zap.Error(err))
 		} else {
 			log.Printf("Removed expired cached file: %s", entry.ObjectName)
@@ -474,7 +506,7 @@ func (fc *FileCache) GetStats() *FileCacheStats {
 
 	if stats.TotalFiles > 0 {
 		stats.AvgFileSize = stats.TotalSize / stats.TotalFiles
-		
+
 		// 找到最新和最旧的文件
 		var oldest, newest time.Time
 		for _, entry := range fc.cacheIndex {
@@ -511,13 +543,20 @@ func (fc *FileCache) Clear() error {
 	return nil
 }
 
+// Stop 停止文件缓存清理协程
+func (fc *FileCache) Stop() {
+	if fc.stopChan != nil {
+		close(fc.stopChan)
+	}
+}
+
 // Contains 检查文件是否在缓存中
 func (fc *FileCache) Contains(objectName string) bool {
 	cacheKey := fc.generateCacheKey(objectName)
-	
+
 	fc.mu.RLock()
 	entry, exists := fc.cacheIndex[cacheKey]
 	fc.mu.RUnlock()
 
 	return exists && fc.isCacheValid(entry)
-} 
+}

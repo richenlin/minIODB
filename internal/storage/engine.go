@@ -222,7 +222,7 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 	optimizer := &StorageEngine{
 		parquetOptimizer: NewParquet(),
 		shardOptimizer:   NewShardOptimizer(),
-		indexSystem:      NewIndexSystem(redisPool),
+		indexSystem:      NewIndexSystem(redisClient),
 		memoryOptimizer: NewMemoryOptimizer(&MemoryConfig{
 			MaxMemoryUsage:  engineConfig.MemoryConfig.MaxMemoryUsage,
 			PoolSizes:       engineConfig.MemoryConfig.MemoryPoolSizes,
@@ -597,24 +597,37 @@ func (seo *StorageEngine) GetEngineStats() *EngineStats {
 	seo.stats.mutex.RLock()
 	defer seo.stats.mutex.RUnlock()
 
-	// 创建深拷贝
-	statsCopy := *seo.stats
+	statsCopy := &EngineStats{
+		QueryLatency:       seo.stats.QueryLatency,
+		WriteLatency:       seo.stats.WriteLatency,
+		Throughput:         seo.stats.Throughput,
+		CompressionRatio:   seo.stats.CompressionRatio,
+		StorageEfficiency:  seo.stats.StorageEfficiency,
+		CacheHitRate:       seo.stats.CacheHitRate,
+		PerformanceGain:    seo.stats.PerformanceGain,
+		StorageSavings:     seo.stats.StorageSavings,
+		MemoryEfficiency:   seo.stats.MemoryEfficiency,
+		IndexEffectiveness: seo.stats.IndexEffectiveness,
+		TotalOptimizations: seo.stats.TotalOptimizations,
+		LastOptimization:   seo.stats.LastOptimization,
+		OptimizationTime:   seo.stats.OptimizationTime,
+		SystemHealth:       seo.stats.SystemHealth,
+	}
 
-	// 复制组件统计（需要深拷贝）
-	if seo.stats.ParquetStats != nil {
+	if seo.parquetOptimizer != nil {
 		statsCopy.ParquetStats = seo.parquetOptimizer.GetStats()
 	}
-	if seo.stats.ShardStats != nil {
+	if seo.shardOptimizer != nil {
 		statsCopy.ShardStats = seo.shardOptimizer.GetStats()
 	}
-	if seo.stats.IndexStats != nil {
+	if seo.indexSystem != nil {
 		statsCopy.IndexStats = seo.indexSystem.GetStats()
 	}
-	if seo.stats.MemoryStats != nil {
+	if seo.memoryOptimizer != nil {
 		statsCopy.MemoryStats = seo.memoryOptimizer.GetStats()
 	}
 
-	return &statsCopy
+	return statsCopy
 }
 
 // Start 启动调度器
