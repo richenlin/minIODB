@@ -1,0 +1,232 @@
+---
+# MinIODB 简化 Ansible 部署剧本
+# 适用于快速部署到多台服务器
+
+- name: Deploy MinIODB with Docker Compose
+  hosts: miniodb_servers
+  become: yes
+  vars:
+    miniodb_version: "latest"
+    miniodb_data_path: "/opt/miniodb/data"
+    miniodb_config_path: "/opt/miniodb/config"
+    
+    # 默认配置
+    redis_password: "{{ vault_redis_password | default('redis123') }}"
+    minio_root_user: "{{ vault_minio_root_user | default('minioadmin') }}"
+    minio_root_password: "{{ vault_minio_root_password | default('minioadmin123') }}"
+    jwt_secret: "{{ vault_jwt_secret | default('change-this-in-production') }}"
+    
+    # 端口配置
+    redis_port: 6379
+    grpc_port: 8080
+    rest_port: 8081
+    metrics_port: 9090
+    minio_api_port: 9000
+    minio_console_port: 9001
+
+  tasks:
+    # 1. 系统准备
+    - name: Update system packages
+      package:
+        name: "*"
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Update system packages (Debian/Ubuntu)
+      apt:
+        upgrade: dist
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install required packages
+      package:
+        name:
+          - curl
+          - wget
+          - unzip
+          - git
+        state: present
+
+    # 2. Docker 安装
+    - name: Install Docker
+      block:
+        - name: Add Docker GPG key (Debian/Ubuntu)
+          apt_key:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Add Docker repository (Debian/Ubuntu)
+          apt_repository:
+            repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Install Docker (Debian/Ubuntu)
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-compose-plugin
+            state: present
+            update_cache: yes
+          when: ansible_os_family == "Debian"
+
+        - name: Install Docker (CentOS/RHEL)
+          yum:
+            name:
+              - docker
+              - docker-compose
+            state: present
+          when: ansible_os_family == "RedHat"
+
+        - name: Start and enable Docker
+          systemd:
+            name: docker
+            state: started
+            enabled: yes
+
+        - name: Add user to docker group
+          user:
+            name: "{{ ansible_user }}"
+            groups: docker
+            append: yes
+
+    # 3. 创建目录结构
+    - name: Create MinIODB directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      loop:
+        - "{{ miniodb_data_path }}"
+        - "{{ miniodb_data_path }}/redis"
+        - "{{ miniodb_data_path }}/minio"
+        - "{{ miniodb_data_path }}/logs"
+        - "{{ miniodb_config_path }}"
+        - "/opt/miniodb/deploy"
+
+    # 4. 部署配置文件
+    - name: Generate docker-compose.yml
+      template:
+        src: docker-compose.yml.j2
+        dest: /opt/miniodb/deploy/docker-compose.yml
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Generate environment file
+      template:
+        src: env.j2
+        dest: /opt/miniodb/deploy/.env
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+
+    - name: Generate MinIODB config
+      template:
+        src: config.yaml.j2
+        dest: "{{ miniodb_config_path }}/config.yaml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    # 5. 下载或构建镜像
+    - name: Pull MinIODB Docker image
+      docker_image:
+        name: "miniodb:{{ miniodb_version }}"
+        source: pull
+      ignore_errors: yes
+      register: pull_result
+
+    - name: Build MinIODB image if pull failed
+      block:
+        - name: Clone MinIODB repository
+          git:
+            repo: https://github.com/your-org/minIODB.git
+            dest: /tmp/miniodb
+            version: main
+          when: pull_result.failed
+
+        - name: Build MinIODB Docker image
+          docker_image:
+            name: "miniodb:{{ miniodb_version }}"
+            build:
+              path: /tmp/miniodb
+            source: build
+          when: pull_result.failed
+
+    # 6. 部署服务
+    - name: Deploy MinIODB with Docker Compose
+      docker_compose:
+        project_src: /opt/miniodb/deploy
+        state: present
+        pull: yes
+      register: deploy_result
+
+    # 7. 等待服务启动
+    - name: Wait for MinIODB to be ready
+      uri:
+        url: "http://localhost:{{ rest_port }}/v1/health"
+        method: GET
+        status_code: 200
+      register: health_check
+      until: health_check.status == 200
+      retries: 30
+      delay: 10
+
+    # 8. 创建系统服务
+    - name: Create MinIODB systemd service
+      template:
+        src: miniodb.service.j2
+        dest: /etc/systemd/system/miniodb.service
+        mode: '0644'
+      notify:
+        - reload systemd
+        - enable miniodb service
+
+    # 9. 设置防火墙规则
+    - name: Configure firewall for MinIODB ports
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "{{ grpc_port }}"
+        - "{{ rest_port }}"
+        - "{{ metrics_port }}"
+        - "{{ minio_api_port }}"
+        - "{{ minio_console_port }}"
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: enable miniodb service
+      systemd:
+        name: miniodb
+        enabled: yes
+
+  post_tasks:
+    - name: Display deployment information
+      debug:
+        msg:
+          - "MinIODB deployment completed successfully!"
+          - "REST API: http://{{ ansible_default_ipv4.address }}:{{ rest_port }}"
+          - "gRPC API: {{ ansible_default_ipv4.address }}:{{ grpc_port }}"
+          - "MinIO Console: http://{{ ansible_default_ipv4.address }}:{{ minio_console_port }}"
+          - "Metrics: http://{{ ansible_default_ipv4.address }}:{{ metrics_port }}/metrics"
+          - ""
+          - "Default credentials:"
+          - "MinIO: {{ minio_root_user }} / {{ minio_root_password }}"
+          - "Redis: redis123"
+          - ""
+          - "Data path: {{ miniodb_data_path }}"
+          - "Config path: {{ miniodb_config_path }}"

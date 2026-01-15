@@ -1,0 +1,135 @@
+# MinIODB 简化版 Docker Compose 配置
+# 适用于快速开发和测试环境
+
+version: '3.8'
+
+services:
+  # Redis - 元数据存储
+  redis:
+    image: redis:7-alpine
+    container_name: miniodb-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+    command: >
+      redis-server 
+      --requirepass ${REDIS_PASSWORD:-redis123}
+      --appendonly yes
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - miniodb
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # MinIO - 对象存储
+  minio:
+    image: minio/minio:latest
+    container_name: miniodb-minio
+    restart: unless-stopped
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - miniodb
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MinIO 初始化
+  minio-init:
+    image: minio/mc:latest
+    container_name: miniodb-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - miniodb
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin123};
+      mc mb minio/${MINIO_BUCKET:-miniodb-data} --ignore-existing;
+      mc mb minio/${MINIO_BACKUP_BUCKET:-miniodb-backup} --ignore-existing;
+      echo 'MinIO buckets created successfully';
+      "
+
+  # MinIODB 应用
+  miniodb:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    image: miniodb:latest
+    container_name: miniodb-app
+    restart: unless-stopped
+    ports:
+      - "${GRPC_PORT:-8080}:8080"
+      - "${REST_PORT:-8081}:8081"
+      - "${METRICS_PORT:-9090}:9090"
+    environment:
+      # 基础配置
+      - MINIODB_ENV=${MINIODB_ENV:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      
+      # Redis 配置
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+      
+      # MinIO 配置
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-miniodb-data}
+      - MINIO_BACKUP_BUCKET=${MINIO_BACKUP_BUCKET:-miniodb-backup}
+      
+      # 认证配置
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-production}
+      - JWT_EXPIRATION=${JWT_EXPIRATION:-24h}
+      
+      # 服务端口
+      - GRPC_PORT=8080
+      - REST_PORT=8081
+      - METRICS_PORT=9090
+    volumes:
+      - ./config:/app/config:ro
+      - miniodb_logs:/app/logs
+    networks:
+      - miniodb
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  redis_data:
+  minio_data:
+  miniodb_logs:
+
+networks:
+  miniodb:
+    driver: bridge

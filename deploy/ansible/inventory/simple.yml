@@ -1,0 +1,62 @@
+# MinIODB 简化 Ansible 清单文件
+# 复制此文件并根据您的环境修改
+
+all:
+  children:
+    miniodb_servers:
+      hosts:
+        # 单节点部署示例
+        miniodb-node1:
+          ansible_host: 192.168.1.100
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        
+        # 多节点部署示例 (取消注释以启用)
+        # miniodb-node2:
+        #   ansible_host: 192.168.1.101
+        #   ansible_user: ubuntu
+        #   ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        # 
+        # miniodb-node3:
+        #   ansible_host: 192.168.1.102
+        #   ansible_user: ubuntu
+        #   ansible_ssh_private_key_file: ~/.ssh/id_rsa
+
+      vars:
+        # 全局变量
+        miniodb_version: "latest"
+        miniodb_env: "production"
+        
+        # 数据路径
+        miniodb_data_path: "/opt/miniodb/data"
+        miniodb_config_path: "/opt/miniodb/config"
+        
+        # 网络配置
+        redis_port: 6379
+        grpc_port: 8080
+        rest_port: 8081
+        metrics_port: 9090
+        minio_api_port: 9000
+        minio_console_port: 9001
+        
+        # 安全配置 (建议使用 ansible-vault 加密)
+        # 运行: ansible-vault create group_vars/miniodb_servers/vault.yml
+        # vault_redis_password: "your-strong-redis-password"
+        # vault_minio_root_user: "your-minio-admin"
+        # vault_minio_root_password: "your-strong-minio-password"
+        # vault_jwt_secret: "your-256-bit-jwt-secret"
+        
+        # 开发环境默认值 (生产环境请使用 vault)
+        redis_password: "redis123"
+        minio_root_user: "minioadmin"
+        minio_root_password: "minioadmin123"
+        jwt_secret: "change-this-in-production"
+        
+        # 资源配置
+        docker_memory_limit: "4g"
+        docker_cpu_limit: "2"
+        
+        # 备份配置
+        backup_enabled: true
+        backup_schedule: "0 2 * * *"  # 每天凌晨2点
+        backup_retention_days: 30
