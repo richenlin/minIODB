@@ -912,7 +912,7 @@ func (c *Config) setDefaults() {
 
 	// 认证配置默认值
 	c.Auth = AuthConfig{
-		EnableJWT:    true,
+		EnableJWT:    false,
 		JWTSecret:    "",
 		TokenExpiry:  "24h",
 		EnableAPIKey: true,

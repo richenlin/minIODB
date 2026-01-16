@@ -12,7 +12,7 @@
       "id": "F002",
       "name": "修复SQL注入风险 - 替换字符串替换逻辑",
       "priority": 1,
-      "status": "pending",
+      "status": "completed",
       "description": "重构miniodb_service.go中的字符串替换逻辑，使用安全的SQL解析方式"
     },
     {

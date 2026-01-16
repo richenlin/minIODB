@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -157,14 +158,31 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 	sql := req.Sql
 	if strings.Contains(strings.ToLower(sql), "from table") {
 		defaultTable := s.cfg.TableManagement.DefaultTable
-		sql = strings.ReplaceAll(sql, "FROM table", fmt.Sprintf("FROM %s", defaultTable))
-		sql = strings.ReplaceAll(sql, "from table", fmt.Sprintf("from %s", defaultTable))
+
+		// 验证默认表名
+		if !s.cfg.IsValidTableName(defaultTable) {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Invalid default table name: %s", defaultTable))
+		}
+
+		// 使用安全的SQL构建器进行替换
+		quotedTable := security.DefaultSanitizer.QuoteIdentifier(defaultTable)
+
+		// 精确匹配并替换（使用正则确保只替换完整的"FROM table"模式）
+		// 匹配 FROM table 或 from table，确保前后有空格或字符串边界
+		sql = strings.ReplaceAll(sql, "FROM table", "FROM "+quotedTable)
+		sql = strings.ReplaceAll(sql, "from table", "from "+quotedTable)
+
 		log.Printf("Converted legacy SQL to use default table: %s", sql)
 	}
 
 	// 如果指定了限制，添加到SQL中
 	if req.Limit > 0 {
 		sql = fmt.Sprintf("%s LIMIT %d", sql, req.Limit)
+	}
+
+	// 最终验证：确保修改后的SQL仍然安全
+	if err := s.validateQueryRequest(&miniodb.QueryDataRequest{Sql: sql}); err != nil {
+		return nil, err
 	}
 
 	// 使用Querier执行查询
@@ -192,6 +210,29 @@ func (s *MinIODBService) validateQueryRequest(req *miniodb.QueryDataRequest) err
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	return nil
+}
+
+// rewriteLegacyTable 重写查询中的旧式表名
+// 将 "FROM table" 或 "from table" 替换为实际的默认表名
+// 注意：只替换完整的单词"table"，不替换包含"table"的表名
+func (s *MinIODBService) rewriteLegacyTable(sql string) (string, error) {
+	if !strings.Contains(strings.ToLower(sql), "from table") {
+		return sql, nil
+	}
+
+	defaultTable := s.cfg.TableManagement.DefaultTable
+
+	if !s.cfg.IsValidTableName(defaultTable) {
+		return "", fmt.Errorf("invalid default table name: %s", defaultTable)
+	}
+
+	quotedTable := security.DefaultSanitizer.QuoteIdentifier(defaultTable)
+
+	// 精确匹配并替换：FROM/ from 后跟空格，然后是完整的"table"单词
+	// 使用正则确保只替换"FROM table"或"from table"，不替换"FROM table_data"
+	sql = regexp.MustCompile(`(?i)(FROM|from)\s+table\b`).ReplaceAllString(sql, "$1 "+quotedTable)
+
+	return sql, nil
 }
 
 // UpdateData 更新数据

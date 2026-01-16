@@ -229,6 +229,7 @@ func (s *SQLSanitizer) ValidateSelectQuery(sql string) error {
 		{"create ", "CREATE statements are not allowed"},
 		{"insert ", "INSERT statements are not allowed"},
 		{"update ", "UPDATE statements are not allowed"},
+		{"union ", "UNION statements are not allowed in basic queries"},
 		{"; ", "Multiple statements are not allowed"},
 		{"--", "SQL comments are not allowed"},
 		{"/*", "SQL comments are not allowed"},
