@@ -913,7 +913,7 @@ func (c *Config) setDefaults() {
 	// 认证配置默认值
 	c.Auth = AuthConfig{
 		EnableJWT:    true,
-		JWTSecret:    "your-super-secret-jwt-key-change-this-in-production",
+		JWTSecret:    "",
 		TokenExpiry:  "24h",
 		EnableAPIKey: true,
 		APIKeys: []string{
@@ -1097,7 +1097,7 @@ func (c *Config) overrideWithEnv() {
 		c.Security.Mode = authMode
 	}
 	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
-		c.Security.JWTSecret = jwtSecret
+		c.Auth.JWTSecret = jwtSecret
 	}
 }
 
@@ -1149,6 +1149,42 @@ func (c *Config) validate() error {
 		if c.Buffer.FlushInterval > 0 {
 			c.Tables.DefaultConfig.FlushInterval = c.Buffer.FlushInterval
 		}
+	}
+
+	// 验证认证配置
+	if c.Auth.EnableJWT {
+		if err := validateJWTSecret(c.Auth.JWTSecret); err != nil {
+			return fmt.Errorf("JWT secret validation failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// validateJWTSecret 验证JWT密钥强度
+func validateJWTSecret(secret string) error {
+	if secret == "" {
+		return fmt.Errorf("JWT secret is required but not set. Please set JWT_SECRET environment variable or configure it in config file")
+	}
+
+	// 检查是否使用常见的弱密钥或默认密钥
+	weakSecrets := []string{
+		"your-super-secret-jwt-key-change-this-in-production",
+		"secret",
+		"jwt-secret",
+		"change-me",
+		"default-secret",
+		"test-secret",
+	}
+
+	for _, weak := range weakSecrets {
+		if secret == weak {
+			return fmt.Errorf("JWT secret matches a known weak or default pattern. Please use a strong, unique secret")
+		}
+	}
+
+	if len(secret) < 32 {
+		return fmt.Errorf("JWT secret must be at least 32 characters long, got %d characters", len(secret))
 	}
 
 	return nil

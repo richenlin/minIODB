@@ -326,3 +326,268 @@ func TestValidateConfig_InvalidServerPort(t *testing.T) {
 	}
 	assert.True(t, hasServerError)
 }
+
+func TestValidateJWTSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		secret  string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "空密钥",
+			secret:  "",
+			wantErr: true,
+			errMsg:  "required",
+		},
+		{
+			name:    "弱密钥 - 太短",
+			secret:  "short",
+			wantErr: true,
+			errMsg:  "at least 32 characters",
+		},
+		{
+			name:    "弱密钥 - 已知默认值",
+			secret:  "your-super-secret-jwt-key-change-this-in-production",
+			wantErr: true,
+			errMsg:  "weak or default pattern",
+		},
+		{
+			name:    "弱密钥 - 常见弱密钥",
+			secret:  "secret",
+			wantErr: true,
+			errMsg:  "weak or default pattern",
+		},
+		{
+			name:    "弱密钥 - 足够长的常见密钥",
+			secret:  "your-super-secret-jwt-key-change-this-in-production",
+			wantErr: true,
+			errMsg:  "weak or default pattern",
+		},
+		{
+			name:    "有效密钥",
+			secret:  "this-is-a-very-strong-jwt-secret-key-12345",
+			wantErr: false,
+		},
+		{
+			name:    "最小长度密钥",
+			secret:  "12345678901234567890123456789012",
+			wantErr: false,
+		},
+		{
+			name:    "刚好31字符",
+			secret:  "1234567890123456789012345678901",
+			wantErr: true,
+			errMsg:  "at least 32 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateJWTSecret(tt.secret)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateJWTSecret() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && tt.wantErr {
+				if tt.errMsg != "" {
+					if !containsString(err.Error(), tt.errMsg) {
+						t.Errorf("error message should contain %q, got %q", tt.errMsg, err.Error())
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfig_WithJWTSecret(t *testing.T) {
+	os.Setenv("JWT_SECRET", "test-jwt-secret-from-environment-variable-123")
+	defer os.Unsetenv("JWT_SECRET")
+
+	configContent := `
+server:
+  grpc_port: "50051"
+  rest_port: "8080"
+  node_id: node-1
+
+minio:
+  endpoint: localhost:9000
+  access_key_id: minioadmin
+  secret_access_key: minioadmin
+  use_ssl: false
+  bucket: default
+
+redis:
+  mode: standalone
+  addr: localhost:6379
+  password: ""
+  db: 0
+  bucket: default
+
+auth:
+  enable_jwt: true
+  token_expiry: 24h
+
+security:
+  mode: none
+`
+
+	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(configContent)
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	cfg, err := LoadConfig(tmpFile.Name())
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-jwt-secret-from-environment-variable-123", cfg.Auth.JWTSecret)
+}
+
+func TestLoadConfig_WithoutJWTSecret(t *testing.T) {
+	os.Unsetenv("JWT_SECRET")
+
+	configContent := `
+server:
+  grpc_port: "50051"
+  rest_port: "8080"
+  node_id: node-1
+
+minio:
+  endpoint: localhost:9000
+  access_key_id: minioadmin
+  secret_access_key: minioadmin
+  use_ssl: false
+  bucket: default
+
+redis:
+  mode: standalone
+  addr: localhost:6379
+  password: ""
+  db: 0
+  bucket: default
+
+auth:
+  enable_jwt: true
+  token_expiry: 24h
+
+security:
+  mode: none
+`
+
+	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(configContent)
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	_, err = LoadConfig(tmpFile.Name())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT secret")
+}
+
+func TestLoadConfig_WithWeakJWTSecret(t *testing.T) {
+	os.Setenv("JWT_SECRET", "secret")
+	defer os.Unsetenv("JWT_SECRET")
+
+	configContent := `
+server:
+  grpc_port: "50051"
+  rest_port: "8080"
+  node_id: node-1
+
+minio:
+  endpoint: localhost:9000
+  access_key_id: minioadmin
+  secret_access_key: minioadmin
+  use_ssl: false
+  bucket: default
+
+redis:
+  mode: standalone
+  addr: localhost:6379
+  password: ""
+  db: 0
+  bucket: default
+
+auth:
+  enable_jwt: true
+  token_expiry: 24h
+
+security:
+  mode: none
+`
+
+	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(configContent)
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	_, err = LoadConfig(tmpFile.Name())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "weak or default")
+}
+
+func TestLoadConfig_WithShortJWTSecret(t *testing.T) {
+	os.Setenv("JWT_SECRET", "short-secret")
+	defer os.Unsetenv("JWT_SECRET")
+
+	configContent := `
+server:
+  grpc_port: "50051"
+  rest_port: "8080"
+  node_id: node-1
+
+minio:
+  endpoint: localhost:9000
+  access_key_id: minioadmin
+  secret_access_key: minioadmin
+  use_ssl: false
+  bucket: default
+
+redis:
+  mode: standalone
+  addr: localhost:6379
+  password: ""
+  db: 0
+  bucket: default
+
+auth:
+  enable_jwt: true
+  token_expiry: 24h
+
+security:
+  mode: none
+`
+
+	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(configContent)
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	_, err = LoadConfig(tmpFile.Name())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "at least 32 characters")
+}
+
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && contains(s[:len(s)-1], substr) || s[len(s)-len(substr):] == substr)
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

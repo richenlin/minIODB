@@ -5,7 +5,7 @@
       "id": "F001",
       "name": "修复配置安全问题 - 移除硬编码JWT密钥",
       "priority": 1,
-      "status": "pending",
+      "status": "completed",
       "description": "移除config.go中的硬编码JWT密钥，要求通过环境变量或配置文件设置"
     },
     {
