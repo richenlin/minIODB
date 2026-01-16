@@ -673,6 +673,11 @@ func (q *Querier) returnDBConnection(db *sql.DB) {
 
 // executeQueryWithOptimization 使用优化执行查询
 func (q *Querier) executeQueryWithOptimization(db *sql.DB, sqlQuery string) (string, error) {
+	// 验证SQL查询的安全性
+	if err := security.DefaultSanitizer.ValidateSelectQuery(sqlQuery); err != nil {
+		return "", fmt.Errorf("SQL query validation failed: %w", err)
+	}
+
 	// 检查是否可以使用预编译语句
 	if q.canUsePreparedStatement(sqlQuery) {
 		return q.executeWithPreparedStatement(db, sqlQuery)

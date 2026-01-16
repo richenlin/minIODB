@@ -19,7 +19,7 @@
       "id": "F003",
       "name": "修复并发安全问题 - 增强SQL查询验证",
       "priority": 1,
-      "status": "pending",
+      "status": "completed",
       "description": "为executeQueryWithOptimization添加SQL验证，确保所有查询都经过验证"
     },
     {
