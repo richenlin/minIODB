@@ -222,7 +222,7 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 	optimizer := &StorageEngine{
 		parquetOptimizer: NewParquet(),
 		shardOptimizer:   NewShardOptimizer(),
-		indexSystem:      NewIndexSystem(redisClient),
+		indexSystem:      NewIndexSystem(redisPool),
 		memoryOptimizer: NewMemoryOptimizer(&MemoryConfig{
 			MaxMemoryUsage:  engineConfig.MemoryConfig.MaxMemoryUsage,
 			PoolSizes:       engineConfig.MemoryConfig.MemoryPoolSizes,

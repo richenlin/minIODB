@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -11,6 +12,9 @@ import (
 
 // ErrorCode 定义错误代码
 type ErrorCode string
+
+// ErrorType 错误类型
+type ErrorType string
 
 const (
 	// 通用错误
@@ -33,19 +37,43 @@ const (
 	ErrCodeConnectionFail ErrorCode = "CONNECTION_FAILURE"
 
 	// 安全错误
-	ErrCodeTokenInvalid   ErrorCode = "TOKEN_INVALID"
-	ErrCodeTokenExpired   ErrorCode = "TOKEN_EXPIRED"
-	ErrCodeRateLimited    ErrorCode = "RATE_LIMITED"
-	ErrCodeSQLInjection   ErrorCode = "SQL_INJECTION_DETECTED"
+	ErrCodeTokenInvalid ErrorCode = "TOKEN_INVALID"
+	ErrCodeTokenExpired ErrorCode = "TOKEN_EXPIRED"
+	ErrCodeRateLimited  ErrorCode = "RATE_LIMITED"
+	ErrCodeSQLInjection ErrorCode = "SQL_INJECTION_DETECTED"
+
+	// 配置错误
+	ErrCodeInvalidConfig  ErrorCode = "INVALID_CONFIG"
+	ErrCodeConfigNotFound ErrorCode = "CONFIG_NOT_FOUND"
+
+	// 验证错误
+	ErrCodeValidationError ErrorCode = "VALIDATION_ERROR"
+
+	// 备份错误
+	ErrCodeBackupFailed  ErrorCode = "BACKUP_FAILED"
+	ErrCodeBackupInvalid ErrorCode = "BACKUP_INVALID"
+
+	// 超时错误
+	ErrCodeTimeout ErrorCode = "TIMEOUT"
+
+	// 资源限制错误
+	ErrCodeResourceExhausted ErrorCode = "RESOURCE_EXHAUSTED"
+)
+
+const (
+	// 错误类型
+	ErrorTypeNetwork ErrorType = "network"
+	ErrorTypeStorage ErrorType = "storage"
+	ErrorTypeOLAP    ErrorType = "olap"
 )
 
 // AppError 应用错误结构
 type AppError struct {
-	Code       ErrorCode `json:"code"`
-	Message    string    `json:"message"`
-	Details    string    `json:"details,omitempty"`
-	Cause      error     `json:"-"`
-	HTTPStatus int       `json:"-"`
+	Code       ErrorCode  `json:"code"`
+	Message    string     `json:"message"`
+	Details    string     `json:"details,omitempty"`
+	Cause      error      `json:"-"`
+	HTTPStatus int        `json:"-"`
 	GRPCCode   codes.Code `json:"-"`
 }
 
@@ -201,6 +229,12 @@ func getDefaultGRPCCode(code ErrorCode) codes.Code {
 		return codes.ResourceExhausted
 	case ErrCodeConnectionFail:
 		return codes.Unavailable
+	case ErrCodeTimeout:
+		return codes.DeadlineExceeded
+	case ErrCodeStorageFailure, ErrCodeCacheFailure:
+		return codes.Unavailable
+	case ErrCodeBackupFailed:
+		return codes.Internal
 	default:
 		return codes.Internal
 	}
@@ -212,7 +246,7 @@ func isProduction() bool {
 	return strings.ToLower(strings.TrimSpace(fmt.Sprintf("%s", "development"))) == "production"
 }
 
-// 预定义常用错误
+// 梢定义常用错误
 var (
 	ErrInternalServer = New(ErrCodeInternal, "Internal server error")
 	ErrInvalidInput   = New(ErrCodeInvalidInput, "Invalid input parameters")
@@ -234,4 +268,144 @@ var (
 	ErrTokenExpired = New(ErrCodeTokenExpired, "Token expired")
 	ErrRateLimited  = New(ErrCodeRateLimited, "Rate limit exceeded")
 	ErrSQLInjection = New(ErrCodeSQLInjection, "SQL injection detected")
+
+	ErrInvalidConfig  = New(ErrCodeInvalidConfig, "Invalid configuration")
+	ErrConfigNotFound = New(ErrCodeConfigNotFound, "Configuration not found")
+
+	ErrValidation = New(ErrCodeValidationError, "Validation failed")
+
+	ErrBackupFailed  = New(ErrCodeBackupFailed, "Backup operation failed")
+	ErrBackupInvalid = New(ErrCodeBackupInvalid, "Invalid backup parameters")
+
+	ErrTimeout = New(ErrCodeTimeout, "Operation timeout")
+
+	ErrResourceExhausted = New(ErrCodeResourceExhausted, "Resource limit exceeded")
+
+	// 带详细信息的预定义错误
+	ErrTableNotFoundWithName = func(tableName string) *AppError {
+		return Newf(ErrCodeTableNotFound, "Table %s not found", tableName)
+	}
+
+	ErrTableExistsWithName = func(tableName string) *AppError {
+		return Newf(ErrCodeTableExists, "Table %s already exists", tableName)
+	}
+
+	ErrInvalidTableNameWithName = func(tableName string, reason string) *AppError {
+		return Newf(ErrCodeInvalidTableName, "Invalid table name %s: %s", tableName, reason)
+	}
+
+	ErrDataNotFoundWithID = func(id string) *AppError {
+		return Newf(ErrCodeDataNotFound, "Data with id %s not found", id)
+	}
+
+	ErrQueryExecutionFailed = func(query string, err error) *AppError {
+		return Wrapf(err, ErrCodeInternal, "Query execution failed: %s", query)
+	}
+
+	ErrStorageOperationFailed = func(operation string, err error) *AppError {
+		return Wrapf(err, ErrCodeStorageFailure, "Storage operation %s failed", operation)
+	}
+
+	ErrCacheOperationFailed = func(operation string, err error) *AppError {
+		return Wrapf(err, ErrCodeCacheFailure, "Cache operation %s failed", operation)
+	}
+
+	ErrConnectionFailed = func(component string, err error) *AppError {
+		return Wrapf(err, ErrCodeConnectionFail, "%s connection failed", component)
+	}
+
+	ErrConfigKeyNotFound = func(key string) *AppError {
+		return Newf(ErrCodeConfigNotFound, "Configuration key %s not found", key)
+	}
+
+	ErrConfigValueInvalid = func(key string, value interface{}, reason string) *AppError {
+		return Newf(ErrCodeInvalidConfig, "Invalid configuration value for %s: %v (%s)", key, value, reason)
+	}
+
+	ErrBackupOperationFailed = func(operation string, err error) *AppError {
+		return Wrapf(err, ErrCodeBackupFailed, "Backup operation %s failed", operation)
+	}
+
+	ErrOperationTimeout = func(operation string, timeout time.Duration) *AppError {
+		return Newf(ErrCodeTimeout, "Operation %s timed out after %v", operation, timeout)
+	}
+
+	ErrRateLimitExceeded = func(limit int, window time.Duration) *AppError {
+		return Newf(ErrCodeRateLimited, "Rate limit exceeded: %d requests per %v", limit, window)
+	}
+
+	ErrSQLInjectionDetected = func(query string) *AppError {
+		return Newf(ErrCodeSQLInjection, "SQL injection detected in query: %s", query)
+	}
 )
+
+// GetErrorCode 从错误中提取错误码
+func GetErrorCode(err error) ErrorCode {
+	if appErr, ok := err.(*AppError); ok {
+		return appErr.Code
+	}
+	return ErrCodeInternal
+}
+
+// GetHTTPStatus 获取错误对应的HTTP状态码
+func GetHTTPStatus(err error) int {
+	if appErr, ok := err.(*AppError); ok {
+		return appErr.HTTPStatus
+	}
+	return http.StatusInternalServerError
+}
+
+// GetGRPCCode 获取错误对应的gRPC状态码
+func GetGRPCCode(err error) codes.Code {
+	if appErr, ok := err.(*AppError); ok {
+		return appErr.GRPCCode
+	}
+	return codes.Internal
+}
+
+// IsNotFoundError 检查是否为"未找到"类错误
+func IsNotFoundError(err error) bool {
+	if appErr, ok := err.(*AppError); ok {
+		return appErr.Code == ErrCodeNotFound ||
+			appErr.Code == ErrCodeTableNotFound ||
+			appErr.Code == ErrCodeDataNotFound ||
+			appErr.Code == ErrCodeConfigNotFound
+	}
+	return false
+}
+
+// IsRetryableError 检查错误是否可重试
+func IsRetryableError(err error) bool {
+	if appErr, ok := err.(*AppError); ok {
+		switch appErr.Code {
+		case ErrCodeStorageFailure, ErrCodeCacheFailure, ErrCodeConnectionFail,
+			ErrCodeTimeout, ErrCodeRateLimited:
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidationError 检查是否为验证错误
+func IsValidationError(err error) bool {
+	if appErr, ok := err.(*AppError); ok {
+		return appErr.Code == ErrCodeInvalidInput ||
+			appErr.Code == ErrCodeInvalidTableName ||
+			appErr.Code == ErrCodeInvalidQuery ||
+			appErr.Code == ErrCodeValidationError ||
+			appErr.Code == ErrCodeInvalidConfig ||
+			appErr.Code == ErrCodeTokenInvalid
+	}
+	return false
+}
+
+// FormatErrorMessage 格式化错误消息用于日志
+func FormatErrorMessage(err error) string {
+	if appErr, ok := err.(*AppError); ok {
+		if appErr.Details != "" {
+			return fmt.Sprintf("[%s] %s: %s", appErr.Code, appErr.Message, appErr.Details)
+		}
+		return fmt.Sprintf("[%s] %s", appErr.Code, appErr.Message)
+	}
+	return fmt.Sprintf("[UNKNOWN] %v", err)
+}

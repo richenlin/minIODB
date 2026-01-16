@@ -304,8 +304,8 @@ func NewConnectionRecoveryStrategy(reconnect func() error, maxRetries int) *Conn
 
 // CanRecover 检查是否可以恢复
 func (crs *ConnectionRecoveryStrategy) CanRecover(err error) bool {
-	if olapErr, ok := err.(*errors.OlapError); ok {
-		return olapErr.Type == errors.ErrTypeNetwork
+	if olapErr, ok := err.(*errors.AppError); ok {
+		return olapErr.Code == errors.ErrCodeConnectionFail
 	}
 	return false
 }

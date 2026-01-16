@@ -13,7 +13,6 @@ import (
 	"minIODB/internal/pool"
 
 	"github.com/bits-and-blooms/bloom/v3"
-	"github.com/go-redis/redis/v8"
 )
 
 // IndexSystem 索引系统
@@ -26,7 +25,7 @@ type IndexSystem struct {
 
 	indexConfig *IndexConfig
 	stats       *IndexStats
-	redisClient *redis.Client
+	redisPool   *pool.RedisPool
 	mutex       sync.RWMutex
 }
 

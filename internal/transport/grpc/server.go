@@ -109,8 +109,8 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Serv
 	}
 
 	// 创建JWT管理器
-	jwtManager := security.NewJWTManager(cfg.Security.JWTSecret, cfg.Security.TokenExpiration)
-	
+	jwtManager := security.NewJWTManager(cfg.Security.JWTSecret, 24*time.Hour)
+
 	// 创建令牌管理器 (假设有Redis客户端可用)
 	var tokenManager *security.TokenManager
 	if miniodbService != nil {
@@ -642,7 +642,7 @@ func (s *Server) GetToken(ctx context.Context, req *miniodb.GetTokenRequest) (*m
 	}
 
 	// 存储刷新令牌
-	if err := s.tokenManager.StoreRefreshToken(ctx, refreshToken, username); err != nil {
+	if err := s.tokenManager.StoreRefreshToken(ctx, refreshToken, req.ApiKey); err != nil {
 		return nil, fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
@@ -675,7 +675,7 @@ func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequ
 	}
 
 	// 生成新的访问令牌
-	accessToken, err := s.jwtManager.GenerateToken(userID)
+	accessToken, err = s.jwtManager.GenerateToken(userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
