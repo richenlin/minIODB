@@ -10,6 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMain(m *testing.M) {
+	os.MkdirAll("logs", 0755)
+	os.Exit(m.Run())
+}
+
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{

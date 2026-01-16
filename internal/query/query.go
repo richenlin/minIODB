@@ -161,6 +161,12 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 
 	log.Printf("Executing enhanced query: %s", sqlQuery)
 
+	// 0. 验证SQL查询的安全性（在提取表名之前执行，以防止恶意SQL）
+	if err := security.DefaultSanitizer.ValidateSelectQuery(sqlQuery); err != nil {
+		q.updateErrorStats()
+		return "", fmt.Errorf("SQL query validation failed: %w", err)
+	}
+
 	// 1. 提取表名
 	tables := q.tableExtractor.ExtractTableNames(sqlQuery)
 	if len(tables) == 0 {

@@ -212,11 +212,6 @@ func (s *SQLSanitizer) ValidateSelectQuery(sql string) error {
 	// 规范化查询以便检查
 	normalizedSQL := strings.ToLower(strings.TrimSpace(sql))
 
-	// 检查是否是 SELECT 语句
-	if !strings.HasPrefix(normalizedSQL, "select") {
-		return fmt.Errorf("only SELECT statements are allowed")
-	}
-
 	// 检查危险的关键字组合
 	dangerousPatterns := []struct {
 		pattern string
@@ -238,10 +233,16 @@ func (s *SQLSanitizer) ValidateSelectQuery(sql string) error {
 		{"execute ", "EXECUTE statements are not allowed"},
 	}
 
+	// 检查是否包含危险模式
 	for _, dp := range dangerousPatterns {
 		if strings.Contains(normalizedSQL, dp.pattern) {
 			return fmt.Errorf("%s", dp.message)
 		}
+	}
+
+	// 检查是否是 SELECT 语句
+	if !strings.HasPrefix(normalizedSQL, "select") {
+		return fmt.Errorf("only SELECT statements are allowed")
 	}
 
 	return nil

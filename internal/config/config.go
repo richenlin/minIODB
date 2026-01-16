@@ -1186,7 +1186,10 @@ func (c *Config) validate() error {
 	if c.Log.Filename != "" {
 		logDir := filepath.Dir(c.Log.Filename)
 		if !fileExists(logDir) {
-			return fmt.Errorf("log directory does not exist: %s", logDir)
+			// 自动创建日志目录
+			if err := os.MkdirAll(logDir, 0755); err != nil {
+				return fmt.Errorf("failed to create log directory: %w", err)
+			}
 		}
 		if c.Log.MaxSize <= 0 {
 			return fmt.Errorf("log max_size must be positive")
