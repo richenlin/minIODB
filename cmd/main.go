@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -268,16 +269,108 @@ func startRESTServer(cfg *config.Config, miniodbService *service.MinIODBService,
 func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
 	backupInterval := time.Duration(cfg.Backup.Interval) * time.Hour
 	if backupInterval == 0 {
-		backupInterval = 24 * time.Hour // 默认每24小时备份一次
+		backupInterval = 24 * time.Hour
 	}
 
 	ticker := time.NewTicker(backupInterval)
 	defer ticker.Stop()
 
+	log.Printf("Backup routine started, interval: %v", backupInterval)
+
 	for range ticker.C {
 		log.Println("Starting scheduled backup...")
-		// 这里实现备份逻辑
+
+		if err := performDataBackup(primaryMinio, backupMinio, cfg); err != nil {
+			log.Printf("Backup failed: %v", err)
+		} else {
+			log.Println("Backup completed successfully")
+		}
 	}
+}
+
+// performDataBackup 执行数据备份
+func performDataBackup(primaryMinio, backupMinio storage.Uploader, cfg config.Config) error {
+	ctx := context.Background()
+	maxRetries := 3
+	retryDelay := 5 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			log.Printf("Retry attempt %d/%d for backup", attempt, maxRetries)
+			time.Sleep(retryDelay)
+			retryDelay *= 2
+		}
+
+		if err := executeBackupWithRetry(ctx, primaryMinio, backupMinio, cfg); err != nil {
+			if attempt == maxRetries {
+				return fmt.Errorf("backup failed after %d attempts: %w", maxRetries, err)
+			}
+			continue
+		}
+
+		return nil
+	}
+
+	return nil
+}
+
+// executeBackupWithRetry 执行备份并记录状态
+func executeBackupWithRetry(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config) error {
+	backupStartTime := time.Now()
+
+	bucket := cfg.MinIO.Bucket
+
+	objectsCh := primaryMinio.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true})
+
+	var backupCount int64
+	var totalSize int64
+	var errors []string
+
+	for object := range objectsCh {
+		if object.Err != nil {
+			errors = append(errors, fmt.Sprintf("List error: %v", object.Err))
+			continue
+		}
+
+		src := object.Key
+
+		if err := copyObject(ctx, primaryMinio, backupMinio, bucket, src); err != nil {
+			errors = append(errors, fmt.Sprintf("Copy error for %s: %v", src, err))
+			continue
+		}
+
+		backupCount++
+		totalSize += object.Size
+	}
+
+	if len(errors) > 0 {
+		log.Printf("Backup completed with %d errors", len(errors))
+		for _, err := range errors {
+			log.Printf("  - %s", err)
+		}
+	}
+
+	duration := time.Since(backupStartTime)
+	log.Printf("Backup summary: objects=%d, size=%d, duration=%v", backupCount, totalSize, duration)
+
+	if backupCount == 0 {
+		return fmt.Errorf("no objects were backed up")
+	}
+
+	return nil
+}
+
+// copyObject 复制单个对象
+func copyObject(ctx context.Context, primaryMinio, backupMinio storage.Uploader, bucket, objectName string) error {
+	srcOpts := minio.CopySrcOptions{
+		Bucket: bucket,
+		Object: objectName,
+	}
+
+	_, err := backupMinio.CopyObject(ctx, minio.CopyDestOptions{
+		Bucket: bucket,
+	}, srcOpts)
+	return err
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
