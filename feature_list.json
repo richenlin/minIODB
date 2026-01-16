@@ -68,7 +68,7 @@
       "id": "F010",
       "name": "移除魔法数字",
       "priority": 3,
-      "status": "pending",
+      "status": "completed",
       "description": "将代码中的魔法数字提取为常量并添加文档"
     }
   ]
