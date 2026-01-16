@@ -40,7 +40,7 @@
       "id": "F006",
       "name": "增强配置验证",
       "priority": 2,
-      "status": "pending",
+      "status": "completed",
       "description": "添加端口范围、路径存在性、资源限制合理性验证"
     },
     {

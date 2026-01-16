@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -1107,26 +1110,45 @@ func (c *Config) validate() error {
 	if c.Server.GrpcPort == "" {
 		return fmt.Errorf("grpc_port is required")
 	}
+	if err := validatePort(c.Server.GrpcPort); err != nil {
+		return fmt.Errorf("grpc_port validation failed: %w", err)
+	}
+
 	if c.Server.RestPort == "" {
 		return fmt.Errorf("rest_port is required")
+	}
+	if err := validatePort(c.Server.RestPort); err != nil {
+		return fmt.Errorf("rest_port validation failed: %w", err)
 	}
 
 	// 验证Redis配置
 	if c.Redis.Addr == "" {
 		return fmt.Errorf("redis addr is required")
 	}
+	if err := validateAddress(c.Redis.Addr); err != nil {
+		return fmt.Errorf("redis addr validation failed: %w", err)
+	}
 
 	// 验证MinIO配置
 	if c.MinIO.Endpoint == "" {
 		return fmt.Errorf("minio endpoint is required")
 	}
+	if err := validateAddress(c.MinIO.Endpoint); err != nil {
+		return fmt.Errorf("minio endpoint validation failed: %w", err)
+	}
 	if c.MinIO.Bucket == "" {
 		return fmt.Errorf("minio bucket is required")
+	}
+	if err := validateBucketName(c.MinIO.Bucket); err != nil {
+		return fmt.Errorf("minio bucket name validation failed: %w", err)
 	}
 
 	// 验证表管理配置
 	if c.TableManagement.MaxTables <= 0 {
 		return fmt.Errorf("max_tables must be positive")
+	}
+	if c.TableManagement.MaxTables > 10000 {
+		return fmt.Errorf("max_tables too large, maximum is 10000")
 	}
 	if c.TableManagement.TableNamePattern == "" {
 		return fmt.Errorf("table_name_pattern is required")
@@ -1136,8 +1158,56 @@ func (c *Config) validate() error {
 	if c.Tables.DefaultConfig.BufferSize <= 0 {
 		return fmt.Errorf("default buffer_size must be positive")
 	}
+	if c.Tables.DefaultConfig.BufferSize > 100000 {
+		return fmt.Errorf("default buffer_size too large, maximum is 100000")
+	}
 	if c.Tables.DefaultConfig.FlushInterval <= 0 {
 		return fmt.Errorf("default flush_interval must be positive")
+	}
+	if c.Tables.DefaultConfig.FlushInterval > 1*time.Hour {
+		return fmt.Errorf("default flush_interval too large, maximum is 1 hour")
+	}
+	if c.Tables.DefaultConfig.RetentionDays <= 0 {
+		return fmt.Errorf("default retention_days must be positive")
+	}
+	if c.Tables.DefaultConfig.RetentionDays > 3650 {
+		return fmt.Errorf("default retention_days too large, maximum is 3650 (10 years)")
+	}
+
+	// 验证系统资源配置
+	if c.System.MaxMemoryMB > 0 && c.System.MaxMemoryMB < 256 {
+		return fmt.Errorf("max_memory_mb too small, minimum is 256")
+	}
+	if c.System.MaxGoroutines > 0 && c.System.MaxGoroutines < 100 {
+		return fmt.Errorf("max_goroutines too small, minimum is 100")
+	}
+
+	// 验证日志配置
+	if c.Log.Filename != "" {
+		logDir := filepath.Dir(c.Log.Filename)
+		if !fileExists(logDir) {
+			return fmt.Errorf("log directory does not exist: %s", logDir)
+		}
+		if c.Log.MaxSize <= 0 {
+			return fmt.Errorf("log max_size must be positive")
+		}
+		if c.Log.MaxSize > 1000 {
+			return fmt.Errorf("log max_size too large, maximum is 1000 MB")
+		}
+	}
+
+	// 验证指标配置
+	if c.Metrics.Enabled {
+		if err := validatePort(c.Metrics.Port); err != nil {
+			return fmt.Errorf("metrics port validation failed: %w", err)
+		}
+	}
+
+	// 验证监控配置
+	if c.Monitoring.Enabled {
+		if err := validatePort(c.Monitoring.Port); err != nil {
+			return fmt.Errorf("monitoring port validation failed: %w", err)
+		}
 	}
 
 	// 如果有旧的buffer配置，将其映射到默认表配置
@@ -1156,6 +1226,81 @@ func (c *Config) validate() error {
 		if err := validateJWTSecret(c.Auth.JWTSecret); err != nil {
 			return fmt.Errorf("JWT secret validation failed: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// validatePort 验证端口号
+func validatePort(port string) error {
+	// 去掉可能的冒号前缀
+	port = strings.TrimPrefix(port, ":")
+
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("invalid port number: %s", port)
+	}
+
+	if portNum < 1024 || portNum > 65535 {
+		return fmt.Errorf("port must be in range 1024-65535, got %d", portNum)
+	}
+
+	return nil
+}
+
+// validateAddress 验证地址格式
+func validateAddress(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("address cannot be empty")
+	}
+
+	parts := strings.Split(addr, ":")
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid address format, expected host:port")
+	}
+
+	host := parts[0]
+	port := parts[len(parts)-1]
+
+	if host == "" {
+		return fmt.Errorf("host cannot be empty")
+	}
+
+	return validatePort(port)
+}
+
+// validateBucketName 验证bucket名称
+func validateBucketName(name string) error {
+	if name == "" {
+		return fmt.Errorf("bucket name cannot be empty")
+	}
+
+	if len(name) < 3 || len(name) > 63 {
+		return fmt.Errorf("bucket name must be between 3 and 63 characters, got %d", len(name))
+	}
+
+	lower := strings.ToLower(name)
+	if name != lower {
+		return fmt.Errorf("bucket name must be lowercase")
+	}
+
+	// 检查有效的DNS标签格式
+	for i, char := range name {
+		valid := (char >= 'a' && char <= 'z') ||
+			(char >= '0' && char <= '9') ||
+			char == '-' || char == '.'
+
+		if !valid {
+			return fmt.Errorf("bucket name contains invalid character at position %d: %c", i, char)
+		}
+	}
+
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
+		return fmt.Errorf("bucket name cannot start or end with hyphen")
+	}
+
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+		return fmt.Errorf("bucket name cannot start or end with period")
 	}
 
 	return nil
