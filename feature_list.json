@@ -61,7 +61,7 @@
       "id": "F009",
       "name": "消除代码重复",
       "priority": 3,
-      "status": "pending",
+      "status": "completed",
       "description": "提取公共的ID验证和表名验证逻辑到utils包"
     },
     {
