@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"minIODB/api/proto/miniodb/v1"
-	"minIODB/internal/config"
+	"minIODB/config"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

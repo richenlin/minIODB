@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/internal/config"
-	"minIODB/internal/pool"
+	"minIODB/config"
+	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
 )

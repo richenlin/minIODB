@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/internal/config"
-	"minIODB/internal/pool"
+	"minIODB/config"
+	"minIODB/pkg/pool"
 )
 
 // StorageEngine 存储引擎优化器 - 第四阶段集成器

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/internal/errors"
+	"minIODB/pkg/errors"
 	"minIODB/internal/metrics"
 )
 

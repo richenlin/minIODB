@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"minIODB/internal/config"
-	"minIODB/internal/pool"
+	"minIODB/config"
+	"minIODB/pkg/pool"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"

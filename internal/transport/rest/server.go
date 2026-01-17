@@ -10,7 +10,7 @@ import (
 	"time"
 
 	miniodbv1 "minIODB/api/proto/miniodb/v1"
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/coordinator"
 	"minIODB/internal/metadata"
 	"minIODB/internal/security"

@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"minIODB/internal/config"
-	"minIODB/internal/pool"
+	"minIODB/config"
+	"minIODB/pkg/pool"
 )
 
 // StorageFactoryImpl 存储工厂实现

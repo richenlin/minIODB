@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/discovery"
 )
 

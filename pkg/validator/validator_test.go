@@ -1,14 +1,16 @@
-package utils
+package validator_test
 
 import (
 	"strings"
 	"testing"
 
+	"minIODB/pkg/validator"
+
 	"github.com/stretchr/testify/assert"
 )
 
 func TestValidateTableName(t *testing.T) {
-	validator := NewValidator()
+	v := validator.New()
 
 	tests := []struct {
 		name    string
@@ -29,7 +31,7 @@ func TestValidateTableName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validator.ValidateTableName(tt.table)
+			err := v.ValidateTableName(tt.table)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -40,7 +42,7 @@ func TestValidateTableName(t *testing.T) {
 }
 
 func TestValidateID(t *testing.T) {
-	validator := NewValidator()
+	v := validator.New()
 
 	tests := []struct {
 		name    string
@@ -58,7 +60,7 @@ func TestValidateID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validator.ValidateID(tt.id)
+			err := v.ValidateID(tt.id)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -69,7 +71,7 @@ func TestValidateID(t *testing.T) {
 }
 
 func TestValidateEmail(t *testing.T) {
-	validator := NewValidator()
+	v := validator.New()
 
 	tests := []struct {
 		name    string
@@ -87,7 +89,7 @@ func TestValidateEmail(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validator.ValidateEmail(tt.email)
+			err := v.ValidateEmail(tt.email)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -98,7 +100,7 @@ func TestValidateEmail(t *testing.T) {
 }
 
 func TestValidateURL(t *testing.T) {
-	validator := NewValidator()
+	v := validator.New()
 
 	tests := []struct {
 		name    string
@@ -116,7 +118,7 @@ func TestValidateURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validator.ValidateURL(tt.url)
+			err := v.ValidateURL(tt.url)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -127,7 +129,7 @@ func TestValidateURL(t *testing.T) {
 }
 
 func TestSanitizeString(t *testing.T) {
-	validator := NewValidator()
+	v := validator.New()
 
 	tests := []struct {
 		name     string
@@ -143,14 +145,14 @@ func TestSanitizeString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := validator.SanitizeString(tt.input)
+			result := v.SanitizeString(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
 func TestQuoteIdentifier(t *testing.T) {
-	validator := NewValidator()
+	v := validator.New()
 
 	tests := []struct {
 		name     string
@@ -165,14 +167,14 @@ func TestQuoteIdentifier(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := validator.QuoteIdentifier(tt.input)
+			result := v.QuoteIdentifier(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
 func TestQuoteLiteral(t *testing.T) {
-	validator := NewValidator()
+	v := validator.New()
 
 	tests := []struct {
 		name     string
@@ -187,33 +189,64 @@ func TestQuoteLiteral(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := validator.QuoteLiteral(tt.input)
+			result := v.QuoteLiteral(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
-func TestIsSQLKeyword(t *testing.T) {
-	validator := NewValidator()
+// 测试包级便捷函数
+func TestPackageLevelFunctions(t *testing.T) {
+	t.Run("ValidateTableName", func(t *testing.T) {
+		err := validator.ValidateTableName("users")
+		assert.NoError(t, err)
 
-	tests := []struct {
-		keyword  string
-		expected bool
-	}{
-		{"select", true},
-		{"SELECT", true},
-		{"from", true},
-		{"FROM", true},
-		{"table", true},
-		{"insert", true},
-		{"my_table", false},
-		{"users", false},
+		err = validator.ValidateTableName("123_invalid")
+		assert.Error(t, err)
+	})
+
+	t.Run("ValidateID", func(t *testing.T) {
+		err := validator.ValidateID("user-123")
+		assert.NoError(t, err)
+
+		err = validator.ValidateID("")
+		assert.Error(t, err)
+	})
+
+	t.Run("SanitizeString", func(t *testing.T) {
+		result := validator.SanitizeString("test\x00data")
+		assert.Equal(t, "testdata", result)
+	})
+
+	t.Run("QuoteIdentifier", func(t *testing.T) {
+		result := validator.QuoteIdentifier("table_name")
+		assert.Equal(t, "\"table_name\"", result)
+	})
+
+	t.Run("QuoteLiteral", func(t *testing.T) {
+		result := validator.QuoteLiteral("test's")
+		assert.Equal(t, "'test''s'", result)
+	})
+}
+
+func BenchmarkValidateTableName(b *testing.B) {
+	v := validator.New()
+	for i := 0; i < b.N; i++ {
+		v.ValidateTableName("users_table_2023")
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.keyword, func(t *testing.T) {
-			result := validator.isSQLKeyword(tt.keyword)
-			assert.Equal(t, tt.expected, result)
-		})
+func BenchmarkValidateID(b *testing.B) {
+	v := validator.New()
+	for i := 0; i < b.N; i++ {
+		v.ValidateID("user-123-abc-456")
+	}
+}
+
+func BenchmarkSanitizeString(b *testing.B) {
+	v := validator.New()
+	input := "test\x00data\x01with\x02control\x03chars"
+	for i := 0; i < b.N; i++ {
+		v.SanitizeString(input)
 	}
 }

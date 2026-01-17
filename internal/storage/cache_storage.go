@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 )
 
 // CacheStorageImpl Redis缓存存储实现

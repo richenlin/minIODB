@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 	"minIODB/internal/logger"
 	"minIODB/internal/metrics"
-	"minIODB/internal/config"
+	"minIODB/config"
 )
 
 // ObjectInfo 简化的对象信息结构

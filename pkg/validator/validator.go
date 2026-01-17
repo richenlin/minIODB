@@ -1,4 +1,4 @@
-package utils
+package validator
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"unicode"
 )
 
-// Validator 提供验证工具函数
+// Validator 提供数据验证工具
 type Validator struct {
 	// 表名正则表达式
 	tableNameRegex *regexp.Regexp
@@ -15,8 +15,8 @@ type Validator struct {
 	idRegex *regexp.Regexp
 }
 
-// NewValidator 创建新的验证器
-func NewValidator() *Validator {
+// New 创建新的验证器
+func New() *Validator {
 	return &Validator{
 		// 表名只允许字母、数字、下划线，且必须以字母开头
 		tableNameRegex: regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`),
@@ -155,5 +155,42 @@ var (
 	ErrURLInvalidFormat = fmt.Errorf("invalid URL format, must start with http:// or https://")
 )
 
-// DefaultValidator 默认验证器实例
-var DefaultValidator = NewValidator()
+// Default 默认验证器实例
+var Default = New()
+
+// 包级便捷函数，使用默认验证器
+
+// ValidateTableName 验证表名
+func ValidateTableName(tableName string) error {
+	return Default.ValidateTableName(tableName)
+}
+
+// ValidateID 验证ID
+func ValidateID(id string) error {
+	return Default.ValidateID(id)
+}
+
+// ValidateEmail 验证邮箱
+func ValidateEmail(email string) error {
+	return Default.ValidateEmail(email)
+}
+
+// ValidateURL 验证URL
+func ValidateURL(url string) error {
+	return Default.ValidateURL(url)
+}
+
+// SanitizeString 清理字符串
+func SanitizeString(str string) string {
+	return Default.SanitizeString(str)
+}
+
+// QuoteIdentifier 引用标识符
+func QuoteIdentifier(identifier string) string {
+	return Default.QuoteIdentifier(identifier)
+}
+
+// QuoteLiteral 引用字面量
+func QuoteLiteral(literal string) string {
+	return Default.QuoteLiteral(literal)
+}

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"minIODB/internal/config"
+	"minIODB/config"
 
 	"github.com/stretchr/testify/assert"
 )

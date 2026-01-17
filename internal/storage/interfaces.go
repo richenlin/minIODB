@@ -5,7 +5,7 @@ import (
 	"io"
 	"time"
 
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
 )

@@ -2,7 +2,7 @@ package discovery
 
 import (
 	"context"
-	"minIODB/internal/config"
+	"minIODB/config"
 
 	"github.com/go-redis/redis/v8"
 )

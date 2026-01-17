@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/metrics"
 
 	"github.com/go-redis/redis/v8"

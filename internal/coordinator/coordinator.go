@@ -10,12 +10,12 @@ import (
 	"time"
 
 	pb "minIODB/api/proto/miniodb/v1"
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/discovery"
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 	"minIODB/internal/query"
-	"minIODB/internal/utils"
 	"minIODB/pkg/consistenthash"
+	"minIODB/pkg/retry"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -40,7 +40,7 @@ type QueryResult struct {
 type WriteCoordinator struct {
 	registry       *discovery.ServiceRegistry
 	hashRing       *consistenthash.ConsistentHash
-	circuitBreaker *utils.CircuitBreaker
+	circuitBreaker *retry.CircuitBreaker
 	mu             sync.RWMutex
 }
 
@@ -106,7 +106,7 @@ type QueryCoordinator struct {
 	registry       *discovery.ServiceRegistry
 	localQuerier   LocalQuerier
 	cfg            *config.Config
-	circuitBreaker *utils.CircuitBreaker
+	circuitBreaker *retry.CircuitBreaker
 	mu             sync.RWMutex
 	activeQueries  map[string]*QueryInfo
 	nodeStatus     map[string]*NodeStatus
@@ -125,7 +125,7 @@ type LocalQuerier interface {
 
 // NewWriteCoordinator 创建写入协调器
 func NewWriteCoordinator(registry *discovery.ServiceRegistry) *WriteCoordinator {
-	cb := utils.NewCircuitBreaker("write_coordinator", utils.DefaultCircuitBreakerConfig)
+	cb := retry.NewCircuitBreaker("write_coordinator", retry.DefaultCircuitBreakerConfig)
 
 	return &WriteCoordinator{
 		registry:       registry,
@@ -137,7 +137,7 @@ func NewWriteCoordinator(registry *discovery.ServiceRegistry) *WriteCoordinator 
 // NewQueryCoordinator 创建查询协调器
 func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceRegistry, localQuerier LocalQuerier, cfg *config.Config) *QueryCoordinator {
 	ctx, cancel := context.WithCancel(context.Background())
-	cb := utils.NewCircuitBreaker("query_coordinator", utils.DefaultCircuitBreakerConfig)
+	cb := retry.NewCircuitBreaker("query_coordinator", retry.DefaultCircuitBreakerConfig)
 
 	qc := &QueryCoordinator{
 		redisPool:      redisPool,
@@ -174,7 +174,7 @@ func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error)
 		// 获取所有活跃节点
 		nodes, getErr := wc.registry.GetHealthyNodes()
 		if getErr != nil {
-			return utils.NewRetryableError(fmt.Errorf("failed to get healthy nodes: %w", getErr))
+			return retry.NewRetryableError(fmt.Errorf("failed to get healthy nodes: %w", getErr))
 		}
 
 		if len(nodes) == 0 {
@@ -207,7 +207,7 @@ func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error)
 	}
 
 	// 发送到远程节点（使用重试机制）
-	err = utils.Retry(ctx, utils.DefaultRetryConfig, "remote_write", func(ctx context.Context) error {
+	err = retry.Do(ctx, retry.DefaultConfig, "remote_write", func(ctx context.Context) error {
 		return wc.sendWriteToNode(ctx, targetNode, req)
 	})
 
@@ -222,14 +222,14 @@ func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error)
 func (wc *WriteCoordinator) sendWriteToNode(ctx context.Context, nodeAddr string, req *pb.WriteDataRequest) error {
 	conn, err := grpc.DialContext(ctx, nodeAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return utils.NewRetryableError(fmt.Errorf("failed to connect to node %s: %w", nodeAddr, err))
+		return retry.NewRetryableError(fmt.Errorf("failed to connect to node %s: %w", nodeAddr, err))
 	}
 	defer conn.Close()
 
 	client := pb.NewMinIODBServiceClient(conn)
 	_, err = client.WriteData(ctx, req)
 	if err != nil {
-		return utils.NewRetryableError(fmt.Errorf("failed to write to node %s: %w", nodeAddr, err))
+		return retry.NewRetryableError(fmt.Errorf("failed to write to node %s: %w", nodeAddr, err))
 	}
 
 	return nil
@@ -332,14 +332,14 @@ func (qc *QueryCoordinator) executeDistributedPlan(ctx context.Context, plan *Qu
 		for _, nodeAddr := range plan.TargetNodes {
 			go func(addr string) {
 				// 使用重试机制查询节点
-				retryErr := utils.Retry(ctx, utils.DefaultRetryConfig, "remote_query", func(ctx context.Context) error {
+				retryErr := retry.Do(ctx, retry.DefaultConfig, "remote_query", func(ctx context.Context) error {
 					result, queryErr := qc.executeRemoteQuery(addr, plan.SQL)
 					if queryErr != nil {
 						resultChan <- QueryResult{
 							NodeID: addr,
 							Error:  queryErr.Error(),
 						}
-						return utils.NewRetryableError(queryErr)
+						return retry.NewRetryableError(queryErr)
 					}
 					resultChan <- QueryResult{
 						NodeID: addr,

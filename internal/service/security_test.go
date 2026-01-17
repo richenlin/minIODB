@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"minIODB/api/proto/miniodb/v1"
-	"minIODB/internal/config"
+	"minIODB/config"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

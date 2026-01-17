@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/internal/config"
-	"minIODB/internal/pool"
+	"minIODB/config"
+	"minIODB/pkg/pool"
 	"minIODB/pkg/consistenthash"
 
 	"github.com/go-redis/redis/v8"

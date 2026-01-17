@@ -12,13 +12,13 @@ import (
 	"time"
 
 	"minIODB/api/proto/miniodb/v1"
-	"minIODB/internal/config"
-	"minIODB/internal/idgen"
+	"minIODB/config"
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
-	"minIODB/internal/pool"
 	"minIODB/internal/query"
 	"minIODB/internal/security"
+	"minIODB/pkg/idgen"
+	"minIODB/pkg/pool"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

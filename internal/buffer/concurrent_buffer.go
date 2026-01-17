@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/metrics"
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/xitongsys/parquet-go-source/local"

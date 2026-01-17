@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 
 	"github.com/bits-and-blooms/bloom/v3"
 )

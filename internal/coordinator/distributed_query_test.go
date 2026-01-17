@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/discovery"
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"

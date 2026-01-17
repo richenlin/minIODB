@@ -14,7 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"minIODB/internal/buffer"
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
 	"minIODB/internal/ingest"
@@ -27,7 +27,7 @@ import (
 	restTransport "minIODB/internal/transport/rest"
 
 	"minIODB/internal/metadata"
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 	"minIODB/internal/recovery"
 )
 

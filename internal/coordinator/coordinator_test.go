@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/discovery"
-	"minIODB/internal/pool"
+	"minIODB/pkg/pool"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"

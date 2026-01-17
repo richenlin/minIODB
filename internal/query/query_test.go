@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"minIODB/internal/config"
+	"minIODB/config"
 	"minIODB/internal/security"
 
 	_ "github.com/marcboeker/go-duckdb"

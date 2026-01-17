@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"minIODB/internal/buffer"
-	"minIODB/internal/config"
-	"minIODB/internal/pool"
+	"minIODB/config"
+	"minIODB/pkg/pool"
 	"minIODB/internal/security"
 	"minIODB/internal/storage"
 
