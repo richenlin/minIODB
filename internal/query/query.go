@@ -1,21 +1,21 @@
 package query
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"database/sql"
 	"fmt"
+	"minIODB/pkg/logger"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"minIODB/internal/buffer"
 	"minIODB/config"
-	"minIODB/pkg/pool"
+	"minIODB/internal/buffer"
 	"minIODB/internal/security"
 	"minIODB/internal/storage"
+	"minIODB/pkg/pool"
 
 	"github.com/go-redis/redis/v8"
 	_ "github.com/marcboeker/go-duckdb"
@@ -620,15 +620,14 @@ func (q *Querier) prepareTableDataWithCache(tableName string) error {
 
 // getStorageFilesWithCache 使用文件缓存获取存储文件
 func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string) ([]string, error) {
-	// 如果Redis连接池不可用，返回空列表
+	// 单节点模式：直接从 MinIO 列出文件
 	if q.redisPool == nil {
-		return []string{}, nil
+		return q.getStorageFilesFromMinIO(ctx, tableName)
 	}
 
-	// 从连接池获取Redis客户端
+	// 分布式模式：从 Redis 索引获取文件列表
 	redisClient := q.redisPool.GetClient()
 
-	// 使用架构设计的索引格式：index:table:tableName:id:*
 	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
 	keys, err := redisClient.Keys(ctx, pattern).Result()
 	if err != nil {
@@ -637,20 +636,14 @@ func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string
 
 	var files []string
 	for _, key := range keys {
-		// 使用SMembers获取集合中的所有文件名（因为buffer使用SAdd存储）
 		objectNames, err := redisClient.SMembers(ctx, key).Result()
 		if err != nil {
 			logger.GetLogger().Sugar().Infof("WARN: failed to get object names for key %s: %v", key, err)
 			continue
 		}
 
-		// 处理该索引下的所有文件
 		for _, objectName := range objectNames {
-			// 使用文件缓存获取文件
-			localPath, err := q.fileCache.Get(ctx, objectName, func(objName string) (string, error) {
-				q.updateFileDownloadStats()
-				return q.downloadToTemp(ctx, objName)
-			})
+			localPath, err := q.getFileWithCache(ctx, objectName)
 			if err != nil {
 				logger.GetLogger().Sugar().Infof("WARN: failed to get cached file %s: %v", objectName, err)
 				continue
@@ -660,6 +653,60 @@ func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string
 	}
 
 	return files, nil
+}
+
+// getStorageFilesFromMinIO 单节点模式下直接从 MinIO 列出文件
+func (q *Querier) getStorageFilesFromMinIO(ctx context.Context, tableName string) ([]string, error) {
+	if q.minioClient == nil {
+		return []string{}, nil
+	}
+
+	prefix := tableName + "/"
+	bucket := q.config.MinIO.Bucket
+
+	logger.GetLogger().Sugar().Debugf("Listing MinIO objects with prefix: %s/%s", bucket, prefix)
+
+	var files []string
+	opts := minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	}
+	objectCh := q.minioClient.ListObjects(ctx, bucket, opts)
+
+	for object := range objectCh {
+		if object.Err != nil {
+			logger.GetLogger().Sugar().Warnf("Error listing object: %v", object.Err)
+			continue
+		}
+
+		if filepath.Ext(object.Key) != ".parquet" {
+			continue
+		}
+
+		localPath, err := q.getFileWithCache(ctx, object.Key)
+		if err != nil {
+			logger.GetLogger().Sugar().Warnf("Failed to download %s: %v", object.Key, err)
+			continue
+		}
+
+		files = append(files, localPath)
+	}
+
+	logger.GetLogger().Sugar().Debugf("Found %d parquet files for table %s", len(files), tableName)
+	return files, nil
+}
+
+// getFileWithCache 使用缓存获取文件，如果缓存不可用则直接下载
+func (q *Querier) getFileWithCache(ctx context.Context, objectName string) (string, error) {
+	if q.fileCache != nil {
+		return q.fileCache.Get(ctx, objectName, func(objName string) (string, error) {
+			q.updateFileDownloadStats()
+			return q.downloadToTemp(ctx, objName)
+		})
+	}
+
+	q.updateFileDownloadStats()
+	return q.downloadToTemp(ctx, objectName)
 }
 
 // getDBConnection 获取数据库连接
