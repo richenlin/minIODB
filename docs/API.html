@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MinIODB API Documentation</title>
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            color: #333;
+            margin: 0;
+        }
+        .header p {
+            color: #666;
+            margin: 10px 0 0 0;
+        }
+        .info-box {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .info-box h2 {
+            color: #333;
+            margin-top: 0;
+        }
+        .info-box ul {
+            padding-left: 20px;
+        }
+        .info-box li {
+            margin: 10px 0;
+        }
+        .code-block {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>MinIODB API Documentation</h1>
+        <p>RESTful API for MinIODB distributed OLAP database</p>
+    </div>
+
+    <div class="info-box">
+        <h2>Quick Start</h2>
+        <ul>
+            <li><strong>Base URL:</strong> <code>http://localhost:8081/api/v1</code></li>
+            <li><strong>Authentication:</strong> Add <code>X-API-Key: your-api-key</code> header</li>
+            <li><strong>Try it out:</strong> Click any endpoint below, then click "Try it out"</li>
+        </ul>
+        
+        <h3>Example: Write Data</h3>
+        <div class="code-block">
+curl -X POST http://localhost:8081/api/v1/data/write \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "table": "user_events",
+    "data": {
+      "id": "evt_001",
+      "payload": {
+        "user_id": 123,
+        "event_type": "page_view",
+        "page_url": "/products/item-123"
+      }
+    }
+  }'
+        </div>
+        
+        <h3>Example: Query Data</h3>
+        <div class="code-block">
+curl -X POST http://localhost:8081/api/v1/data/query \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "sql": "SELECT * FROM user_events WHERE timestamp >= NOW() - INTERVAL '7 days' LIMIT 10",
+    "limit": 10
+  }'
+        </div>
+    </div>
+
+    <div id="swagger-ui"></div>
+
+    <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"></script>
+    <script>
+        const spec = {
+            "openapi": "3.0.0",
+            "info": {
+                "title": "MinIODB API",
+                "description": "MinIODB RESTful API for data operations, table management, and system monitoring",
+                "version": "1.0.0",
+                "contact": {
+                    "name": "MinIODB Team",
+                    "email": "support@miniodb.io"
+                },
+                "license": {
+                    "name": "MIT"
+                }
+            },
+            "servers": [
+                {
+                    "url": "http://localhost:8081/api/v1",
+                    "description": "Local development server"
+                },
+                {
+                    "url": "https://api.miniodb.io/api/v1",
+                    "description": "Production server"
+                }
+            ],
+            "tags": [
+                {"name": "Data Operations", "description": "Read and write data"},
+                {"name": "Table Management", "description": "Create and manage tables"},
+                {"name": "Metadata", "description": "Backup and restore metadata"},
+                {"name": "System", "description": "Health check and metrics"}
+            ],
+            "paths": {
+                "/data/write": {
+                    "post": {
+                        "tags": ["Data Operations"],
+                        "summary": "Write data to a table",
+                        "description": "Write a single record to specified table. The record will be buffered and asynchronously persisted to MinIO.",
+                        "requestBody": {
+                            "required": true,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "table": {"type": "string", "description": "Table name"},
+                                            "data": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "id": {"type": "string", "description": "Record ID"},
+                                                    "timestamp": {"type": "string", "format": "date-time"},
+                                                    "payload": {"type": "object", "description": "Data payload"}
+                                                },
+                                                "required": ["payload"]
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "Write successful",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "success": {"type": "boolean"},
+                                                "message": {"type": "string"},
+                                                "node_id": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/data/write/batch": {
+                    "post": {
+                        "tags": ["Data Operations"],
+                        "summary": "Batch write data",
+                        "description": "Write multiple records to a table in a single request.",
+                        "requestBody": {
+                            "required": true,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "table": {"type": "string"},
+                                            "records": {
+                                                "type": "array",
+                                                "items": {"type": "object"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "Batch write successful",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "success": {"type": "boolean"},
+                                                "records_count": {"type": "integer"},
+                                                "errors": {"type": "array", "items": {"type": "string"}}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/data/query": {
+                    "post": {
+                        "tags": ["Data Operations"],
+                        "summary": "Execute SQL query",
+                        "description": "Execute a SQL query against data. Supports DuckDB SQL syntax.",
+                        "requestBody": {
+                            "required": true,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "sql": {"type": "string", "description": "SQL query statement"},
+                                            "limit": {"type": "integer", "default": 100},
+                                            "cursor": {"type": "string", "description": "Pagination cursor"}
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "Query successful",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "result_json": {"type": "string", "description": "JSON array of results"},
+                                                "has_more": {"type": "boolean"},
+                                                "next_cursor": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/data/{table}/{id}": {
+                    "get": {
+                        "tags": ["Data Operations"],
+                        "summary": "Get a specific record",
+                        "parameters": [
+                            {"name": "table", "in": "path", "required": true, "schema": {"type": "string"}},
+                            {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
+                        ],
+                        "responses": {
+                            "200": {"description": "Record found"},
+                            "404": {"description": "Record not found"}
+                        }
+                    },
+                    "delete": {
+                        "tags": ["Data Operations"],
+                        "summary": "Delete a specific record",
+                        "parameters": [
+                            {"name": "table", "in": "path", "required": true, "schema": {"type": "string"}},
+                            {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
+                        ],
+                        "responses": {
+                            "200": {"description": "Record deleted"}
+                        }
+                    }
+                },
+                "/tables": {
+                    "get": {
+                        "tags": ["Table Management"],
+                        "summary": "List all tables",
+                        "parameters": [
+                            {"name": "pattern", "in": "query", "schema": {"type": "string"}}
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Table list",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "tables": {"type": "array", "items": {"type": "object"}},
+                                                "total": {"type": "integer"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "post": {
+                        "tags": ["Table Management"],
+                        "summary": "Create a new table",
+                        "requestBody": {
+                            "required": true,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "table_name": {"type": "string"},
+                                            "config": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "buffer_size": {"type": "integer", "default": 1000},
+                                                    "flush_interval_seconds": {"type": "integer", "default": 60},
+                                                    "retention_days": {"type": "integer", "default": 90}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {"description": "Table created"}
+                        }
+                    }
+                },
+                "/tables/{table_name}": {
+                    "get": {
+                        "tags": ["Table Management"],
+                        "summary": "Get table information",
+                        "parameters": [
+                            {"name": "table_name", "in": "path", "required": true, "schema": {"type": "string"}}
+                        ],
+                        "responses": {
+                            "200": {"description": "Table information"}
+                        }
+                    },
+                    "delete": {
+                        "tags": ["Table Management"],
+                        "summary": "Delete a table",
+                        "parameters": [
+                            {"name": "table_name", "in": "path", "required": true, "schema": {"type": "string"}},
+                            {"name": "cascade", "in": "query", "schema": {"type": "boolean"}}
+                        ],
+                        "responses": {
+                            "200": {"description": "Table deleted"}
+                        }
+                    }
+                },
+                "/metadata/backup": {
+                    "post": {
+                        "tags": ["Metadata"],
+                        "summary": "Create metadata backup",
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "force": {"type": "boolean", "default": false}
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {"description": "Backup created"}
+                        }
+                    }
+                },
+                "/health": {
+                    "get": {
+                        "tags": ["System"],
+                        "summary": "Health check",
+                        "responses": {
+                            "200": {
+                                "description": "System is healthy",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "status": {"type": "string"},
+                                                "timestamp": {"type": "string", "format": "date-time"},
+                                                "version": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/status": {
+                    "get": {
+                        "tags": ["System"],
+                        "summary": "Get system status",
+                        "responses": {
+                            "200": {
+                                "description": "System status",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "timestamp": {"type": "string"},
+                                                "total_nodes": {"type": "integer"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "components": {
+                "securitySchemes": {
+                    "ApiKeyAuth": {
+                        "type": "apiKey",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "description": "API Key for authentication"
+                    }
+                }
+            },
+            "security": [{"ApiKeyAuth": []}]
+        };
+
+        window.onload = function() {
+            window.ui = SwaggerUIBundle({
+                spec: spec,
+                dom_id: '#swagger-ui',
+                deepLinking: true,
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIBundle.presets.standalone
+                ],
+                layout: "StandaloneLayout",
+                defaultModelsExpandDepth: 1,
+                defaultModelExpandDepth: 1,
+                tryItOutEnabled: true
+            });
+        };
+    </script>
+</body>
+</html>

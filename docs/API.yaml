@@ -1,0 +1,709 @@
+openapi: 3.0.0
+info:
+  title: MinIODB API
+  description: |
+    MinIODB is a distributed OLAP database system. This API provides endpoints for data operations, table management, and system monitoring.
+    
+    ## Authentication
+    Most endpoints require an API key in the `X-API-Key` header or as a query parameter `?api_key=`.
+    
+    ## Quick Start
+    1. Create a table
+    2. Write data
+    3. Query data
+    
+    ## Online Debugging
+    Import this OpenAPI spec into Swagger UI: https://editor.swagger.io/
+  version: 1.0.0
+  contact:
+    name: MinIODB Team
+    email: support@miniodb.io
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8081
+    description: Local development server
+  - url: https://api.miniodb.io
+    description: Production server
+
+tags:
+  - name: Data Operations
+    description: Read and write data
+  - name: Table Management
+    description: Create and manage tables
+  - name: Metadata
+    description: Backup and restore metadata
+  - name: System
+    description: Health check and metrics
+
+paths:
+  # ============================================
+  # Data Operations
+  # ============================================
+  
+  /api/v1/data/write:
+    post:
+      tags:
+        - Data Operations
+      summary: Write data to a table
+      description: |
+        Write a single record to the specified table. The record will be buffered and asynchronously persisted to MinIO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                table:
+                  type: string
+                  description: Table name (optional, uses default if not provided)
+                  example: "user_events"
+                data:
+                  type: object
+                  description: Record data
+                  properties:
+                    id:
+                      type: string
+                      description: Record ID (optional, auto-generated if not provided)
+                      example: "evt_001"
+                    timestamp:
+                      type: string
+                      format: date-time
+                      description: Record timestamp (optional, uses current time if not provided)
+                      example: "2024-01-18T10:00:00Z"
+                    payload:
+                      type: object
+                      description: Data payload
+                      example:
+                        user_id: 123
+                        event_type: "page_view"
+                        page_url: "/products/item-123"
+              required:
+                - data
+      responses:
+        '200':
+          description: Write successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Data successfully ingested for table: user_events, ID: evt_001"
+                  node_id:
+                    type: string
+                    example: "node-1"
+        '400':
+          description: Invalid request
+        '500':
+          description: Internal server error
+
+  /api/v1/data/write/batch:
+    post:
+      tags:
+        - Data Operations
+      summary: Batch write data
+      description: |
+        Write multiple records to a table in a single request. More efficient than individual writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                table:
+                  type: string
+                  example: "user_events"
+                records:
+                  type: array
+                  items:
+                    type: object
+                  minItems: 1
+                  maxItems: 10000
+                  example:
+                    - id: "evt_001"
+                      payload:
+                        user_id: 123
+                        event_type: "page_view"
+                    - id: "evt_002"
+                      payload:
+                        user_id: 124
+                        event_type: "click"
+      responses:
+        '200':
+          description: Batch write successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  records_count:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: string
+
+  /api/v1/data/query:
+    post:
+      tags:
+        - Data Operations
+      summary: Execute SQL query
+      description: |
+        Execute a SQL query against the data. Supports DuckDB SQL syntax.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sql:
+                  type: string
+                  description: SQL query statement
+                  example: "SELECT * FROM user_events WHERE timestamp >= NOW() - INTERVAL '7 days' LIMIT 100"
+                limit:
+                  type: integer
+                  description: Maximum number of results
+                  default: 100
+                  minimum: 1
+                  maximum: 10000
+                cursor:
+                  type: string
+                  description: Pagination cursor
+      responses:
+        '200':
+          description: Query successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result_json:
+                    type: string
+                    description: JSON array of results
+                  has_more:
+                    type: boolean
+                    description: Whether more results are available
+                  next_cursor:
+                    type: string
+                    description: Cursor for next page
+
+  /api/v1/data/{table}/{id}:
+    get:
+      tags:
+        - Data Operations
+      summary: Get a specific record
+      parameters:
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  payload:
+                    type: object
+        '404':
+          description: Record not found
+
+    delete:
+      tags:
+        - Data Operations
+      summary: Delete a specific record
+      parameters:
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  deleted_count:
+                    type: integer
+
+  # ============================================
+  # Table Management
+  # ============================================
+  
+  /api/v1/tables:
+    get:
+      tags:
+        - Table Management
+      summary: List all tables
+      parameters:
+        - name: pattern
+          in: query
+          description: Filter tables by pattern (supports wildcards)
+          schema:
+            type: string
+            example: "user_*"
+      responses:
+        '200':
+          description: Table list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tables:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TableInfo'
+                  total:
+                    type: integer
+
+    post:
+      tags:
+        - Table Management
+      summary: Create a new table
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                table_name:
+                  type: string
+                  example: "user_events"
+                config:
+                  $ref: '#/components/schemas/TableConfig'
+                if_not_exists:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Table created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /api/v1/tables/{table_name}:
+    get:
+      tags:
+        - Table Management
+      summary: Get table information
+      parameters:
+        - name: table_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Table information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableInfoDetail'
+        '404':
+          description: Table not found
+
+    delete:
+      tags:
+        - Table Management
+      summary: Delete a table
+      parameters:
+        - name: table_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: cascade
+          in: query
+          description: Also delete dependent objects
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Table deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  files_deleted:
+                    type: integer
+
+  # ============================================
+  # Metadata Management
+  # ============================================
+  
+  /api/v1/metadata/backup:
+    post:
+      tags:
+        - Metadata
+      summary: Create metadata backup
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+                  default: false
+                  description: Force backup even if recent backup exists
+      responses:
+        '200':
+          description: Backup created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  backup_id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /api/v1/metadata/restore:
+    post:
+      tags:
+        - Metadata
+      summary: Restore metadata from backup
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                backup_file:
+                  type: string
+                  description: Specific backup file to restore
+                from_latest:
+                  type: boolean
+                  default: true
+                  description: Restore from latest backup
+                dry_run:
+                  type: boolean
+                  default: false
+                  description: Test restoration without applying
+                overwrite:
+                  type: boolean
+                  default: false
+                  description: Overwrite existing metadata
+      responses:
+        '200':
+          description: Restore completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  backup_file:
+                    type: string
+                  entries_total:
+                    type: integer
+                  entries_ok:
+                    type: integer
+                  entries_skipped:
+                    type: integer
+                  entries_error:
+                    type: integer
+                  duration:
+                    type: string
+
+  /api/v1/metadata/backups:
+    get:
+      tags:
+        - Metadata
+      summary: List all backups
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to look back
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: Backup list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BackupInfo'
+                  total:
+                    type: integer
+
+  # ============================================
+  # System
+  # ============================================
+  
+  /api/v1/health:
+    get:
+      tags:
+        - System
+      summary: Health check
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                  timestamp:
+                    type: string
+                    format: date-time
+                  version:
+                    type: string
+                  details:
+                    type: object
+                    additionalProperties:
+                      type: string
+
+  /api/v1/status:
+    get:
+      tags:
+        - System
+      summary: Get system status
+      responses:
+        '200':
+          description: System status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:
+                    type: string
+                    format: date-time
+                  buffer_stats:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  redis_stats:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  minio_stats:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  nodes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NodeInfo'
+                  total_nodes:
+                    type: integer
+
+  /api/v1/metrics:
+    get:
+      tags:
+        - System
+      summary: Get performance metrics
+      responses:
+        '200':
+          description: Metrics data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:
+                    type: string
+                    format: date-time
+                  performance_metrics:
+                    type: object
+                    additionalProperties:
+                      type: number
+                  resource_usage:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  system_info:
+                    type: object
+                    additionalProperties:
+                      type: string
+
+components:
+  schemas:
+    TableInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, creating, deleting, error]
+        created_at:
+          type: string
+          format: date-time
+        last_write:
+          type: string
+          format: date-time
+
+    TableInfoDetail:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/TableInfo'
+        - type: object
+          properties:
+            config:
+              $ref: '#/components/schemas/TableConfig'
+            stats:
+              $ref: '#/components/schemas/TableStats'
+
+    TableConfig:
+      type: object
+      properties:
+        buffer_size:
+          type: integer
+          default: 1000
+          description: Buffer size in records
+        flush_interval_seconds:
+          type: integer
+          default: 60
+          description: Auto-flush interval in seconds
+        retention_days:
+          type: integer
+          default: 90
+          description: Data retention period in days
+        backup_enabled:
+          type: boolean
+          default: true
+        id_strategy:
+          type: string
+          enum: [uuid, snowflake, custom, user_provided]
+          default: uuid
+        auto_generate_id:
+          type: boolean
+          default: true
+        properties:
+          type: object
+          additionalProperties:
+            type: string
+
+    TableStats:
+      type: object
+      properties:
+        record_count:
+          type: integer
+          format: int64
+        file_count:
+          type: integer
+        size_bytes:
+          type: integer
+          format: int64
+        oldest_record:
+          type: string
+          format: date-time
+        newest_record:
+          type: string
+          format: date-time
+
+    BackupInfo:
+      type: object
+      properties:
+        object_name:
+          type: string
+        node_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        size:
+          type: integer
+          format: int64
+        last_modified:
+          type: string
+          format: date-time
+
+    NodeInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [running, stopped, error]
+        type:
+          type: string
+          enum: [primary, replica, coordinator]
+        address:
+          type: string
+        last_seen:
+          type: integer
+          format: int64
+
+securitySchemes:
+  ApiKeyAuth:
+    type: apiKey
+    in: header
+    name: X-API-Key
+    description: API Key for authentication
+
+security:
+  - ApiKeyAuth: []
