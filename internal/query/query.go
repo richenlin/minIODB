@@ -3,10 +3,12 @@ package query
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"minIODB/pkg/logger"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1016,8 +1018,7 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 	return q.createTableViewWithDB(db, tableName, allFiles)
 }
 
-// getStorageFilesMetadata 获取存储文件的元数据
-// TODO: 当前返回基础元数据，未来可从 Redis 索引中获取完整的 MinValues/MaxValues
+// getStorageFilesMetadata 获取存储文件的元数据（包括 MinValues/MaxValues 用于文件剪枝）
 func (q *Querier) getStorageFilesMetadata(ctx context.Context, tableName string) ([]*storage.FileMetadata, error) {
 	var files []*storage.FileMetadata
 
@@ -1042,13 +1043,8 @@ func (q *Querier) getStorageFilesMetadata(ctx context.Context, tableName string)
 		}
 
 		for _, objectName := range objectNames {
-			// 创建基础文件元数据
-			// TODO: 从 Redis 读取完整的元数据（包括 MinValues/MaxValues）
-			metadata := &storage.FileMetadata{
-				FilePath:  objectName,
-				MinValues: make(map[string]interface{}),
-				MaxValues: make(map[string]interface{}),
-			}
+			// 从 Redis 读取完整的文件元数据
+			metadata := q.loadFileMetadataFromRedis(ctx, redisClient, objectName)
 			files = append(files, metadata)
 		}
 	}
@@ -1056,7 +1052,116 @@ func (q *Querier) getStorageFilesMetadata(ctx context.Context, tableName string)
 	return files, nil
 }
 
+// loadFileMetadataFromRedis 从 Redis 加载文件元数据
+func (q *Querier) loadFileMetadataFromRedis(ctx context.Context, redisClient redis.Cmdable, objectName string) *storage.FileMetadata {
+	metadataKey := fmt.Sprintf("metadata:file:%s", objectName)
+
+	// 创建基础元数据
+	metadata := &storage.FileMetadata{
+		FilePath:  objectName,
+		MinValues: make(map[string]interface{}),
+		MaxValues: make(map[string]interface{}),
+	}
+
+	// 尝试从 Redis 获取完整元数据
+	fields, err := redisClient.HGetAll(ctx, metadataKey).Result()
+	if err != nil || len(fields) == 0 {
+		// 元数据不存在，返回基础元数据
+		return metadata
+	}
+
+	// 解析元数据字段
+	if fileSizeStr, ok := fields["file_size"]; ok {
+		if fileSize, err := strconv.ParseInt(fileSizeStr, 10, 64); err == nil {
+			metadata.FileSize = fileSize
+		}
+	}
+
+	if rowCountStr, ok := fields["row_count"]; ok {
+		if rowCount, err := strconv.ParseInt(rowCountStr, 10, 64); err == nil {
+			metadata.RowCount = rowCount
+		}
+	}
+
+	if rowGroupsStr, ok := fields["row_groups"]; ok {
+		if rowGroups, err := strconv.Atoi(rowGroupsStr); err == nil {
+			metadata.RowGroupCount = rowGroups
+		}
+	}
+
+	if compression, ok := fields["compression"]; ok {
+		metadata.CompressionType = compression
+	}
+
+	if createdAtStr, ok := fields["created_at"]; ok {
+		if createdAt, err := time.Parse(time.RFC3339, createdAtStr); err == nil {
+			metadata.CreatedAt = createdAt
+		}
+	}
+
+	// 解析 MinValues
+	if minValuesJSON, ok := fields["min_values"]; ok {
+		var minValues map[string]interface{}
+		if err := json.Unmarshal([]byte(minValuesJSON), &minValues); err == nil {
+			metadata.MinValues = q.convertMetadataValues(minValues)
+		}
+	}
+
+	// 解析 MaxValues
+	if maxValuesJSON, ok := fields["max_values"]; ok {
+		var maxValues map[string]interface{}
+		if err := json.Unmarshal([]byte(maxValuesJSON), &maxValues); err == nil {
+			metadata.MaxValues = q.convertMetadataValues(maxValues)
+		}
+	}
+
+	// 解析 NullCounts
+	if nullCountsJSON, ok := fields["null_counts"]; ok {
+		var nullCounts map[string]int64
+		if err := json.Unmarshal([]byte(nullCountsJSON), &nullCounts); err == nil {
+			metadata.NullCounts = nullCounts
+		}
+	}
+
+	q.logger.Debug("Loaded file metadata from Redis",
+		zap.String("object", objectName),
+		zap.Int64("row_count", metadata.RowCount),
+		zap.Int("min_values_count", len(metadata.MinValues)),
+		zap.Int("max_values_count", len(metadata.MaxValues)))
+
+	return metadata
+}
+
+// convertMetadataValues 转换元数据值为适当的类型（用于文件剪枝比较）
+func (q *Querier) convertMetadataValues(values map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	for key, value := range values {
+		switch v := value.(type) {
+		case string:
+			// 尝试解析为数字
+			if intVal, err := strconv.ParseInt(v, 10, 64); err == nil {
+				result[key] = intVal
+			} else if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
+				result[key] = floatVal
+			} else {
+				result[key] = v
+			}
+		case float64:
+			// JSON 数字默认解析为 float64
+			if v == float64(int64(v)) {
+				result[key] = int64(v)
+			} else {
+				result[key] = v
+			}
+		default:
+			result[key] = v
+		}
+	}
+	return result
+}
+
 // getStorageFilesMetadataFromMinIO 从 MinIO 获取文件元数据
+// 元数据加载优先级：Redis > MinIO sidecar > 基础信息
 func (q *Querier) getStorageFilesMetadataFromMinIO(ctx context.Context, tableName string) ([]*storage.FileMetadata, error) {
 	if q.minioClient == nil {
 		return []*storage.FileMetadata{}, nil
@@ -1064,6 +1169,12 @@ func (q *Querier) getStorageFilesMetadataFromMinIO(ctx context.Context, tableNam
 
 	prefix := tableName + "/"
 	bucket := q.config.MinIO.Bucket
+
+	// 获取 Redis 客户端（如果可用）
+	var redisClient redis.Cmdable
+	if q.redisPool != nil {
+		redisClient = q.redisPool.GetClient()
+	}
 
 	var files []*storage.FileMetadata
 	opts := minio.ListObjectsOptions{
@@ -1077,21 +1188,130 @@ func (q *Querier) getStorageFilesMetadataFromMinIO(ctx context.Context, tableNam
 			continue
 		}
 
+		// 跳过非 parquet 文件和 sidecar 元数据文件
 		if filepath.Ext(object.Key) != ".parquet" {
 			continue
 		}
-
-		// 创建基础文件元数据
-		// TODO: 从 Parquet 文件头读取完整的元数据（包括 MinValues/MaxValues）
-		metadata := &storage.FileMetadata{
-			FilePath:  object.Key,
-			FileSize:  object.Size,
-			CreatedAt: object.LastModified,
-			MinValues: make(map[string]interface{}),
-			MaxValues: make(map[string]interface{}),
+		if strings.HasSuffix(object.Key, ".meta.json") {
+			continue
 		}
+
+		var metadata *storage.FileMetadata
+		var loaded bool
+
+		// 1. 优先尝试从 Redis 加载
+		if redisClient != nil {
+			metadata = q.loadFileMetadataFromRedis(ctx, redisClient, object.Key)
+			if len(metadata.MinValues) > 0 || len(metadata.MaxValues) > 0 {
+				loaded = true
+			}
+		}
+
+		// 2. 回退到 MinIO sidecar
+		if !loaded {
+			sidecarMetadata := q.loadFileMetadataFromMinIOSidecar(ctx, bucket, object.Key)
+			if sidecarMetadata != nil && (len(sidecarMetadata.MinValues) > 0 || len(sidecarMetadata.MaxValues) > 0) {
+				metadata = sidecarMetadata
+				loaded = true
+				// 如果 Redis 可用，缓存到 Redis
+				if redisClient != nil {
+					go q.cacheMetadataToRedis(context.Background(), redisClient, object.Key, metadata)
+				}
+			}
+		}
+
+		// 3. 如果都没有加载到，使用基础信息
+		if metadata == nil {
+			metadata = &storage.FileMetadata{
+				FilePath:  object.Key,
+				MinValues: make(map[string]interface{}),
+				MaxValues: make(map[string]interface{}),
+			}
+		}
+
+		// 补充基础信息
+		if metadata.FileSize == 0 {
+			metadata.FileSize = object.Size
+		}
+		if metadata.CreatedAt.IsZero() {
+			metadata.CreatedAt = object.LastModified
+		}
+		if metadata.FilePath == "" {
+			metadata.FilePath = object.Key
+		}
+
 		files = append(files, metadata)
 	}
 
 	return files, nil
+}
+
+// loadFileMetadataFromMinIOSidecar 从 MinIO sidecar 文件加载元数据
+func (q *Querier) loadFileMetadataFromMinIOSidecar(ctx context.Context, bucket, objectName string) *storage.FileMetadata {
+	if q.minioClient == nil {
+		return nil
+	}
+
+	metaObjectName := objectName + ".meta.json"
+
+	// 尝试获取 sidecar 文件（GetObject 返回 []byte）
+	data, err := q.minioClient.GetObject(ctx, bucket, metaObjectName, minio.GetObjectOptions{})
+	if err != nil {
+		// sidecar 文件不存在或获取失败
+		return nil
+	}
+
+	if len(data) == 0 {
+		return nil
+	}
+
+	var metadata storage.FileMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		q.logger.Debug("Failed to parse sidecar metadata",
+			zap.String("object", metaObjectName),
+			zap.Error(err))
+		return nil
+	}
+
+	// 转换值类型
+	metadata.MinValues = q.convertMetadataValues(metadata.MinValues)
+	metadata.MaxValues = q.convertMetadataValues(metadata.MaxValues)
+
+	q.logger.Debug("Loaded metadata from MinIO sidecar",
+		zap.String("object", objectName),
+		zap.Int64("row_count", metadata.RowCount),
+		zap.Int("min_values_count", len(metadata.MinValues)))
+
+	return &metadata
+}
+
+// cacheMetadataToRedis 将元数据缓存到 Redis（异步）
+func (q *Querier) cacheMetadataToRedis(ctx context.Context, redisClient redis.Cmdable, objectName string, metadata *storage.FileMetadata) {
+	metadataKey := fmt.Sprintf("metadata:file:%s", objectName)
+
+	minValuesJSON, _ := json.Marshal(metadata.MinValues)
+	maxValuesJSON, _ := json.Marshal(metadata.MaxValues)
+	nullCountsJSON, _ := json.Marshal(metadata.NullCounts)
+
+	fields := map[string]interface{}{
+		"file_path":   objectName,
+		"file_size":   metadata.FileSize,
+		"row_count":   metadata.RowCount,
+		"row_groups":  metadata.RowGroupCount,
+		"min_values":  string(minValuesJSON),
+		"max_values":  string(maxValuesJSON),
+		"null_counts": string(nullCountsJSON),
+		"compression": metadata.CompressionType,
+		"created_at":  metadata.CreatedAt.Format(time.RFC3339),
+	}
+
+	if err := redisClient.HSet(ctx, metadataKey, fields).Err(); err != nil {
+		q.logger.Debug("Failed to cache metadata to Redis",
+			zap.String("object", objectName),
+			zap.Error(err))
+		return
+	}
+
+	// 设置 30 天过期
+	redisClient.Expire(ctx, metadataKey, 30*24*time.Hour)
 }

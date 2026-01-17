@@ -13,6 +13,7 @@ import (
 
 	"minIODB/config"
 	"minIODB/internal/metrics"
+	"minIODB/internal/storage"
 	"minIODB/internal/wal"
 	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
@@ -470,6 +471,12 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 		}
 	}
 
+	// 提取并存储 Parquet 文件元数据到 Redis（用于查询时的文件剪枝）
+	if err := w.extractAndStoreFileMetadata(ctx, localFilePath, objectName); err != nil {
+		logger.GetLogger().Sugar().Warnf("Failed to store file metadata (non-fatal): %v", err)
+		// 不阻塞主流程，继续更新索引
+	}
+
 	if err := w.updateRedisIndex(ctx, bufferKey, objectName); err != nil {
 		logger.GetLogger().Sugar().Infof("ERROR: Redis index update failed, rolling back MinIO upload: %v", err)
 		w.rollbackMinIOUpload(ctx, primaryBucket, objectName)
@@ -539,6 +546,138 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 	}
 
 	return nil
+}
+
+// extractAndStoreFileMetadata 提取 Parquet 文件元数据并存储
+// 支持两种存储模式：
+// 1. 分布式模式：存储到 Redis
+// 2. 单节点模式：存储到 MinIO sidecar 文件
+// 元数据包括 MinValues/MaxValues，用于查询时的文件剪枝优化
+func (w *Worker) extractAndStoreFileMetadata(ctx context.Context, localFilePath, objectName string) error {
+	// 检查是否可用
+	if w.buffer.poolManager == nil {
+		return nil // 测试模式，跳过
+	}
+
+	// 使用 Parquet Reader 提取文件元数据
+	parquetReader := storage.NewParquetReader(nil)
+	fileMetadata, err := parquetReader.GetFileMetadata(localFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to extract parquet metadata: %w", err)
+	}
+
+	// 更新文件路径为对象名
+	fileMetadata.FilePath = objectName
+
+	// 获取存储资源
+	redisPool := w.buffer.poolManager.GetRedisPool()
+	minioPool := w.buffer.poolManager.GetMinIOPool()
+
+	// 获取存储桶名称
+	bucket := "miniodb-data"
+	if w.buffer.appConfig != nil && w.buffer.appConfig.MinIO.Bucket != "" {
+		bucket = w.buffer.appConfig.MinIO.Bucket
+	}
+
+	var storedToRedis, storedToMinIO bool
+	var lastErr error
+
+	// 1. 尝试存储到 Redis（分布式模式）
+	if redisPool != nil {
+		if err := w.storeMetadataToRedis(ctx, objectName, fileMetadata); err != nil {
+			logger.GetLogger().Debug("Failed to store metadata to Redis (will try MinIO sidecar)",
+				zap.String("object", objectName),
+				zap.Error(err))
+			lastErr = err
+		} else {
+			storedToRedis = true
+		}
+	}
+
+	// 2. 同时存储到 MinIO sidecar（单节点模式或作为备份）
+	if minioPool != nil {
+		if err := w.storeMetadataToMinIOSidecar(ctx, minioPool, bucket, objectName, fileMetadata); err != nil {
+			logger.GetLogger().Debug("Failed to store metadata to MinIO sidecar",
+				zap.String("object", objectName),
+				zap.Error(err))
+			lastErr = err
+		} else {
+			storedToMinIO = true
+		}
+	}
+
+	// 只要有一个成功就算成功
+	if storedToRedis || storedToMinIO {
+		logger.GetLogger().Debug("Stored file metadata",
+			zap.String("object", objectName),
+			zap.Int64("row_count", fileMetadata.RowCount),
+			zap.Int("min_values_count", len(fileMetadata.MinValues)),
+			zap.Int("max_values_count", len(fileMetadata.MaxValues)),
+			zap.Bool("redis", storedToRedis),
+			zap.Bool("minio_sidecar", storedToMinIO))
+		return nil
+	}
+
+	return lastErr
+}
+
+// storeMetadataToRedis 存储元数据到 Redis
+func (w *Worker) storeMetadataToRedis(ctx context.Context, objectName string, fileMetadata *storage.FileMetadata) error {
+	redisPool := w.buffer.poolManager.GetRedisPool()
+	if redisPool == nil {
+		return fmt.Errorf("redis pool not available")
+	}
+
+	client := redisPool.GetClient()
+	metadataKey := fmt.Sprintf("metadata:file:%s", objectName)
+
+	// 序列化 map 字段
+	minValuesJSON, _ := json.Marshal(fileMetadata.MinValues)
+	maxValuesJSON, _ := json.Marshal(fileMetadata.MaxValues)
+	nullCountsJSON, _ := json.Marshal(fileMetadata.NullCounts)
+
+	fields := map[string]interface{}{
+		"file_path":   objectName,
+		"file_size":   fileMetadata.FileSize,
+		"row_count":   fileMetadata.RowCount,
+		"row_groups":  fileMetadata.RowGroupCount,
+		"min_values":  string(minValuesJSON),
+		"max_values":  string(maxValuesJSON),
+		"null_counts": string(nullCountsJSON),
+		"compression": fileMetadata.CompressionType,
+		"created_at":  fileMetadata.CreatedAt.Format(time.RFC3339),
+		"stored_at":   time.Now().Format(time.RFC3339),
+	}
+
+	if err := client.HSet(ctx, metadataKey, fields).Err(); err != nil {
+		return fmt.Errorf("failed to store metadata in Redis: %w", err)
+	}
+
+	// 设置过期时间（30 天）
+	client.Expire(ctx, metadataKey, 30*24*time.Hour)
+
+	return nil
+}
+
+// storeMetadataToMinIOSidecar 存储元数据到 MinIO sidecar 文件
+func (w *Worker) storeMetadataToMinIOSidecar(ctx context.Context, minioPool *pool.MinIOPool, bucket, objectName string, fileMetadata *storage.FileMetadata) error {
+	// 序列化元数据
+	metaJSON, err := json.Marshal(fileMetadata)
+	if err != nil {
+		return fmt.Errorf("failed to serialize metadata: %w", err)
+	}
+
+	// 上传 sidecar 文件
+	metaObjectName := objectName + ".meta.json"
+
+	return minioPool.ExecuteWithRetry(ctx, func() error {
+		client := minioPool.GetClient()
+		reader := strings.NewReader(string(metaJSON))
+		_, err := client.PutObject(ctx, bucket, metaObjectName, reader, int64(len(metaJSON)), minio.PutObjectOptions{
+			ContentType: "application/json",
+		})
+		return err
+	})
 }
 
 // Add 添加数据到缓冲区
