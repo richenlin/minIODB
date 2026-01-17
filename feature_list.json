@@ -47,14 +47,14 @@
       "id": "F007",
       "name": "统一日志记录",
       "priority": 2,
-      "status": "pending",
+      "status": "completed",
       "description": "将所有log.Printf替换为结构化的zap.Logger"
     },
     {
       "id": "F008",
       "name": "增加单元测试",
       "priority": 2,
-      "status": "pending",
+      "status": "completed",
       "description": "为核心模块添加单元测试，目标覆盖率>70%"
     },
     {
