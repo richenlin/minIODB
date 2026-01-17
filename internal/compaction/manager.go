@@ -24,6 +24,7 @@ type Config struct {
 	CheckInterval     time.Duration
 	TempDir           string
 	CompressionType   string
+	MaxRowsPerFile    int64 // 每个文件最大行数
 }
 
 func DefaultConfig() *Config {
@@ -35,6 +36,7 @@ func DefaultConfig() *Config {
 		CheckInterval:     10 * time.Minute,
 		TempDir:           filepath.Join(os.TempDir(), "miniodb_compaction"),
 		CompressionType:   "snappy",
+		MaxRowsPerFile:    1000000, // 100 万行
 	}
 }
 
@@ -282,7 +284,12 @@ func (m *Manager) compactFiles(ctx context.Context, table string, files []FileIn
 	outputDir := filepath.Join(tempDir, "output")
 	writerConfig := storage.DefaultParquetWriterConfig(outputDir)
 	writerConfig.CompressionType = m.config.CompressionType
-	writerConfig.MaxRowsPerFile = 1000000
+	// 使用配置的最大行数，默认 100 万
+	maxRows := m.config.MaxRowsPerFile
+	if maxRows <= 0 {
+		maxRows = 1000000
+	}
+	writerConfig.MaxRowsPerFile = int(maxRows)
 
 	writer, err := storage.NewParquetWriter(writerConfig)
 	if err != nil {

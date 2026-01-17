@@ -433,10 +433,17 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 		return fmt.Errorf("MinIO pool not available")
 	}
 
-	// 获取主存储桶名称
-	primaryBucket := "miniodb-data" // 默认值
-	if w.buffer.appConfig != nil && w.buffer.appConfig.MinIO.Bucket != "" {
-		primaryBucket = w.buffer.appConfig.MinIO.Bucket
+	// 获取主存储桶名称（优先使用 Buffer.DefaultBucket，否则使用 MinIO.Bucket）
+	primaryBucket := ""
+	if w.buffer.appConfig != nil {
+		if w.buffer.appConfig.Buffer.DefaultBucket != "" {
+			primaryBucket = w.buffer.appConfig.Buffer.DefaultBucket
+		} else if w.buffer.appConfig.MinIO.Bucket != "" {
+			primaryBucket = w.buffer.appConfig.MinIO.Bucket
+		}
+	}
+	if primaryBucket == "" {
+		primaryBucket = "miniodb-data" // 最终默认值
 	}
 
 	minioMetrics := metrics.NewMinIOMetrics("upload_primary")
@@ -573,10 +580,17 @@ func (w *Worker) extractAndStoreFileMetadata(ctx context.Context, localFilePath,
 	redisPool := w.buffer.poolManager.GetRedisPool()
 	minioPool := w.buffer.poolManager.GetMinIOPool()
 
-	// 获取存储桶名称
-	bucket := "miniodb-data"
-	if w.buffer.appConfig != nil && w.buffer.appConfig.MinIO.Bucket != "" {
-		bucket = w.buffer.appConfig.MinIO.Bucket
+	// 获取存储桶名称（优先使用 Buffer.DefaultBucket，否则使用 MinIO.Bucket）
+	bucket := ""
+	if w.buffer.appConfig != nil {
+		if w.buffer.appConfig.Buffer.DefaultBucket != "" {
+			bucket = w.buffer.appConfig.Buffer.DefaultBucket
+		} else if w.buffer.appConfig.MinIO.Bucket != "" {
+			bucket = w.buffer.appConfig.MinIO.Bucket
+		}
+	}
+	if bucket == "" {
+		bucket = "miniodb-data" // 最终默认值
 	}
 
 	var storedToRedis, storedToMinIO bool
@@ -629,7 +643,12 @@ func (w *Worker) storeMetadataToRedis(ctx context.Context, objectName string, fi
 	}
 
 	client := redisPool.GetClient()
-	metadataKey := fmt.Sprintf("metadata:file:%s", objectName)
+	// 使用配置的 key 前缀，默认为 "file_meta:"
+	keyPrefix := "file_meta:"
+	if w.buffer.appConfig != nil && w.buffer.appConfig.FileMetadata.KeyPrefix != "" {
+		keyPrefix = w.buffer.appConfig.FileMetadata.KeyPrefix
+	}
+	metadataKey := fmt.Sprintf("%s%s", keyPrefix, objectName)
 
 	// 序列化 map 字段
 	minValuesJSON, _ := json.Marshal(fileMetadata.MinValues)
@@ -653,8 +672,12 @@ func (w *Worker) storeMetadataToRedis(ctx context.Context, objectName string, fi
 		return fmt.Errorf("failed to store metadata in Redis: %w", err)
 	}
 
-	// 设置过期时间（30 天）
-	client.Expire(ctx, metadataKey, 30*24*time.Hour)
+	// 设置过期时间（使用配置的 TTL，默认 30 天）
+	ttl := 30 * 24 * time.Hour
+	if w.buffer.appConfig != nil && w.buffer.appConfig.FileMetadata.TTL > 0 {
+		ttl = w.buffer.appConfig.FileMetadata.TTL
+	}
+	client.Expire(ctx, metadataKey, ttl)
 
 	return nil
 }

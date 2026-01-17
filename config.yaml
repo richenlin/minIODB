@@ -542,3 +542,30 @@ tables:
     backup_enabled: true
     properties: {}
   tables: {}
+
+# 文件元数据配置
+file_metadata:
+  key_prefix: "file_meta:"        # Redis key 前缀
+  ttl: 720h                       # 元数据 TTL (30天)
+  enable_sidecar: true            # 启用 MinIO sidecar 存储
+  redis_ping_timeout: 2s          # Redis ping 超时
+
+# 协调器配置
+coordinator:
+  hash_ring_replicas: 150         # 一致性哈希虚拟节点数
+  write_timeout: 10s              # 写超时
+  distributed_query_timeout: 30s  # 分布式查询超时
+  remote_query_timeout: 10s       # 远程查询超时
+  node_monitor_interval: 30s      # 节点监控间隔
+
+# Compaction 配置
+compaction:
+  enabled: true
+  target_file_size: 134217728     # 128MB
+  min_files_to_compact: 5
+  max_files_to_compact: 20
+  cooldown_period: 5m
+  check_interval: 10m
+  temp_dir: "/tmp/miniodb_compaction"
+  compression_type: "snappy"
+  max_rows_per_file: 1000000      # 每个文件最大行数

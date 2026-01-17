@@ -138,7 +138,7 @@ func main() {
 	logger.Logger.Info("Initializing services...")
 
 	// 初始化协调器
-	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry)
+	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry, cfg)
 
 	var localQuerier coordinator.LocalQuerier = querierService
 	queryCoord := coordinator.NewQueryCoordinator(

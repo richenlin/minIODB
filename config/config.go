@@ -31,8 +31,10 @@ type Config struct {
 	Log               LogConfig               `yaml:"log"`        // 日志配置
 	Tables            TablesConfig            `yaml:"tables"`
 	TableManagement   TableManagementConfig   `yaml:"table_management"`
-	System            SystemConfig            `yaml:"system"`     // 系统配置
-	Compaction        CompactionConfig        `yaml:"compaction"` // Compaction 配置
+	System            SystemConfig            `yaml:"system"`        // 系统配置
+	Compaction        CompactionConfig        `yaml:"compaction"`    // Compaction 配置
+	FileMetadata      FileMetadataConfig      `yaml:"file_metadata"` // 文件元数据配置
+	Coordinator       CoordinatorConfig       `yaml:"coordinator"`   // 协调器配置
 }
 
 // TableConfig 表级配置
@@ -228,10 +230,30 @@ type MinioConfig struct {
 	Bucket          string `yaml:"bucket"`
 }
 
-// BufferConfig 缓冲区配置（保持向后兼容）
+// BufferConfig 缓冲区配置
 type BufferConfig struct {
-	BufferSize    int           `yaml:"buffer_size"`
-	FlushInterval time.Duration `yaml:"flush_interval"`
+	BufferSize      int           `yaml:"buffer_size"`
+	FlushInterval   time.Duration `yaml:"flush_interval"`
+	WorkerPoolSize  int           `yaml:"worker_pool_size"`
+	TaskQueueSize   int           `yaml:"task_queue_size"`
+	BatchFlushSize  int           `yaml:"batch_flush_size"`
+	EnableBatching  bool          `yaml:"enable_batching"`
+	FlushTimeout    time.Duration `yaml:"flush_timeout"`
+	MaxRetries      int           `yaml:"max_retries"`
+	RetryDelay      time.Duration `yaml:"retry_delay"`
+	TempDir         string        `yaml:"temp_dir"`          // 临时文件目录
+	ParquetRowGroup int64         `yaml:"parquet_row_group"` // Parquet row group 大小
+	DefaultBucket   string        `yaml:"default_bucket"`    // 默认存储桶
+
+	// WAL 配置
+	WAL WALConfig `yaml:"wal"`
+}
+
+// WALConfig WAL 配置
+type WALConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Dir         string `yaml:"dir"`
+	SyncOnWrite bool   `yaml:"sync_on_write"`
 }
 
 // BackupConfig 备份配置
@@ -567,6 +589,24 @@ type CompactionConfig struct {
 	CheckInterval     time.Duration `yaml:"check_interval"`       // 检查 Compaction 的间隔
 	TempDir           string        `yaml:"temp_dir"`             // 临时目录
 	CompressionType   string        `yaml:"compression_type"`     // 压缩类型 (snappy, zstd, gzip)
+	MaxRowsPerFile    int64         `yaml:"max_rows_per_file"`    // 每个文件最大行数
+}
+
+// FileMetadataConfig 文件元数据配置
+type FileMetadataConfig struct {
+	KeyPrefix        string        `yaml:"key_prefix"`         // Redis key 前缀
+	TTL              time.Duration `yaml:"ttl"`                // 元数据 TTL
+	EnableSidecar    bool          `yaml:"enable_sidecar"`     // 是否启用 MinIO sidecar
+	RedisPingTimeout time.Duration `yaml:"redis_ping_timeout"` // Redis ping 超时
+}
+
+// CoordinatorConfig 协调器配置
+type CoordinatorConfig struct {
+	HashRingReplicas        int           `yaml:"hash_ring_replicas"`        // 一致性哈希虚拟节点数
+	WriteTimeout            time.Duration `yaml:"write_timeout"`             // 写超时
+	DistributedQueryTimeout time.Duration `yaml:"distributed_query_timeout"` // 分布式查询超时
+	RemoteQueryTimeout      time.Duration `yaml:"remote_query_timeout"`      // 远程查询超时
+	NodeMonitorInterval     time.Duration `yaml:"node_monitor_interval"`     // 节点监控间隔
 }
 
 // GetTableConfig 获取指定表的配置，如果不存在则返回默认配置
@@ -760,10 +800,25 @@ func (c *Config) setDefaults() {
 		Bucket:          "olap-data",
 	}
 
-	// 缓冲区默认配置（向后兼容）
+	// 缓冲区默认配置
 	c.Buffer = BufferConfig{
-		BufferSize:    1000,
-		FlushInterval: 30 * time.Second,
+		BufferSize:      1000,
+		FlushInterval:   30 * time.Second,
+		WorkerPoolSize:  10,
+		TaskQueueSize:   100,
+		BatchFlushSize:  5,
+		EnableBatching:  true,
+		FlushTimeout:    60 * time.Second,
+		MaxRetries:      3,
+		RetryDelay:      1 * time.Second,
+		TempDir:         "/tmp/miniodb_buffer",
+		ParquetRowGroup: 10000,
+		DefaultBucket:   "miniodb-data",
+		WAL: WALConfig{
+			Enabled:     true,
+			Dir:         "data/wal",
+			SyncOnWrite: true,
+		},
 	}
 
 	// 备份默认配置
@@ -1056,6 +1111,23 @@ func (c *Config) setDefaults() {
 			},
 			GCInterval: 5 * time.Minute,
 		},
+	}
+
+	// 文件元数据配置默认值
+	c.FileMetadata = FileMetadataConfig{
+		KeyPrefix:        "file_meta:",
+		TTL:              30 * 24 * time.Hour, // 30天
+		EnableSidecar:    true,
+		RedisPingTimeout: 2 * time.Second,
+	}
+
+	// 协调器配置默认值
+	c.Coordinator = CoordinatorConfig{
+		HashRingReplicas:        150,
+		WriteTimeout:            10 * time.Second,
+		DistributedQueryTimeout: 30 * time.Second,
+		RemoteQueryTimeout:      10 * time.Second,
+		NodeMonitorInterval:     30 * time.Second,
 	}
 }
 

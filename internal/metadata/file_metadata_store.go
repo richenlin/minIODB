@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"minIODB/config"
 	"minIODB/internal/storage"
 	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
@@ -44,11 +45,24 @@ type RedisMetadataStore struct {
 }
 
 // NewRedisMetadataStore 创建 Redis 元数据存储
-func NewRedisMetadataStore(redisPool *pool.RedisPool) *RedisMetadataStore {
+func NewRedisMetadataStore(redisPool *pool.RedisPool, cfg *config.Config) *RedisMetadataStore {
+	// 使用配置的 key 前缀和 TTL，或使用默认值
+	keyPrefix := "file_meta:"
+	ttl := 30 * 24 * time.Hour
+
+	if cfg != nil {
+		if cfg.FileMetadata.KeyPrefix != "" {
+			keyPrefix = cfg.FileMetadata.KeyPrefix
+		}
+		if cfg.FileMetadata.TTL > 0 {
+			ttl = cfg.FileMetadata.TTL
+		}
+	}
+
 	return &RedisMetadataStore{
 		redisPool: redisPool,
-		keyPrefix: "metadata:file:",
-		ttl:       30 * 24 * time.Hour, // 30 天
+		keyPrefix: keyPrefix,
+		ttl:       ttl,
 	}
 }
 
@@ -285,12 +299,12 @@ type CompositeMetadataStore struct {
 }
 
 // NewCompositeMetadataStore 创建组合元数据存储
-func NewCompositeMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string) *CompositeMetadataStore {
+func NewCompositeMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string, cfg *config.Config) *CompositeMetadataStore {
 	var redisStore *RedisMetadataStore
 	var minioStore *MinIOMetadataStore
 
 	if redisPool != nil {
-		redisStore = NewRedisMetadataStore(redisPool)
+		redisStore = NewRedisMetadataStore(redisPool, cfg)
 	}
 	if minioClient != nil {
 		minioStore = NewMinIOMetadataStore(minioClient, bucket)
@@ -488,10 +502,11 @@ func convertMetadataValues(values map[string]interface{}) map[string]interface{}
 // GetMetadataStore 根据配置创建合适的元数据存储
 // redisPool 可以为 nil（单节点模式）
 // minioClient 和 bucket 用于 MinIO sidecar 存储
-func GetMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string) FileMetadataStore {
+// cfg 可以为 nil，将使用默认配置
+func GetMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string, cfg *config.Config) FileMetadataStore {
 	// 如果 Redis 可用，使用组合存储（Redis + MinIO sidecar）
 	// 如果 Redis 不可用，只使用 MinIO sidecar
-	return NewCompositeMetadataStore(redisPool, minioClient, bucket)
+	return NewCompositeMetadataStore(redisPool, minioClient, bucket, cfg)
 }
 
 // IsRedisAvailable 检查 Redis 是否可用

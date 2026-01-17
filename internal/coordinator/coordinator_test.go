@@ -88,7 +88,7 @@ func TestNewWriteCoordinator(t *testing.T) {
 	_, registry, cleanup := setupTestEnvironment(t)
 	defer cleanup()
 
-	wc := NewWriteCoordinator(registry)
+	wc := NewWriteCoordinator(registry, nil)
 	assert.NotNil(t, wc)
 	assert.NotNil(t, wc.registry)
 	assert.NotNil(t, wc.hashRing)

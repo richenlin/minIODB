@@ -41,6 +41,7 @@ type WriteCoordinator struct {
 	registry       *discovery.ServiceRegistry
 	hashRing       *consistenthash.ConsistentHash
 	circuitBreaker *retry.CircuitBreaker
+	cfg            *config.Config
 	mu             sync.RWMutex
 }
 
@@ -126,13 +127,20 @@ type LocalQuerier interface {
 }
 
 // NewWriteCoordinator 创建写入协调器
-func NewWriteCoordinator(registry *discovery.ServiceRegistry) *WriteCoordinator {
+func NewWriteCoordinator(registry *discovery.ServiceRegistry, cfg *config.Config) *WriteCoordinator {
 	cb := retry.NewCircuitBreaker("write_coordinator", retry.DefaultCircuitBreakerConfig)
+
+	// 从配置获取哈希环虚拟节点数，默认 150
+	hashRingReplicas := 150
+	if cfg != nil && cfg.Coordinator.HashRingReplicas > 0 {
+		hashRingReplicas = cfg.Coordinator.HashRingReplicas
+	}
 
 	return &WriteCoordinator{
 		registry:       registry,
-		hashRing:       consistenthash.New(150),
+		hashRing:       consistenthash.New(hashRingReplicas),
 		circuitBreaker: cb,
+		cfg:            cfg,
 	}
 }
 
@@ -167,7 +175,12 @@ func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceR
 
 // RouteWrite 路由写入请求到对应的节点
 func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 从配置获取写超时，默认 10 秒
+	writeTimeout := 10 * time.Second
+	if wc.cfg != nil && wc.cfg.Coordinator.WriteTimeout > 0 {
+		writeTimeout = wc.cfg.Coordinator.WriteTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 
 	// 使用熔断器执行操作
@@ -244,8 +257,14 @@ func (wc *WriteCoordinator) updateHashRing(nodes []*discovery.NodeInfo) {
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
 
+	// 从配置获取哈希环虚拟节点数，默认 150
+	hashRingReplicas := 150
+	if wc.cfg != nil && wc.cfg.Coordinator.HashRingReplicas > 0 {
+		hashRingReplicas = wc.cfg.Coordinator.HashRingReplicas
+	}
+
 	// 创建新的哈希环
-	newHashRing := consistenthash.New(150)
+	newHashRing := consistenthash.New(hashRingReplicas)
 	for _, node := range nodes {
 		nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
 		newHashRing.Add(nodeAddr)
@@ -256,7 +275,12 @@ func (wc *WriteCoordinator) updateHashRing(nodes []*discovery.NodeInfo) {
 
 // ExecuteDistributedQuery 执行分布式查询
 func (qc *QueryCoordinator) ExecuteDistributedQuery(sql string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// 从配置获取分布式查询超时，默认 30 秒
+	queryTimeout := 30 * time.Second
+	if qc.cfg != nil && qc.cfg.Coordinator.DistributedQueryTimeout > 0 {
+		queryTimeout = qc.cfg.Coordinator.DistributedQueryTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
 	// 1. 创建查询计划
@@ -384,7 +408,12 @@ func (qc *QueryCoordinator) executeDistributedPlan(ctx context.Context, plan *Qu
 
 // executeRemoteQuery 执行远程查询
 func (qc *QueryCoordinator) executeRemoteQuery(nodeAddr, sql string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 从配置获取远程查询超时，默认 10 秒
+	remoteTimeout := 10 * time.Second
+	if qc.cfg != nil && qc.cfg.Coordinator.RemoteQueryTimeout > 0 {
+		remoteTimeout = qc.cfg.Coordinator.RemoteQueryTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remoteTimeout)
 	defer cancel()
 
 	// 检查是否是本节点
