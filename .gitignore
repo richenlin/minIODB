@@ -6,6 +6,7 @@ test/performance/results/
 miniodb-test
 test/performance/test_results/
 minIODB
+!examples/sdk/java/src/main/java/com/miniodb/sdk/MinioDBGrpcClient.java
 pkg/pool/logs/*.log
 pkg/retry/logs/*.log
 internal/buffer/data/wal/*.log
