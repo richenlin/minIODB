@@ -1,10 +1,10 @@
 package metadata
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"minIODB/config"
@@ -68,7 +68,7 @@ func (m *Manager) SaveTableConfig(ctx context.Context, tableName string, tableCo
 
 	// 添加到表列表
 	if err := client.SAdd(ctx, "metadata:table_configs", tableName).Err(); err != nil {
-		log.Printf("WARN: Failed to add table to config list: %v", err)
+		logger.GetLogger().Sugar().Infof("WARN: Failed to add table to config list: %v", err)
 	}
 
 	m.logger.Printf("Saved table config for table: %s", tableName)
@@ -129,7 +129,7 @@ func (m *Manager) DeleteTableConfig(ctx context.Context, tableName string) error
 
 	// 从列表中移除
 	if err := client.SRem(ctx, "metadata:table_configs", tableName).Err(); err != nil {
-		log.Printf("WARN: Failed to remove table from config list: %v", err)
+		logger.GetLogger().Sugar().Infof("WARN: Failed to remove table from config list: %v", err)
 	}
 
 	m.logger.Printf("Deleted table config for table: %s", tableName)

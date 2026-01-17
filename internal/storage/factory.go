@@ -1,9 +1,9 @@
 package storage
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"minIODB/config"
@@ -74,9 +74,9 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 	}
 
 	if cfg.Redis.Enabled {
-		log.Println("Storage factory initialized with Redis and MinIO connection pools")
+		logger.GetLogger().Info("Storage factory initialized with Redis and MinIO connection pools")
 	} else {
-		log.Println("Storage factory initialized with MinIO connection pool only (Redis disabled)")
+		logger.GetLogger().Info("Storage factory initialized with MinIO connection pool only (Redis disabled)")
 	}
 	return factory, nil
 }

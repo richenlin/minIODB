@@ -6,3 +6,5 @@ test/performance/results/
 miniodb-test
 test/performance/test_results/
 minIODB
+pkg/pool/logs/*.log
+pkg/retry/logs/*.log

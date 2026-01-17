@@ -1,10 +1,10 @@
 package storage
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"time"
 
 	"minIODB/config"
@@ -21,7 +21,7 @@ type StorageImpl struct {
 
 // NewStorage 创建新的存储实例
 func NewStorage(cfg *config.Config) (Storage, error) {
-	log.Println("Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
+	logger.GetLogger().Info("Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
 	return NewUnifiedStorage(cfg)
 }
 
@@ -304,7 +304,7 @@ func (s *StorageImpl) HealthCheck(ctx context.Context) error {
 	// 检查备份MinIO连接池健康状态（如果存在）
 	if backupPool := s.poolManager.GetBackupMinIOPool(); backupPool != nil {
 		if err := backupPool.HealthCheck(ctx); err != nil {
-			log.Printf("WARN: Backup MinIO health check failed: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: Backup MinIO health check failed: %v", err)
 		}
 	}
 

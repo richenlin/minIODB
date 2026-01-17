@@ -1,9 +1,9 @@
 package storage
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"sort"
 	"strings"
@@ -389,7 +389,7 @@ func (is *IndexSystem) CreateBloomFilter(name, columnName string) error {
 	is.bloomFilters[name] = index
 	is.updateIndexStats("bloom_filter", 1)
 
-	log.Printf("Created BloomFilter index: %s for column: %s", name, columnName)
+	logger.GetLogger().Sugar().Infof("Created BloomFilter index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -413,7 +413,7 @@ func (is *IndexSystem) CreateMinMaxIndex(name, columnName, dataType string) erro
 	is.minMaxIndexes[name] = index
 	is.updateIndexStats("minmax", 1)
 
-	log.Printf("Created MinMax index: %s for column: %s", name, columnName)
+	logger.GetLogger().Sugar().Infof("Created MinMax index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -440,7 +440,7 @@ func (is *IndexSystem) CreateInvertedIndex(name, columnName string) error {
 	is.invertedIndexes[name] = index
 	is.updateIndexStats("inverted", 1)
 
-	log.Printf("Created Inverted index: %s for column: %s", name, columnName)
+	logger.GetLogger().Sugar().Infof("Created Inverted index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -461,7 +461,7 @@ func (is *IndexSystem) CreateBitmapIndex(name, columnName string) error {
 	is.bitmapIndexes[name] = index
 	is.updateIndexStats("bitmap", 1)
 
-	log.Printf("Created Bitmap index: %s for column: %s", name, columnName)
+	logger.GetLogger().Sugar().Infof("Created Bitmap index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -490,7 +490,7 @@ func (is *IndexSystem) CreateCompositeIndex(name string, columns []string) error
 	is.compositeIndexes[name] = index
 	is.updateIndexStats("composite", 1)
 
-	log.Printf("Created Composite index: %s for columns: %v", name, columns)
+	logger.GetLogger().Sugar().Infof("Created Composite index: %s for columns: %v", name, columns)
 	return nil
 }
 
@@ -906,23 +906,23 @@ func (is *IndexSystem) GetStats() *IndexStats {
 
 // OptimizeIndexes 优化索引
 func (is *IndexSystem) OptimizeIndexes(ctx context.Context) error {
-	log.Println("Starting index optimization...")
+	logger.GetLogger().Info("Starting index optimization...")
 
 	startTime := time.Now()
 
 	// 优化BloomFilter索引
 	if err := is.optimizeBloomFilters(); err != nil {
-		log.Printf("Failed to optimize bloom filters: %v", err)
+		logger.GetLogger().Sugar().Infof("Failed to optimize bloom filters: %v", err)
 	}
 
 	// 优化MinMax索引
 	if err := is.optimizeMinMaxIndexes(); err != nil {
-		log.Printf("Failed to optimize minmax indexes: %v", err)
+		logger.GetLogger().Sugar().Infof("Failed to optimize minmax indexes: %v", err)
 	}
 
 	// 优化倒排索引
 	if err := is.optimizeInvertedIndexes(); err != nil {
-		log.Printf("Failed to optimize inverted indexes: %v", err)
+		logger.GetLogger().Sugar().Infof("Failed to optimize inverted indexes: %v", err)
 	}
 
 	// 更新统计信息
@@ -931,7 +931,7 @@ func (is *IndexSystem) OptimizeIndexes(ctx context.Context) error {
 	is.stats.LastMaintenance = time.Now()
 	is.stats.mutex.Unlock()
 
-	log.Printf("Index optimization completed in %v", time.Since(startTime))
+	logger.GetLogger().Sugar().Infof("Index optimization completed in %v", time.Since(startTime))
 	return nil
 }
 
@@ -949,7 +949,7 @@ func (is *IndexSystem) optimizeBloomFilters() error {
 
 		// 检查是否需要重建（false positive rate过高）
 		if filter.stats.ActualFPRate > filter.config.FalsePositiveRate*2 {
-			log.Printf("Rebuilding bloom filter %s due to high FP rate: %.4f",
+			logger.GetLogger().Sugar().Infof("Rebuilding bloom filter %s due to high FP rate: %.4f",
 				filter.name, filter.stats.ActualFPRate)
 
 			// 重建过程（这里简化处理）

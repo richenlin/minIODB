@@ -8,7 +8,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
-	"minIODB/internal/logger"
+	"minIODB/pkg/logger"
 	"minIODB/internal/metrics"
 	"minIODB/config"
 )

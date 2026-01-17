@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"log"
+	"minIODB/pkg/logger"
 	"sync"
 	"time"
 
@@ -337,7 +337,7 @@ func (po *Parquet) OptimizeWriteStrategy(dataSize int64, dataType string, useCas
 		compressionStrategy = &strategy
 	}
 
-	log.Printf("Selected strategies - Partition: %s, Compression: %s for use case: %s, size: %d bytes",
+	logger.GetLogger().Sugar().Infof("Selected strategies - Partition: %s, Compression: %s for use case: %s, size: %d bytes",
 		partitionStrategy.Name, compressionStrategy.Name, useCase, dataSize)
 
 	return partitionStrategy, compressionStrategy
@@ -352,8 +352,8 @@ type MockParquetWriter struct {
 }
 
 func (po *Parquet) CreateOptimizedWriter(filePath string, schema interface{}, partitionStrategy *PartitionStrategy, compressionStrategy *CompressionStrategy) (*MockParquetWriter, error) {
-	log.Printf("Creating optimized Parquet writer for file: %s", filePath)
-	log.Printf("Using compression: %s, row group size: %d", compressionStrategy.Name, partitionStrategy.RowGroupSize)
+	logger.GetLogger().Sugar().Infof("Creating optimized Parquet writer for file: %s", filePath)
+	logger.GetLogger().Sugar().Infof("Using compression: %s, row group size: %d", compressionStrategy.Name, partitionStrategy.RowGroupSize)
 
 	// 记录元数据
 	po.recordFileMetadata(filePath, partitionStrategy, compressionStrategy)
@@ -443,7 +443,7 @@ func (po *Parquet) GetOptimalCompressionStrategy(workloadType string, priorityFa
 		}
 	}
 
-	log.Printf("Selected optimal compression strategy: %s (score: %.2f) for workload: %s",
+	logger.GetLogger().Sugar().Infof("Selected optimal compression strategy: %s (score: %.2f) for workload: %s",
 		bestStrategy.Name, bestScore, workloadType)
 
 	return bestStrategy

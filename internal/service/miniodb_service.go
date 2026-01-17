@@ -1,11 +1,11 @@
 package service
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -114,7 +114,7 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		tableName = s.cfg.TableManagement.DefaultTable
 	}
 
-	log.Printf("Processing write request for table: %s, ID: %s", tableName, req.Data.Id)
+	logger.GetLogger().Sugar().Infof("Processing write request for table: %s, ID: %s", tableName, req.Data.Id)
 
 	// 验证请求
 	if err := s.validateWriteRequest(req); err != nil {
@@ -132,7 +132,7 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 
 	// 确保表存在
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
-		log.Printf("ERROR: Failed to ensure table exists: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to ensure table exists: %v", err)
 		return &miniodb.WriteDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Table error: %v", err),
@@ -149,16 +149,16 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 
 	// 使用Ingester处理写入
 	if err := s.ingester.IngestData(ingestReq); err != nil {
-		log.Printf("ERROR: Failed to ingest data for table %s, ID %s: %v", tableName, req.Data.Id, err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to ingest data for table %s, ID %s: %v", tableName, req.Data.Id, err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to ingest data: %v", err))
 	}
 
 	// 更新表的最后写入时间
 	if err := s.tableManager.UpdateLastWrite(ctx, tableName); err != nil {
-		log.Printf("WARN: Failed to update last write time for table %s: %v", tableName, err)
+		logger.GetLogger().Sugar().Infof("WARN: Failed to update last write time for table %s: %v", tableName, err)
 	}
 
-	log.Printf("Successfully ingested data for table: %s, ID: %s", tableName, req.Data.Id)
+	logger.GetLogger().Sugar().Infof("Successfully ingested data for table: %s, ID: %s", tableName, req.Data.Id)
 	return &miniodb.WriteDataResponse{
 		Success: true,
 		Message: fmt.Sprintf("Data successfully ingested for table: %s, ID: %s", tableName, req.Data.Id),
@@ -263,7 +263,7 @@ func (s *MinIODBService) GenerateID(ctx context.Context, tableName string, table
 
 // QueryData 查询数据
 func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRequest) (*miniodb.QueryDataResponse, error) {
-	log.Printf("Processing query request: %s", req.Sql)
+	logger.GetLogger().Sugar().Infof("Processing query request: %s", req.Sql)
 
 	// 验证请求
 	if err := s.validateQueryRequest(req); err != nil {
@@ -288,7 +288,7 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 		sql = strings.ReplaceAll(sql, "FROM table", "FROM "+quotedTable)
 		sql = strings.ReplaceAll(sql, "from table", "from "+quotedTable)
 
-		log.Printf("Converted legacy SQL to use default table: %s", sql)
+		logger.GetLogger().Sugar().Infof("Converted legacy SQL to use default table: %s", sql)
 	}
 
 	// 如果指定了限制，添加到SQL中
@@ -304,7 +304,7 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 	// 使用Querier执行查询
 	result, err := s.querier.ExecuteQuery(sql)
 	if err != nil {
-		log.Printf("ERROR: Query failed: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Query failed: %v", err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Query execution failed: %v", err))
 	}
 
@@ -312,7 +312,7 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 	hasMore := false
 	nextCursor := ""
 
-	log.Printf("Query completed successfully, result length: %d characters", len(result))
+	logger.GetLogger().Sugar().Infof("Query completed successfully, result length: %d characters", len(result))
 	return &miniodb.QueryDataResponse{
 		ResultJson: result,
 		HasMore:    hasMore,
@@ -359,7 +359,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 		tableName = s.cfg.TableManagement.DefaultTable
 	}
 
-	log.Printf("Processing update request for table: %s, ID: %s", tableName, req.Id)
+	logger.GetLogger().Sugar().Infof("Processing update request for table: %s, ID: %s", tableName, req.Id)
 
 	// 验证请求
 	if err := s.validateUpdateRequest(req); err != nil {
@@ -376,7 +376,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 
 	// 确保表存在
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
-		log.Printf("ERROR: Failed to ensure table exists: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to ensure table exists: %v", err)
 		return &miniodb.UpdateDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Table error: %v", err),
@@ -388,7 +388,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 	if s.querier != nil {
 		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
 		if err != nil {
-			log.Printf("ERROR: Failed to build safe delete SQL: %v", err)
+			logger.GetLogger().Sugar().Infof("ERROR: Failed to build safe delete SQL: %v", err)
 			return &miniodb.UpdateDataResponse{
 				Success: false,
 				Message: fmt.Sprintf("Invalid parameters: %v", err),
@@ -396,7 +396,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 		}
 		_, err = s.querier.ExecuteQuery(deleteSQL)
 		if err != nil {
-			log.Printf("WARN: Delete query during update failed: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: Delete query during update failed: %v", err)
 		}
 	}
 
@@ -417,7 +417,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 
 		// 执行插入
 		if err := s.ingester.IngestData(writeReq); err != nil {
-			log.Printf("ERROR: Failed to ingest updated data for table %s, ID %s: %v", tableName, req.Id, err)
+			logger.GetLogger().Sugar().Infof("ERROR: Failed to ingest updated data for table %s, ID %s: %v", tableName, req.Id, err)
 			return &miniodb.UpdateDataResponse{
 				Success: false,
 				Message: fmt.Sprintf("Failed to update record: %v", err),
@@ -439,7 +439,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 		if keys, err := redisClient.Keys(ctx, cachePattern).Result(); err == nil {
 			if len(keys) > 0 {
 				redisClient.Del(ctx, keys...)
-				log.Printf("Cleaned %d cache entries for updated record", len(keys))
+				logger.GetLogger().Sugar().Infof("Cleaned %d cache entries for updated record", len(keys))
 			}
 		}
 
@@ -448,17 +448,17 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 		if keys, err := redisClient.Keys(ctx, queryCachePattern).Result(); err == nil {
 			if len(keys) > 0 {
 				redisClient.Del(ctx, keys...)
-				log.Printf("Cleaned %d query cache entries for table %s", len(keys), tableName)
+				logger.GetLogger().Sugar().Infof("Cleaned %d query cache entries for table %s", len(keys), tableName)
 			}
 		}
 	}
 
 	// 4. 更新表的最后写入时间
 	if err := s.tableManager.UpdateLastWrite(ctx, tableName); err != nil {
-		log.Printf("WARN: Failed to update last write time for table %s: %v", tableName, err)
+		logger.GetLogger().Sugar().Infof("WARN: Failed to update last write time for table %s: %v", tableName, err)
 	}
 
-	log.Printf("Successfully updated record %s in table %s", req.Id, tableName)
+	logger.GetLogger().Sugar().Infof("Successfully updated record %s in table %s", req.Id, tableName)
 	return &miniodb.UpdateDataResponse{
 		Success: true,
 		Message: fmt.Sprintf("Record %s updated successfully in table %s", req.Id, tableName),
@@ -498,7 +498,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 		tableName = s.cfg.TableManagement.DefaultTable
 	}
 
-	log.Printf("Processing delete request for table: %s, ID: %s", tableName, req.Id)
+	logger.GetLogger().Sugar().Infof("Processing delete request for table: %s, ID: %s", tableName, req.Id)
 
 	// 验证请求
 	if err := s.validateDeleteRequest(req); err != nil {
@@ -515,7 +515,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 
 	// 确保表存在
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
-		log.Printf("ERROR: Failed to ensure table exists: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to ensure table exists: %v", err)
 		return &miniodb.DeleteDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Table error: %v", err),
@@ -528,7 +528,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 	if s.querier != nil {
 		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
 		if err != nil {
-			log.Printf("ERROR: Failed to build safe delete SQL: %v", err)
+			logger.GetLogger().Sugar().Infof("ERROR: Failed to build safe delete SQL: %v", err)
 			return &miniodb.DeleteDataResponse{
 				Success: false,
 				Message: fmt.Sprintf("Invalid parameters: %v", err),
@@ -537,7 +537,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 
 		result, err := s.querier.ExecuteQuery(deleteSQL)
 		if err != nil {
-			log.Printf("WARN: Delete query failed: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: Delete query failed: %v", err)
 			return &miniodb.DeleteDataResponse{
 				Success: false,
 				Message: fmt.Sprintf("Failed to delete record from storage: %v", err),
@@ -560,7 +560,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 		if keys, err := redisClient.Keys(ctx, cachePattern).Result(); err == nil {
 			if len(keys) > 0 {
 				redisClient.Del(ctx, keys...)
-				log.Printf("Cleaned %d cache entries for deleted record", len(keys))
+				logger.GetLogger().Sugar().Infof("Cleaned %d cache entries for deleted record", len(keys))
 			}
 		}
 
@@ -571,11 +571,11 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 
 	// 3. 更新表的最后修改时间
 	if err := s.tableManager.UpdateLastWrite(ctx, tableName); err != nil {
-		log.Printf("WARN: Failed to update last write time for table %s: %v", tableName, err)
+		logger.GetLogger().Sugar().Infof("WARN: Failed to update last write time for table %s: %v", tableName, err)
 	}
 
 	if deletedCount > 0 {
-		log.Printf("Successfully deleted %d records for ID %s from table %s", deletedCount, req.Id, tableName)
+		logger.GetLogger().Sugar().Infof("Successfully deleted %d records for ID %s from table %s", deletedCount, req.Id, tableName)
 		return &miniodb.DeleteDataResponse{
 			Success:      true,
 			Message:      fmt.Sprintf("Record %s deleted successfully from table %s", req.Id, tableName),
@@ -645,7 +645,7 @@ func (s *MinIODBService) ConvertResultToRecords(resultJson string) ([]*miniodb.D
 		// 将map转换为protobuf Struct
 		protoStruct, err := s.mapToProtobufStruct(payload)
 		if err != nil {
-			log.Printf("WARN: Failed to convert payload to protobuf struct: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: Failed to convert payload to protobuf struct: %v", err)
 			// 创建一个空的Struct而不是跳过整个记录
 			protoStruct = &structpb.Struct{Fields: make(map[string]*structpb.Value)}
 		}
@@ -664,7 +664,7 @@ func (s *MinIODBService) mapToProtobufStruct(data map[string]interface{}) (*stru
 	for key, value := range data {
 		protoValue, err := s.interfaceToProtobufValue(value)
 		if err != nil {
-			log.Printf("WARN: Failed to convert field %s: %v", key, err)
+			logger.GetLogger().Sugar().Infof("WARN: Failed to convert field %s: %v", key, err)
 			// 跳过有问题的字段，而不是整个转换失败
 			continue
 		}
@@ -701,7 +701,7 @@ func (s *MinIODBService) interfaceToProtobufValue(value interface{}) (*structpb.
 		for _, item := range v {
 			itemValue, err := s.interfaceToProtobufValue(item)
 			if err != nil {
-				log.Printf("WARN: Failed to convert array item: %v", err)
+				logger.GetLogger().Sugar().Infof("WARN: Failed to convert array item: %v", err)
 				continue
 			}
 			listValues = append(listValues, itemValue)
@@ -722,7 +722,7 @@ func (s *MinIODBService) interfaceToProtobufValue(value interface{}) (*structpb.
 
 // StreamWrite 流式写入数据
 func (s *MinIODBService) StreamWrite(stream miniodb.MinIODBService_StreamWriteServer) error {
-	log.Printf("Starting stream write session")
+	logger.GetLogger().Sugar().Infof("Starting stream write session")
 
 	ctx := stream.Context()
 	successCount := int32(0)
@@ -732,7 +732,7 @@ func (s *MinIODBService) StreamWrite(stream miniodb.MinIODBService_StreamWriteSe
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Stream write cancelled by client")
+			logger.GetLogger().Sugar().Infof("Stream write cancelled by client")
 			return ctx.Err()
 		default:
 		}
@@ -753,10 +753,10 @@ func (s *MinIODBService) StreamWrite(stream miniodb.MinIODBService_StreamWriteSe
 					Errors:       errors,
 				}
 
-				log.Printf("Stream write completed: %d success, %d errors", successCount, errorCount)
+				logger.GetLogger().Sugar().Infof("Stream write completed: %d success, %d errors", successCount, errorCount)
 				return stream.SendAndClose(finalResponse)
 			}
-			log.Printf("ERROR: Failed to receive stream write request: %v", err)
+			logger.GetLogger().Sugar().Infof("ERROR: Failed to receive stream write request: %v", err)
 			return status.Error(codes.Internal, fmt.Sprintf("Failed to receive request: %v", err))
 		}
 
@@ -765,10 +765,10 @@ func (s *MinIODBService) StreamWrite(stream miniodb.MinIODBService_StreamWriteSe
 		if err := s.processStreamWriteRequest(ctx, req); err != nil {
 			errorCount += int32(batchSize)
 			lastError = err
-			log.Printf("ERROR: Stream write failed for %d records in table %s: %v", batchSize, req.Table, err)
+			logger.GetLogger().Sugar().Infof("ERROR: Stream write failed for %d records in table %s: %v", batchSize, req.Table, err)
 		} else {
 			successCount += int32(batchSize)
-			log.Printf("Stream write success for %d records in table %s", batchSize, req.Table)
+			logger.GetLogger().Sugar().Infof("Stream write success for %d records in table %s", batchSize, req.Table)
 		}
 
 		// 可以选择是否在每次写入后发送确认（这里简化为只在最后发送）
@@ -802,7 +802,7 @@ func (s *MinIODBService) processStreamWriteRequest(ctx context.Context, req *min
 
 // StreamQuery 流式查询数据
 func (s *MinIODBService) StreamQuery(req *miniodb.StreamQueryRequest, stream miniodb.MinIODBService_StreamQueryServer) error {
-	log.Printf("Processing stream query request: %s", req.Sql)
+	logger.GetLogger().Sugar().Infof("Processing stream query request: %s", req.Sql)
 
 	// 验证请求
 	if err := s.validateStreamQueryRequest(req); err != nil {
@@ -818,14 +818,14 @@ func (s *MinIODBService) StreamQuery(req *miniodb.StreamQueryRequest, stream min
 	// 执行查询
 	resultJson, err := s.querier.ExecuteQuery(req.Sql)
 	if err != nil {
-		log.Printf("ERROR: Stream query failed: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Stream query failed: %v", err)
 		return status.Error(codes.Internal, fmt.Sprintf("Query failed: %v", err))
 	}
 
 	// 转换查询结果为记录
 	records, err := s.ConvertResultToRecords(resultJson)
 	if err != nil {
-		log.Printf("ERROR: Failed to convert query result to records: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to convert query result to records: %v", err)
 		return status.Error(codes.Internal, fmt.Sprintf("Failed to convert result: %v", err))
 	}
 
@@ -867,23 +867,23 @@ func (s *MinIODBService) StreamQuery(req *miniodb.StreamQueryRequest, stream min
 		}
 
 		if err := stream.Send(response); err != nil {
-			log.Printf("ERROR: Failed to send stream response: %v", err)
+			logger.GetLogger().Sugar().Infof("ERROR: Failed to send stream response: %v", err)
 			return status.Error(codes.Internal, fmt.Sprintf("Failed to send response: %v", err))
 		}
 
-		log.Printf("Sent batch of %d records (offset: %d, hasMore: %t)", len(batch), offset, hasMore)
+		logger.GetLogger().Sugar().Infof("Sent batch of %d records (offset: %d, hasMore: %t)", len(batch), offset, hasMore)
 
 		// 移动到下一批次
 		offset = end
 
 		// 检查上下文是否被取消
 		if stream.Context().Err() != nil {
-			log.Printf("Stream query cancelled by client")
+			logger.GetLogger().Sugar().Infof("Stream query cancelled by client")
 			return status.Error(codes.Canceled, "Stream query cancelled")
 		}
 	}
 
-	log.Printf("Stream query completed successfully, total records: %d", totalRecords)
+	logger.GetLogger().Sugar().Infof("Stream query completed successfully, total records: %d", totalRecords)
 	return nil
 }
 
@@ -906,7 +906,7 @@ func (s *MinIODBService) validateStreamQueryRequest(req *miniodb.StreamQueryRequ
 
 // CreateTable 创建表
 func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTableRequest) (*miniodb.CreateTableResponse, error) {
-	log.Printf("Processing create table request: %s", req.TableName)
+	logger.GetLogger().Sugar().Infof("Processing create table request: %s", req.TableName)
 
 	// 验证表名
 	if req.TableName == "" {
@@ -956,7 +956,7 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 	// 创建表
 	err := s.tableManager.CreateTable(ctx, req.TableName, tableConfig, req.IfNotExists)
 	if err != nil {
-		log.Printf("ERROR: Failed to create table %s: %v", req.TableName, err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to create table %s: %v", req.TableName, err)
 		return &miniodb.CreateTableResponse{
 			Success: false,
 			Message: fmt.Sprintf("Failed to create table: %v", err),
@@ -966,7 +966,7 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 	// 保存表配置到元数据管理器（优先）
 	if s.metadataMgr != nil && tableConfig != nil {
 		if err := s.metadataMgr.SaveTableConfig(ctx, req.TableName, *tableConfig); err != nil {
-			log.Printf("WARN: Failed to save table config to metadata: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: Failed to save table config to metadata: %v", err)
 			// 不影响表创建成功，继续尝试保存到configManager
 		}
 	}
@@ -974,12 +974,12 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 	// 兼容：同时保存到configManager（如果可用）
 	if s.configManager != nil && tableConfig != nil {
 		if err := s.configManager.SetTableConfig(ctx, req.TableName, *tableConfig); err != nil {
-			log.Printf("WARN: Failed to save table config to cache: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: Failed to save table config to cache: %v", err)
 			// 不影响表创建成功
 		}
 	}
 
-	log.Printf("Successfully created table: %s with ID strategy: %s", req.TableName, tableConfig.IDStrategy)
+	logger.GetLogger().Sugar().Infof("Successfully created table: %s with ID strategy: %s", req.TableName, tableConfig.IDStrategy)
 	return &miniodb.CreateTableResponse{
 		Success: true,
 		Message: fmt.Sprintf("Table %s created successfully", req.TableName),
@@ -988,11 +988,11 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 
 // ListTables 列出表
 func (s *MinIODBService) ListTables(ctx context.Context, req *miniodb.ListTablesRequest) (*miniodb.ListTablesResponse, error) {
-	log.Printf("Processing list tables request with pattern: %s", req.Pattern)
+	logger.GetLogger().Sugar().Infof("Processing list tables request with pattern: %s", req.Pattern)
 
 	tables, err := s.tableManager.ListTables(ctx, req.Pattern)
 	if err != nil {
-		log.Printf("ERROR: Failed to list tables: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to list tables: %v", err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to list tables: %v", err))
 	}
 
@@ -1043,7 +1043,7 @@ func (s *MinIODBService) ListTables(ctx context.Context, req *miniodb.ListTables
 
 // GetTable 获取表信息
 func (s *MinIODBService) GetTable(ctx context.Context, req *miniodb.GetTableRequest) (*miniodb.GetTableResponse, error) {
-	log.Printf("Processing get table request: %s", req.TableName)
+	logger.GetLogger().Sugar().Infof("Processing get table request: %s", req.TableName)
 
 	if req.TableName == "" {
 		return nil, status.Error(codes.InvalidArgument, "Table name is required")
@@ -1134,7 +1134,7 @@ func (s *MinIODBService) GetTable(ctx context.Context, req *miniodb.GetTableRequ
 
 // DeleteTable 删除表
 func (s *MinIODBService) DeleteTable(ctx context.Context, req *miniodb.DeleteTableRequest) (*miniodb.DeleteTableResponse, error) {
-	log.Printf("Processing delete table request: %s", req.TableName)
+	logger.GetLogger().Sugar().Infof("Processing delete table request: %s", req.TableName)
 
 	if req.TableName == "" {
 		return nil, status.Error(codes.InvalidArgument, "Table name is required")
@@ -1142,7 +1142,7 @@ func (s *MinIODBService) DeleteTable(ctx context.Context, req *miniodb.DeleteTab
 
 	deletedFiles, err := s.tableManager.DropTable(ctx, req.TableName, req.IfExists, req.Cascade)
 	if err != nil {
-		log.Printf("ERROR: Failed to delete table %s: %v", req.TableName, err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to delete table %s: %v", req.TableName, err)
 		return &miniodb.DeleteTableResponse{
 			Success: false,
 			Message: fmt.Sprintf("Failed to delete table: %v", err),
@@ -1158,7 +1158,7 @@ func (s *MinIODBService) DeleteTable(ctx context.Context, req *miniodb.DeleteTab
 
 // BackupMetadata 备份元数据
 func (s *MinIODBService) BackupMetadata(ctx context.Context, req *miniodb.BackupMetadataRequest) (*miniodb.BackupMetadataResponse, error) {
-	log.Printf("Processing backup metadata request, force: %v", req.Force)
+	logger.GetLogger().Sugar().Infof("Processing backup metadata request, force: %v", req.Force)
 
 	// 获取备份管理器
 	backupManager := s.metadataMgr.GetBackupManager()
@@ -1173,7 +1173,7 @@ func (s *MinIODBService) BackupMetadata(ctx context.Context, req *miniodb.Backup
 
 	// 执行手动备份
 	if err := s.metadataMgr.ManualBackup(ctx); err != nil {
-		log.Printf("ERROR: Failed to create backup: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to create backup: %v", err)
 		return &miniodb.BackupMetadataResponse{
 			Success:   false,
 			Message:   fmt.Sprintf("Failed to create backup: %v", err),
@@ -1207,7 +1207,7 @@ func (s *MinIODBService) BackupMetadata(ctx context.Context, req *miniodb.Backup
 
 // RestoreMetadata 恢复元数据
 func (s *MinIODBService) RestoreMetadata(ctx context.Context, req *miniodb.RestoreMetadataRequest) (*miniodb.RestoreMetadataResponse, error) {
-	log.Printf("Processing restore metadata request, backup_file: %s, from_latest: %v", req.BackupFile, req.FromLatest)
+	logger.GetLogger().Sugar().Infof("Processing restore metadata request, backup_file: %s, from_latest: %v", req.BackupFile, req.FromLatest)
 
 	// 获取恢复管理器
 	recoveryManager := s.metadataMgr.GetRecoveryManager()
@@ -1249,15 +1249,15 @@ func (s *MinIODBService) RestoreMetadata(ctx context.Context, req *miniodb.Resto
 
 	// 执行恢复
 	if req.FromLatest || req.BackupFile == "" {
-		log.Printf("Recovering from latest backup")
+		logger.GetLogger().Sugar().Infof("Recovering from latest backup")
 		result, err = recoveryManager.RecoverFromLatest(ctx, options)
 	} else {
-		log.Printf("Recovering from backup file: %s", req.BackupFile)
+		logger.GetLogger().Sugar().Infof("Recovering from backup file: %s", req.BackupFile)
 		result, err = recoveryManager.RecoverFromBackup(ctx, req.BackupFile, options)
 	}
 
 	if err != nil {
-		log.Printf("ERROR: Failed to restore metadata: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to restore metadata: %v", err)
 		return &miniodb.RestoreMetadataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Failed to restore metadata: %v", err),
@@ -1292,7 +1292,7 @@ func (s *MinIODBService) RestoreMetadata(ctx context.Context, req *miniodb.Resto
 		response.Message = "Metadata restore completed with errors"
 	}
 
-	log.Printf("Restore completed: success=%v, total=%d, ok=%d, errors=%d",
+	logger.GetLogger().Sugar().Infof("Restore completed: success=%v, total=%d, ok=%d, errors=%d",
 		result.Success, result.EntriesTotal, result.EntriesOK, result.EntriesError)
 
 	return response, nil
@@ -1300,7 +1300,7 @@ func (s *MinIODBService) RestoreMetadata(ctx context.Context, req *miniodb.Resto
 
 // ListBackups 列出备份
 func (s *MinIODBService) ListBackups(ctx context.Context, req *miniodb.ListBackupsRequest) (*miniodb.ListBackupsResponse, error) {
-	log.Printf("Processing list backups request, days: %d", req.Days)
+	logger.GetLogger().Sugar().Infof("Processing list backups request, days: %d", req.Days)
 
 	// 获取恢复管理器
 	recoveryManager := s.metadataMgr.GetRecoveryManager()
@@ -1320,7 +1320,7 @@ func (s *MinIODBService) ListBackups(ctx context.Context, req *miniodb.ListBacku
 	// 获取备份列表
 	backupInfos, err := recoveryManager.ListBackups(ctx, days)
 	if err != nil {
-		log.Printf("ERROR: Failed to list backups: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to list backups: %v", err)
 		return &miniodb.ListBackupsResponse{
 			Backups: []*miniodb.BackupInfo{},
 			Total:   0,
@@ -1340,7 +1340,7 @@ func (s *MinIODBService) ListBackups(ctx context.Context, req *miniodb.ListBacku
 		protoBackups = append(protoBackups, protoBackup)
 	}
 
-	log.Printf("Found %d backups in the last %d days", len(protoBackups), days)
+	logger.GetLogger().Sugar().Infof("Found %d backups in the last %d days", len(protoBackups), days)
 
 	return &miniodb.ListBackupsResponse{
 		Backups: protoBackups,
@@ -1350,7 +1350,7 @@ func (s *MinIODBService) ListBackups(ctx context.Context, req *miniodb.ListBacku
 
 // GetMetadataStatus 获取元数据状态
 func (s *MinIODBService) GetMetadataStatus(ctx context.Context, req *miniodb.GetMetadataStatusRequest) (*miniodb.GetMetadataStatusResponse, error) {
-	log.Printf("Processing get metadata status request")
+	logger.GetLogger().Sugar().Infof("Processing get metadata status request")
 
 	// 获取备份管理器和恢复管理器
 	backupManager := s.metadataMgr.GetBackupManager()
@@ -1417,7 +1417,7 @@ func (s *MinIODBService) GetMetadataStatus(ctx context.Context, req *miniodb.Get
 		HealthStatus: healthStatus,
 	}
 
-	log.Printf("Metadata status: nodeID=%s, health=%s, backups_enabled=%s",
+	logger.GetLogger().Sugar().Infof("Metadata status: nodeID=%s, health=%s, backups_enabled=%s",
 		nodeID, healthStatus, backupStatus["status"])
 
 	return response, nil
@@ -1440,7 +1440,7 @@ func (s *MinIODBService) HealthCheck(ctx context.Context) error {
 
 // GetStatus 获取状态
 func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRequest) (*miniodb.GetStatusResponse, error) {
-	log.Printf("Processing get status request")
+	logger.GetLogger().Sugar().Infof("Processing get status request")
 
 	// 收集缓冲区统计信息
 	bufferStats := make(map[string]int64)
@@ -1569,7 +1569,7 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 		TotalNodes:  int32(len(nodes)),
 	}
 
-	log.Printf("Status collected: %d nodes, buffer_pending=%d, redis_keys=%d",
+	logger.GetLogger().Sugar().Infof("Status collected: %d nodes, buffer_pending=%d, redis_keys=%d",
 		len(nodes), bufferStats["pending_writes"], redisStats["total_keys"])
 
 	return response, nil
@@ -1577,7 +1577,7 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 
 // GetMetrics 获取监控指标
 func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetricsRequest) (*miniodb.GetMetricsResponse, error) {
-	log.Printf("Processing get metrics request")
+	logger.GetLogger().Sugar().Infof("Processing get metrics request")
 
 	// 收集性能指标
 	performanceMetrics := make(map[string]float64)
@@ -1729,7 +1729,7 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 		SystemInfo:         systemInfo,
 	}
 
-	log.Printf("Metrics collected: %d performance metrics, %d resource metrics, health=%s",
+	logger.GetLogger().Sugar().Infof("Metrics collected: %d performance metrics, %d resource metrics, health=%s",
 		len(performanceMetrics), len(resourceUsage), systemInfo["service_health"])
 
 	return response, nil
@@ -1737,7 +1737,7 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 
 // Close 关闭服务
 func (s *MinIODBService) Close() error {
-	log.Printf("Closing MinIODBService")
+	logger.GetLogger().Sugar().Infof("Closing MinIODBService")
 
 	if s.querier != nil {
 		s.querier.Close()

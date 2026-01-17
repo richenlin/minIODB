@@ -1,9 +1,9 @@
 package pool
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 )
@@ -63,7 +63,7 @@ func NewPoolManager(config *PoolManagerConfig) (*PoolManager, error) {
 	if config.BackupMinIO != nil {
 		backupPool, err = NewMinIOPool(config.BackupMinIO)
 		if err != nil {
-			log.Printf("WARN: failed to create backup MinIO pool: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: failed to create backup MinIO pool: %v", err)
 			// 备份连接池失败不影响主要功能
 		}
 	}
@@ -79,7 +79,7 @@ func NewPoolManager(config *PoolManagerConfig) (*PoolManager, error) {
 	// 启动健康检查
 	manager.startHealthCheck()
 	
-	log.Println("Connection pool manager initialized successfully")
+	logger.GetLogger().Info("Connection pool manager initialized successfully")
 	return manager, nil
 }
 
@@ -124,7 +124,7 @@ func (pm *PoolManager) healthCheckLoop() {
 		case <-ticker.C:
 			pm.performHealthCheck()
 		case <-pm.stopHealthCheck:
-			log.Println("Health check stopped")
+			logger.GetLogger().Info("Health check stopped")
 			return
 		}
 	}
@@ -137,18 +137,18 @@ func (pm *PoolManager) performHealthCheck() {
 	
 	// 检查Redis连接池
 	if err := pm.redisPool.HealthCheck(ctx); err != nil {
-		log.Printf("WARN: Redis health check failed: %v", err)
+		logger.GetLogger().Sugar().Infof("WARN: Redis health check failed: %v", err)
 	}
 	
 	// 检查MinIO连接池
 	if err := pm.minioPool.HealthCheck(ctx); err != nil {
-		log.Printf("WARN: MinIO health check failed: %v", err)
+		logger.GetLogger().Sugar().Infof("WARN: MinIO health check failed: %v", err)
 	}
 	
 	// 检查备份MinIO连接池
 	if pm.backupPool != nil {
 		if err := pm.backupPool.HealthCheck(ctx); err != nil {
-			log.Printf("WARN: Backup MinIO health check failed: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: Backup MinIO health check failed: %v", err)
 		}
 	}
 }
@@ -200,7 +200,7 @@ func (pm *PoolManager) UpdateRedisPool(config *RedisPoolConfig) error {
 	}
 	
 	pm.redisPool = newPool
-	log.Println("Redis connection pool updated successfully")
+	logger.GetLogger().Info("Redis connection pool updated successfully")
 	return nil
 }
 
@@ -221,7 +221,7 @@ func (pm *PoolManager) UpdateMinIOPool(config *MinIOPoolConfig) error {
 	}
 	
 	pm.minioPool = newPool
-	log.Println("MinIO connection pool updated successfully")
+	logger.GetLogger().Info("MinIO connection pool updated successfully")
 	return nil
 }
 
@@ -236,7 +236,7 @@ func (pm *PoolManager) UpdateBackupMinIOPool(config *MinIOPoolConfig) error {
 			pm.backupPool.Close()
 			pm.backupPool = nil
 		}
-		log.Println("Backup MinIO connection pool disabled")
+		logger.GetLogger().Info("Backup MinIO connection pool disabled")
 		return nil
 	}
 	
@@ -252,7 +252,7 @@ func (pm *PoolManager) UpdateBackupMinIOPool(config *MinIOPoolConfig) error {
 	}
 	
 	pm.backupPool = newPool
-	log.Println("Backup MinIO connection pool updated successfully")
+	logger.GetLogger().Info("Backup MinIO connection pool updated successfully")
 	return nil
 }
 
@@ -290,7 +290,7 @@ func (pm *PoolManager) Close() error {
 		return fmt.Errorf("connection pool close errors: %v", errors)
 	}
 	
-	log.Println("All connection pools closed successfully")
+	logger.GetLogger().Info("All connection pools closed successfully")
 	return nil
 }
 

@@ -1,10 +1,12 @@
 package errors
 
 import (
-	"log"
 	"net/http"
 
+	"minIODB/pkg/logger"
+
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // ErrorHandlerMiddleware 错误处理中间件
@@ -33,7 +35,9 @@ func HandleError(c *gin.Context, err error) {
 	}
 
 	// 记录错误日志
-	log.Printf("API Error: %v", err)
+	logger.LogError(c.Request.Context(), err, "API Error",
+		zap.String("path", c.Request.URL.Path),
+		zap.String("method", c.Request.Method))
 
 	// 转换为应用错误
 	var appErr *AppError

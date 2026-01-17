@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -12,11 +11,13 @@ import (
 	pb "minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
 	"minIODB/internal/discovery"
-	"minIODB/pkg/pool"
+	"minIODB/pkg/logger"
 	"minIODB/internal/query"
 	"minIODB/pkg/consistenthash"
+	"minIODB/pkg/pool"
 	"minIODB/pkg/retry"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -298,7 +299,7 @@ func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
 	// 获取数据分布信息
 	dataDistribution, err := qc.getDataDistribution(tables)
 	if err != nil {
-		log.Printf("WARN: failed to get data distribution, falling back to broadcast: %v", err)
+		logger.LogWarn(context.Background(), "Failed to get data distribution, falling back to broadcast", zap.Error(err))
 		// 回退到广播模式
 		for _, node := range nodes {
 			nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
@@ -482,7 +483,7 @@ func (qc *QueryCoordinator) aggregateQueryResults(results []QueryResult, sql str
 
 	// 如果有错误，记录日志
 	if len(errors) > 0 {
-		log.Printf("Some query nodes failed: %v", errors)
+		logger.LogWarn(context.Background(), "Some query nodes failed", zap.Int("error_count", len(errors)), zap.Any("errors", errors))
 	}
 
 	// 如果没有成功结果
@@ -591,7 +592,7 @@ func (qc *QueryCoordinator) unionResults(results []string) (string, error) {
 		// 解析JSON结果
 		var data []map[string]interface{}
 		if err := json.Unmarshal([]byte(result), &data); err != nil {
-			log.Printf("WARN: failed to parse result JSON: %v", err)
+			logger.LogWarn(context.Background(), "Failed to parse result JSON", zap.Error(err))
 			continue
 		}
 
@@ -636,7 +637,7 @@ func (qc *QueryCoordinator) monitorNodes() {
 			return
 		case <-ticker.C:
 			// 监控节点状态
-			log.Println("Monitoring nodes...")
+			logger.LogDebug(context.Background(), "Monitoring nodes")
 		}
 	}
 }

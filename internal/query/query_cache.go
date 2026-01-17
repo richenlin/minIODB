@@ -1,12 +1,12 @@
 package query
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -106,7 +106,7 @@ func (qc *QueryCache) Get(ctx context.Context, query string, tables []string) (*
 	qc.updateAccessStats(ctx, cacheKey, &entry)
 	qc.recordCacheHit()
 	
-	log.Printf("Cache HIT for query hash: %s", entry.QueryHash[:8])
+	logger.GetLogger().Sugar().Infof("Cache HIT for query hash: %s", entry.QueryHash[:8])
 	return &entry, true
 }
 
@@ -147,7 +147,7 @@ func (qc *QueryCache) Set(ctx context.Context, query string, result string, tabl
 	// 更新表级索引（用于缓存失效）
 	qc.updateTableIndex(ctx, tables, cacheKey)
 	
-	log.Printf("Cache SET for query hash: %s, size: %d bytes", entry.QueryHash[:8], entry.Size)
+	logger.GetLogger().Sugar().Infof("Cache SET for query hash: %s, size: %d bytes", entry.QueryHash[:8], entry.Size)
 	return nil
 }
 
@@ -175,7 +175,7 @@ func (qc *QueryCache) InvalidateByTables(ctx context.Context, tables []string) e
 		if err := qc.redisClient.Del(ctx, keysToDelete...).Err(); err != nil {
 			return fmt.Errorf("failed to delete cache keys: %w", err)
 		}
-		log.Printf("Invalidated %d cache entries for tables: %v", len(keysToDelete), tables)
+		logger.GetLogger().Sugar().Infof("Invalidated %d cache entries for tables: %v", len(keysToDelete), tables)
 	}
 	
 	return nil
@@ -344,7 +344,7 @@ func (qc *QueryCache) evictLRU(ctx context.Context, requiredSpace int64) error {
 		qc.redisClient.Del(ctx, key)
 		freedSpace += entry.Size
 		
-		log.Printf("Evicted cache entry: %s, size: %d", entry.QueryHash[:8], entry.Size)
+		logger.GetLogger().Sugar().Infof("Evicted cache entry: %s, size: %d", entry.QueryHash[:8], entry.Size)
 	}
 	
 	return nil
@@ -405,7 +405,7 @@ func (qc *QueryCache) Clear(ctx context.Context) error {
 		if err := qc.redisClient.Del(ctx, keys...).Err(); err != nil {
 			return fmt.Errorf("failed to clear cache: %w", err)
 		}
-		log.Printf("Cleared %d cache entries", len(keys))
+		logger.GetLogger().Sugar().Infof("Cleared %d cache entries", len(keys))
 	}
 	
 	// 重置指标

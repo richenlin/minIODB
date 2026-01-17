@@ -18,7 +18,7 @@ import (
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
 	"minIODB/internal/ingest"
-	"minIODB/internal/logger"
+	"minIODB/pkg/logger"
 	"minIODB/internal/metrics"
 	"minIODB/internal/query"
 	"minIODB/internal/service"

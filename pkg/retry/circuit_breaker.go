@@ -3,9 +3,10 @@ package retry
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
+
+	"minIODB/pkg/logger"
 )
 
 // CircuitBreakerState 熔断器状态
@@ -85,7 +86,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn Func) error {
 		if time.Since(cb.lastFailTime) > cb.config.RecoveryTimeout {
 			cb.state = CircuitBreakerHalfOpen
 			cb.successes = 0
-			log.Printf("Circuit breaker %s: transitioning to half-open state", cb.name)
+			logger.GetLogger().Sugar().Infof("Circuit breaker %s: transitioning to half-open state", cb.name)
 		} else {
 			cb.mu.Unlock()
 			return fmt.Errorf("circuit breaker %s is open", cb.name)
@@ -125,13 +126,13 @@ func (cb *CircuitBreaker) onFailure() {
 		if cb.requests >= cb.config.RequestVolumeThreshold &&
 			cb.failures >= cb.config.FailureThreshold {
 			cb.state = CircuitBreakerOpen
-			log.Printf("Circuit breaker %s: opening due to %d failures out of %d requests",
+			logger.GetLogger().Sugar().Infof("Circuit breaker %s: opening due to %d failures out of %d requests",
 				cb.name, cb.failures, cb.requests)
 		}
 	case CircuitBreakerHalfOpen:
 		// 半开状态下失败，直接打开
 		cb.state = CircuitBreakerOpen
-		log.Printf("Circuit breaker %s: opening from half-open state due to failure", cb.name)
+		logger.GetLogger().Sugar().Infof("Circuit breaker %s: opening from half-open state due to failure", cb.name)
 	}
 }
 
@@ -144,7 +145,7 @@ func (cb *CircuitBreaker) onSuccess() {
 			cb.state = CircuitBreakerClosed
 			cb.failures = 0
 			cb.requests = 0
-			log.Printf("Circuit breaker %s: closing from half-open state after %d successes",
+			logger.GetLogger().Sugar().Infof("Circuit breaker %s: closing from half-open state after %d successes",
 				cb.name, cb.successes)
 		}
 	case CircuitBreakerClosed:
@@ -194,5 +195,5 @@ func (cb *CircuitBreaker) Reset() {
 	cb.failures = 0
 	cb.successes = 0
 	cb.requests = 0
-	log.Printf("Circuit breaker %s: reset to closed state", cb.name)
+	logger.GetLogger().Sugar().Infof("Circuit breaker %s: reset to closed state", cb.name)
 }

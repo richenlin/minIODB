@@ -1,6 +1,7 @@
 package monitoring
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"database/sql"
 	"fmt"
@@ -297,17 +298,17 @@ func (hc *HealthChecker) StartHealthCheck(ctx context.Context, interval time.Dur
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	log.Printf("Starting health check with interval: %v", interval)
+	logger.GetLogger().Sugar().Infof("Starting health check with interval: %v", interval)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Health check stopped")
+			logger.GetLogger().Sugar().Infof("Health check stopped")
 			return
 		case <-ticker.C:
 			health := hc.CheckHealth(ctx)
 			if health.Status == "unhealthy" {
-				log.Printf("Health check failed: %s", health.Status)
+				logger.GetLogger().Sugar().Infof("Health check failed: %s", health.Status)
 				// 可以在这里添加告警逻辑
 			}
 		}

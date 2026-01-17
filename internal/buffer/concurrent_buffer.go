@@ -1,9 +1,9 @@
 package buffer
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,7 +139,7 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 	// 启动定期刷新
 	go cb.periodicFlush()
 
-	log.Printf("Concurrent buffer initialized with %d workers, queue size %d",
+	logger.GetLogger().Sugar().Infof("Concurrent buffer initialized with %d workers, queue size %d",
 		config.WorkerPoolSize, config.TaskQueueSize)
 
 	return cb
@@ -172,10 +172,10 @@ func (w *Worker) run() {
 				atomic.StoreInt64(&w.active, 0)
 			}
 		case <-w.stopChan:
-			log.Printf("Worker %d stopping", w.id)
+			logger.GetLogger().Sugar().Infof("Worker %d stopping", w.id)
 			return
 		case <-w.buffer.shutdown:
-			log.Printf("Worker %d shutting down", w.id)
+			logger.GetLogger().Sugar().Infof("Worker %d shutting down", w.id)
 			return
 		}
 	}
@@ -209,7 +209,7 @@ func (w *Worker) processTask(task *FlushTask) {
 	// 执行刷新任务
 	err := w.flushData(task.BufferKey, task.Rows)
 	if err != nil {
-		log.Printf("Worker %d: flush task failed for key %s: %v", w.id, task.BufferKey, err)
+		logger.GetLogger().Sugar().Infof("Worker %d: flush task failed for key %s: %v", w.id, task.BufferKey, err)
 
 		// 重试逻辑
 		if task.Retries < w.buffer.config.MaxRetries {
@@ -221,19 +221,19 @@ func (w *Worker) processTask(task *FlushTask) {
 				time.Sleep(w.buffer.config.RetryDelay * time.Duration(task.Retries))
 				select {
 				case w.buffer.taskQueue <- task:
-					log.Printf("Retrying flush task for key %s (attempt %d)", task.BufferKey, task.Retries+1)
+					logger.GetLogger().Sugar().Infof("Retrying flush task for key %s (attempt %d)", task.BufferKey, task.Retries+1)
 				case <-w.buffer.shutdown:
 					// 系统关闭，放弃重试
 				}
 			}()
 		} else {
-			log.Printf("Worker %d: max retries exceeded for key %s", w.id, task.BufferKey)
+			logger.GetLogger().Sugar().Infof("Worker %d: max retries exceeded for key %s", w.id, task.BufferKey)
 			w.buffer.updateStats(func(stats *ConcurrentBufferStats) {
 				atomic.AddInt64(&stats.FailedTasks, 1)
 			})
 		}
 	} else {
-		log.Printf("Worker %d: successfully flushed %d rows for key %s", w.id, len(task.Rows), task.BufferKey)
+		logger.GetLogger().Sugar().Infof("Worker %d: successfully flushed %d rows for key %s", w.id, len(task.Rows), task.BufferKey)
 	}
 }
 
@@ -289,7 +289,7 @@ func (w *Worker) writeParquetFile(filePath string, rows []DataRow) error {
 func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	// 如果poolManager为nil（测试模式），直接返回成功
 	if w.buffer.poolManager == nil {
-		log.Printf("Test mode: skipping upload for key %s", bufferKey)
+		logger.GetLogger().Sugar().Infof("Test mode: skipping upload for key %s", bufferKey)
 		return nil
 	}
 
@@ -335,7 +335,7 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 		})
 
 		if err != nil {
-			log.Printf("WARN: failed to upload to backup storage: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: failed to upload to backup storage: %v", err)
 			backupMetrics.Finish("error")
 		} else {
 			backupMetrics.Finish("success")
@@ -343,7 +343,7 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	}
 
 	if err := w.updateRedisIndex(ctx, bufferKey, objectName); err != nil {
-		log.Printf("ERROR: Redis index update failed, rolling back MinIO upload: %v", err)
+		logger.GetLogger().Sugar().Infof("ERROR: Redis index update failed, rolling back MinIO upload: %v", err)
 		w.rollbackMinIOUpload(ctx, primaryBucket, objectName)
 		return fmt.Errorf("failed to update metadata, upload rolled back: %w", err)
 	}
@@ -354,7 +354,7 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName string) {
 	minioPool := w.buffer.poolManager.GetMinIOPool()
 	if minioPool == nil {
-		log.Printf("ERROR: cannot rollback MinIO upload - pool unavailable")
+		logger.GetLogger().Sugar().Infof("ERROR: cannot rollback MinIO upload - pool unavailable")
 		return
 	}
 
@@ -364,9 +364,9 @@ func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName str
 	})
 
 	if err != nil {
-		log.Printf("ERROR: failed to rollback MinIO upload for %s/%s: %v", bucket, objectName, err)
+		logger.GetLogger().Sugar().Infof("ERROR: failed to rollback MinIO upload for %s/%s: %v", bucket, objectName, err)
 	} else {
-		log.Printf("INFO: successfully rolled back MinIO upload for %s/%s", bucket, objectName)
+		logger.GetLogger().Sugar().Infof("INFO: successfully rolled back MinIO upload for %s/%s", bucket, objectName)
 	}
 }
 
@@ -374,7 +374,7 @@ func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName str
 func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName string) error {
 	// 如果poolManager为nil（测试模式），直接返回成功
 	if w.buffer.poolManager == nil {
-		log.Printf("Test mode: skipping Redis index update for key %s", bufferKey)
+		logger.GetLogger().Sugar().Infof("Test mode: skipping Redis index update for key %s", bufferKey)
 		return nil
 	}
 
@@ -406,7 +406,7 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 	if w.buffer.nodeID != "" {
 		nodeDataKey := fmt.Sprintf("node:data:%s", w.buffer.nodeID)
 		if _, err := client.SAdd(ctx, nodeDataKey, redisKey).Result(); err != nil {
-			log.Printf("WARN: failed to update node data mapping: %v", err)
+			logger.GetLogger().Sugar().Infof("WARN: failed to update node data mapping: %v", err)
 		}
 	}
 
@@ -491,11 +491,11 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 		}
 	case <-cb.shutdown:
 		// 系统关闭，直接执行刷新
-		log.Printf("System shutting down, executing immediate flush for key %s", bufferKey)
+		logger.GetLogger().Sugar().Infof("System shutting down, executing immediate flush for key %s", bufferKey)
 		worker := cb.workers[0] // 使用第一个worker
 		worker.processTask(task)
 	default:
-		log.Printf("WARN: task queue full, dropping flush task for key %s", bufferKey)
+		logger.GetLogger().Sugar().Infof("WARN: task queue full, dropping flush task for key %s", bufferKey)
 		cb.updateStats(func(stats *ConcurrentBufferStats) {
 			atomic.AddInt64(&stats.FailedTasks, 1)
 		})
@@ -512,7 +512,7 @@ func (cb *ConcurrentBuffer) periodicFlush() {
 		case <-ticker.C:
 			cb.flushAllBuffers()
 		case <-cb.shutdown:
-			log.Println("Periodic flush stopped")
+			logger.GetLogger().Info("Periodic flush stopped")
 			return
 		}
 	}
@@ -623,7 +623,7 @@ func (cb *ConcurrentBuffer) updateStats(updater func(*ConcurrentBufferStats)) {
 // Stop 停止缓冲区
 func (cb *ConcurrentBuffer) Stop() {
 	cb.shutdownOnce.Do(func() {
-		log.Println("Stopping concurrent buffer...")
+		logger.GetLogger().Info("Stopping concurrent buffer...")
 
 		// 刷新所有剩余数据
 		cb.flushAllBuffers()
@@ -642,7 +642,7 @@ func (cb *ConcurrentBuffer) Stop() {
 		// 关闭任务队列
 		close(cb.taskQueue)
 
-		log.Println("Concurrent buffer stopped successfully")
+		logger.GetLogger().Info("Concurrent buffer stopped successfully")
 	})
 }
 
@@ -673,7 +673,7 @@ func (cb *ConcurrentBuffer) GetTableKeys(tableName string) []string {
 // InvalidateTableConfig 使表配置缓存失效（兼容接口，ConcurrentBuffer不需要此功能）
 func (cb *ConcurrentBuffer) InvalidateTableConfig(tableName string) {
 	// ConcurrentBuffer不缓存表配置，此方法为兼容性保留
-	log.Printf("InvalidateTableConfig called for table %s (no-op in ConcurrentBuffer)", tableName)
+	logger.GetLogger().Sugar().Infof("InvalidateTableConfig called for table %s (no-op in ConcurrentBuffer)", tableName)
 }
 
 // GetTableBufferKeys 获取指定表的所有缓冲区键（别名方法，兼容性）

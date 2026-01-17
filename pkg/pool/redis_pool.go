@@ -1,9 +1,9 @@
 package pool
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"fmt"
-	"log"
 	"runtime"
 	"strings"
 	"sync"
@@ -164,7 +164,7 @@ func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
 		return nil, fmt.Errorf("initial health check failed: %w", err)
 	}
 
-	log.Printf("Redis pool initialized in %s mode", config.Mode)
+	logger.GetLogger().Sugar().Infof("Redis pool initialized in %s mode", config.Mode)
 	return pool, nil
 }
 
@@ -468,7 +468,7 @@ func (p *RedisPool) UpdatePoolSize(newSize int) error {
 
 	// 注意: go-redis不支持动态调整连接池大小
 	// 这里只更新配置，实际生效需要重新创建连接池
-	log.Printf("Pool size updated to %d (requires restart to take effect)", newSize)
+	logger.GetLogger().Sugar().Infof("Pool size updated to %d (requires restart to take effect)", newSize)
 	return nil
 }
 
@@ -513,7 +513,7 @@ func (p *RedisPool) Close() error {
 		return fmt.Errorf("failed to close Redis client: %w", err)
 	}
 
-	log.Printf("Redis pool (%s mode) closed successfully", p.config.Mode)
+	logger.GetLogger().Sugar().Infof("Redis pool (%s mode) closed successfully", p.config.Mode)
 	return nil
 }
 
@@ -566,7 +566,7 @@ func (p *RedisPool) ExecuteWithRetry(ctx context.Context, operation func() error
 				backoff = p.config.MaxRetryBackoff
 			}
 
-			log.Printf("Redis operation failed (attempt %d/%d), retrying in %v: %v",
+			logger.GetLogger().Sugar().Infof("Redis operation failed (attempt %d/%d), retrying in %v: %v",
 				attempt+1, p.config.MaxRetries+1, backoff, err)
 
 			select {

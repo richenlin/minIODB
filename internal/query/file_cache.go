@@ -1,13 +1,13 @@
 package query
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,12 +114,12 @@ func (fc *FileCache) Get(ctx context.Context, objectName string, downloadFunc fu
 	if exists && fc.isCacheValid(entry) {
 		// 更新访问时间和统计
 		fc.updateAccessStats(cacheKey, entry)
-		log.Printf("File cache HIT: %s", objectName)
+		logger.GetLogger().Sugar().Infof("File cache HIT: %s", objectName)
 		return entry.LocalPath, nil
 	}
 
 	// 缓存未命中，需要下载文件
-	log.Printf("File cache MISS: %s", objectName)
+	logger.GetLogger().Sugar().Infof("File cache MISS: %s", objectName)
 
 	// 下载文件
 	tempPath, err := downloadFunc(objectName)
@@ -168,7 +168,7 @@ func (fc *FileCache) cacheFile(objectName, sourcePath string) (string, error) {
 	// 计算文件哈希
 	hash, err := fc.calculateFileHash(cachedPath)
 	if err != nil {
-		log.Printf("WARN: failed to calculate file hash: %v", err)
+		logger.GetLogger().Sugar().Infof("WARN: failed to calculate file hash: %v", err)
 		hash = ""
 	}
 
@@ -194,7 +194,7 @@ func (fc *FileCache) cacheFile(objectName, sourcePath string) (string, error) {
 		fc.logger.Warn("Failed to save cache index", zap.Error(err))
 	}
 
-	log.Printf("File cached: %s -> %s (size: %d bytes)", objectName, cachedPath, fileInfo.Size())
+	logger.GetLogger().Sugar().Infof("File cached: %s -> %s (size: %d bytes)", objectName, cachedPath, fileInfo.Size())
 	return cachedPath, nil
 }
 
@@ -294,7 +294,7 @@ func (fc *FileCache) ensureCacheSpace(requiredSpace int64) error {
 		}
 
 		freedSpace += entry.Size
-		log.Printf("Evicted cached file: %s (size: %d)", entry.ObjectName, entry.Size)
+		logger.GetLogger().Sugar().Infof("Evicted cached file: %s (size: %d)", entry.ObjectName, entry.Size)
 	}
 
 	return nil
@@ -413,7 +413,7 @@ func (fc *FileCache) loadCacheIndex() error {
 		fc.currentSize += fileInfo.Size()
 	}
 
-	log.Printf("Loaded file cache index: %d files, total size: %d bytes",
+	logger.GetLogger().Sugar().Infof("Loaded file cache index: %d files, total size: %d bytes",
 		len(fc.cacheIndex), fc.currentSize)
 	return nil
 }
@@ -485,7 +485,7 @@ func (fc *FileCache) cleanup() {
 			fc.logger.Warn("Failed to remove expired file",
 				zap.String("file", entry.ObjectName), zap.Error(err))
 		} else {
-			log.Printf("Removed expired cached file: %s", entry.ObjectName)
+			logger.GetLogger().Sugar().Infof("Removed expired cached file: %s", entry.ObjectName)
 		}
 	}
 
@@ -539,7 +539,7 @@ func (fc *FileCache) Clear() error {
 	fc.accessStats = make(map[string]time.Time)
 	fc.currentSize = 0
 
-	log.Println("File cache cleared")
+	logger.GetLogger().Info("File cache cleared")
 	return nil
 }
 

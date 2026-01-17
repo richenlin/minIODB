@@ -1,10 +1,10 @@
 package storage
 
 import (
+	"minIODB/pkg/logger"
 	"context"
 	"crypto/md5"
 	"fmt"
-	"log"
 	"math"
 	"sort"
 	"sync"
@@ -467,7 +467,7 @@ func (chr *ConsistentHashRing) AddNode(node *ShardNode) {
 		return chr.sortedHashes[i] < chr.sortedHashes[j]
 	})
 
-	log.Printf("Added node %s to consistent hash ring with %d virtual nodes", node.NodeID, chr.virtualNodes)
+	logger.GetLogger().Sugar().Infof("Added node %s to consistent hash ring with %d virtual nodes", node.NodeID, chr.virtualNodes)
 }
 
 // RemoveNode 从哈希环移除节点
@@ -488,7 +488,7 @@ func (chr *ConsistentHashRing) RemoveNode(nodeID string) {
 	}
 	chr.sortedHashes = newSortedHashes
 
-	log.Printf("Removed node %s from consistent hash ring", nodeID)
+	logger.GetLogger().Sugar().Infof("Removed node %s from consistent hash ring", nodeID)
 }
 
 // GetNode 获取数据对应的节点
@@ -553,7 +553,7 @@ func (so *ShardOptimizer) OptimizeDataPlacement(ctx context.Context, dataKey str
 	// 更新局部性信息
 	so.dataLocalityManager.UpdateAffinityMap(dataKey, optimalNode, accessPattern)
 
-	log.Printf("Optimized data placement for key %s: node=%s, storage_class=%s, temperature=%.2f",
+	logger.GetLogger().Sugar().Infof("Optimized data placement for key %s: node=%s, storage_class=%s, temperature=%.2f",
 		dataKey, optimalNode, storageClass, temperature.Temperature)
 
 	return optimalNode, nil
@@ -862,9 +862,9 @@ func (sr *ShardRebalancer) TriggerRebalance(reason string) {
 
 	select {
 	case sr.rebalanceTasks <- task:
-		log.Printf("Rebalance task %s queued: %s", taskID, reason)
+		logger.GetLogger().Sugar().Infof("Rebalance task %s queued: %s", taskID, reason)
 	default:
-		log.Printf("Rebalance task queue full, dropping task: %s", reason)
+		logger.GetLogger().Sugar().Infof("Rebalance task queue full, dropping task: %s", reason)
 	}
 }
 
