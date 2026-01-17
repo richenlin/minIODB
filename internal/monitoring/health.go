@@ -1,11 +1,10 @@
 package monitoring
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"minIODB/pkg/logger"
 	"runtime"
 	"sync"
 	"time"
