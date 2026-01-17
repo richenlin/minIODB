@@ -1,8 +1,8 @@
 package buffer
 
 import (
-	"minIODB/pkg/logger"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,12 +13,15 @@ import (
 
 	"minIODB/config"
 	"minIODB/internal/metrics"
+	"minIODB/internal/wal"
+	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
+	"go.uber.org/zap"
 )
 
 // DataRow defines the structure for our Parquet file records
@@ -33,15 +36,24 @@ const tempDir = "temp_parquet"
 
 // ConcurrentBufferConfig 并发缓冲区配置
 type ConcurrentBufferConfig struct {
-	BufferSize     int           `yaml:"buffer_size"`      // 缓冲区大小
-	FlushInterval  time.Duration `yaml:"flush_interval"`   // 刷新间隔
-	WorkerPoolSize int           `yaml:"worker_pool_size"` // 工作池大小
-	TaskQueueSize  int           `yaml:"task_queue_size"`  // 任务队列大小
-	BatchFlushSize int           `yaml:"batch_flush_size"` // 批量刷新大小
-	EnableBatching bool          `yaml:"enable_batching"`  // 启用批量处理
-	FlushTimeout   time.Duration `yaml:"flush_timeout"`    // 刷新超时
-	MaxRetries     int           `yaml:"max_retries"`      // 最大重试次数
-	RetryDelay     time.Duration `yaml:"retry_delay"`      // 重试延迟
+	BufferSize     int           `yaml:"buffer_size"`       // 缓冲区大小
+	FlushInterval  time.Duration `yaml:"flush_interval"`    // 刷新间隔
+	WorkerPoolSize int           `yaml:"worker_pool_size"`  // 工作池大小
+	TaskQueueSize  int           `yaml:"task_queue_size"`   // 任务队列大小
+	BatchFlushSize int           `yaml:"batch_flush_size"`  // 批量刷新大小
+	EnableBatching bool          `yaml:"enable_batching"`   // 启用批量处理
+	FlushTimeout   time.Duration `yaml:"flush_timeout"`     // 刷新超时
+	MaxRetries     int           `yaml:"max_retries"`       // 最大重试次数
+	RetryDelay     time.Duration `yaml:"retry_delay"`       // 重试延迟
+	WALEnabled     bool          `yaml:"wal_enabled"`       // 是否启用 WAL
+	WALDir         string        `yaml:"wal_dir"`           // WAL 目录
+	WALSyncOnWrite bool          `yaml:"wal_sync_on_write"` // WAL 每次写入是否同步
+}
+
+// walDataRow WAL 中存储的数据行格式
+type walDataRow struct {
+	BufferKey string  `json:"buffer_key"`
+	Row       DataRow `json:"row"`
 }
 
 // DefaultConcurrentBufferConfig 返回默认配置
@@ -56,6 +68,9 @@ func DefaultConcurrentBufferConfig() *ConcurrentBufferConfig {
 		FlushTimeout:   60 * time.Second,
 		MaxRetries:     3,
 		RetryDelay:     1 * time.Second,
+		WALEnabled:     true,
+		WALDir:         "data/wal",
+		WALSyncOnWrite: true,
 	}
 }
 
@@ -66,6 +81,7 @@ type FlushTask struct {
 	Priority  int // 任务优先级，数字越小优先级越高
 	CreatedAt time.Time
 	Retries   int
+	MaxSeqNum uint64 // WAL 中此批次数据的最大序列号，用于成功后截断
 }
 
 // ConcurrentBuffer 支持并发刷新的缓冲区
@@ -79,6 +95,12 @@ type ConcurrentBuffer struct {
 	// 缓冲区数据
 	buffer map[string][]DataRow
 	mutex  sync.RWMutex
+
+	// WAL 持久化
+	wal            *wal.WAL
+	walEnabled     bool
+	lastFlushedSeq map[string]uint64 // bufferKey -> lastSeqNum
+	walSeqMutex    sync.RWMutex
 
 	// 工作池相关
 	taskQueue    chan *FlushTask
@@ -121,16 +143,43 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 	}
 
 	cb := &ConcurrentBuffer{
-		config:       config,
-		appConfig:    appConfig,
-		poolManager:  poolManager,
-		backupBucket: backupBucket,
-		nodeID:       nodeID,
-		buffer:       make(map[string][]DataRow),
-		taskQueue:    make(chan *FlushTask, config.TaskQueueSize),
-		workers:      make([]*Worker, config.WorkerPoolSize),
-		shutdown:     make(chan struct{}),
-		stats:        &ConcurrentBufferStats{},
+		config:         config,
+		appConfig:      appConfig,
+		poolManager:    poolManager,
+		backupBucket:   backupBucket,
+		nodeID:         nodeID,
+		buffer:         make(map[string][]DataRow),
+		taskQueue:      make(chan *FlushTask, config.TaskQueueSize),
+		workers:        make([]*Worker, config.WorkerPoolSize),
+		shutdown:       make(chan struct{}),
+		stats:          &ConcurrentBufferStats{},
+		walEnabled:     config.WALEnabled,
+		lastFlushedSeq: make(map[string]uint64),
+	}
+
+	// 初始化 WAL (如果启用)
+	if config.WALEnabled {
+		walCfg := wal.DefaultConfig(config.WALDir)
+		walCfg.SyncOnWrite = config.WALSyncOnWrite
+
+		w, err := wal.New(walCfg)
+		if err != nil {
+			logger.GetLogger().Error("Failed to initialize WAL, continuing without WAL",
+				zap.Error(err),
+				zap.String("wal_dir", config.WALDir))
+			cb.walEnabled = false
+		} else {
+			cb.wal = w
+			logger.GetLogger().Info("WAL initialized successfully",
+				zap.String("wal_dir", config.WALDir),
+				zap.Bool("sync_on_write", config.WALSyncOnWrite))
+
+			// 从 WAL 恢复数据
+			if err := cb.recoverFromWAL(); err != nil {
+				logger.GetLogger().Warn("Failed to recover from WAL",
+					zap.Error(err))
+			}
+		}
 	}
 
 	// 启动工作线程
@@ -139,10 +188,75 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 	// 启动定期刷新
 	go cb.periodicFlush()
 
-	logger.GetLogger().Sugar().Infof("Concurrent buffer initialized with %d workers, queue size %d",
-		config.WorkerPoolSize, config.TaskQueueSize)
+	logger.GetLogger().Sugar().Infof("Concurrent buffer initialized with %d workers, queue size %d, WAL enabled: %v",
+		config.WorkerPoolSize, config.TaskQueueSize, cb.walEnabled)
 
 	return cb
+}
+
+// recoverFromWAL 从 WAL 恢复数据
+func (cb *ConcurrentBuffer) recoverFromWAL() error {
+	if cb.wal == nil {
+		return nil
+	}
+
+	recoveredCount := 0
+	var maxSeqNum uint64
+
+	err := cb.wal.Replay(func(record *wal.Record) error {
+		if record.Type != wal.RecordTypeData {
+			return nil
+		}
+
+		var wr walDataRow
+		if err := json.Unmarshal(record.Data, &wr); err != nil {
+			logger.GetLogger().Warn("Failed to unmarshal WAL record during recovery",
+				zap.Error(err),
+				zap.Uint64("seq_num", record.SeqNum))
+			return nil // 跳过损坏的记录，继续恢复
+		}
+
+		// 恢复数据到缓冲区
+		cb.buffer[wr.BufferKey] = append(cb.buffer[wr.BufferKey], wr.Row)
+
+		// 记录最大序列号
+		if record.SeqNum > maxSeqNum {
+			maxSeqNum = record.SeqNum
+		}
+
+		// 更新每个 bufferKey 的最后序列号
+		cb.walSeqMutex.Lock()
+		if record.SeqNum > cb.lastFlushedSeq[wr.BufferKey] {
+			cb.lastFlushedSeq[wr.BufferKey] = record.SeqNum
+		}
+		cb.walSeqMutex.Unlock()
+
+		recoveredCount++
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if recoveredCount > 0 {
+		logger.GetLogger().Info("Recovered data from WAL",
+			zap.Int("records", recoveredCount),
+			zap.Int("buffer_keys", len(cb.buffer)),
+			zap.Uint64("max_seq_num", maxSeqNum))
+
+		// 更新统计信息
+		cb.updateStats(func(stats *ConcurrentBufferStats) {
+			stats.BufferSize = int64(len(cb.buffer))
+			totalPending := int64(0)
+			for _, rows := range cb.buffer {
+				totalPending += int64(len(rows))
+			}
+			stats.PendingWrites = totalPending
+		})
+	}
+
+	return nil
 }
 
 // startWorkers 启动工作线程
@@ -234,6 +348,20 @@ func (w *Worker) processTask(task *FlushTask) {
 		}
 	} else {
 		logger.GetLogger().Sugar().Infof("Worker %d: successfully flushed %d rows for key %s", w.id, len(task.Rows), task.BufferKey)
+
+		// Flush 成功后，截断 WAL
+		if w.buffer.walEnabled && w.buffer.wal != nil && task.MaxSeqNum > 0 {
+			if err := w.buffer.wal.Truncate(task.MaxSeqNum); err != nil {
+				logger.GetLogger().Warn("Failed to truncate WAL after successful flush",
+					zap.Error(err),
+					zap.String("buffer_key", task.BufferKey),
+					zap.Uint64("seq_num", task.MaxSeqNum))
+			} else {
+				logger.GetLogger().Debug("WAL truncated after successful flush",
+					zap.String("buffer_key", task.BufferKey),
+					zap.Uint64("seq_num", task.MaxSeqNum))
+			}
+		}
 	}
 }
 
@@ -433,6 +561,35 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 	}
 	bufferKey := fmt.Sprintf("%s/%s/%s", tableName, row.ID, dayStr)
 
+	// 先写 WAL，确保数据持久化
+	if cb.walEnabled && cb.wal != nil {
+		walData := walDataRow{
+			BufferKey: bufferKey,
+			Row:       row,
+		}
+		data, err := json.Marshal(walData)
+		if err != nil {
+			logger.GetLogger().Error("Failed to marshal WAL data",
+				zap.Error(err),
+				zap.String("buffer_key", bufferKey))
+			// WAL 写入失败，但仍写入内存（降级模式）
+		} else {
+			seqNum, err := cb.wal.Append(wal.RecordTypeData, data)
+			if err != nil {
+				logger.GetLogger().Error("Failed to append to WAL",
+					zap.Error(err),
+					zap.String("buffer_key", bufferKey))
+				// WAL 写入失败，但仍写入内存（降级模式）
+			} else {
+				// 记录此 bufferKey 的最新序列号
+				cb.walSeqMutex.Lock()
+				cb.lastFlushedSeq[bufferKey] = seqNum
+				cb.walSeqMutex.Unlock()
+			}
+		}
+	}
+
+	// 写入内存缓冲区
 	cb.buffer[bufferKey] = append(cb.buffer[bufferKey], row)
 
 	// 更新统计信息
@@ -464,6 +621,15 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 	rowsCopy := make([]DataRow, len(rows))
 	copy(rowsCopy, rows)
 	delete(cb.buffer, bufferKey)
+
+	// 获取此 bufferKey 的最大 WAL 序列号
+	var maxSeqNum uint64
+	if cb.walEnabled {
+		cb.walSeqMutex.RLock()
+		maxSeqNum = cb.lastFlushedSeq[bufferKey]
+		cb.walSeqMutex.RUnlock()
+	}
+
 	cb.mutex.Unlock()
 
 	// 创建刷新任务
@@ -473,6 +639,7 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 		Priority:  0, // 默认优先级
 		CreatedAt: time.Now(),
 		Retries:   0,
+		MaxSeqNum: maxSeqNum,
 	}
 
 	// 提交任务到队列
@@ -641,6 +808,16 @@ func (cb *ConcurrentBuffer) Stop() {
 
 		// 关闭任务队列
 		close(cb.taskQueue)
+
+		// 关闭 WAL
+		if cb.walEnabled && cb.wal != nil {
+			if err := cb.wal.Close(); err != nil {
+				logger.GetLogger().Warn("Failed to close WAL",
+					zap.Error(err))
+			} else {
+				logger.GetLogger().Info("WAL closed successfully")
+			}
+		}
 
 		logger.GetLogger().Info("Concurrent buffer stopped successfully")
 	})

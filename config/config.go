@@ -31,7 +31,8 @@ type Config struct {
 	Log               LogConfig               `yaml:"log"`        // 日志配置
 	Tables            TablesConfig            `yaml:"tables"`
 	TableManagement   TableManagementConfig   `yaml:"table_management"`
-	System            SystemConfig            `yaml:"system"` // 系统配置
+	System            SystemConfig            `yaml:"system"`     // 系统配置
+	Compaction        CompactionConfig        `yaml:"compaction"` // Compaction 配置
 }
 
 // TableConfig 表级配置
@@ -556,6 +557,18 @@ type SystemConfig struct {
 	MaxGoroutines int `yaml:"max_goroutines"` // 最大协程数量
 }
 
+// CompactionConfig Compaction 配置
+type CompactionConfig struct {
+	Enabled           bool          `yaml:"enabled"`              // 是否启用 Compaction
+	TargetFileSize    int64         `yaml:"target_file_size"`     // 目标文件大小 (bytes)
+	MinFilesToCompact int           `yaml:"min_files_to_compact"` // 触发 Compaction 的最小文件数
+	MaxFilesToCompact int           `yaml:"max_files_to_compact"` // 单次 Compaction 的最大文件数
+	CooldownPeriod    time.Duration `yaml:"cooldown_period"`      // 文件创建后多久才能被 Compaction
+	CheckInterval     time.Duration `yaml:"check_interval"`       // 检查 Compaction 的间隔
+	TempDir           string        `yaml:"temp_dir"`             // 临时目录
+	CompressionType   string        `yaml:"compression_type"`     // 压缩类型 (snappy, zstd, gzip)
+}
+
 // GetTableConfig 获取指定表的配置，如果不存在则返回默认配置
 func (c *Config) GetTableConfig(tableName string) *TableConfig {
 	if tableConfig, exists := c.Tables.Tables[tableName]; exists {
@@ -973,6 +986,18 @@ func (c *Config) setDefaults() {
 		MaxBackups: 5,
 		MaxAge:     30,
 		Compress:   true,
+	}
+
+	// Compaction 配置默认值
+	c.Compaction = CompactionConfig{
+		Enabled:           true,
+		TargetFileSize:    128 * 1024 * 1024, // 128MB
+		MinFilesToCompact: 5,
+		MaxFilesToCompact: 20,
+		CooldownPeriod:    5 * time.Minute,
+		CheckInterval:     10 * time.Minute,
+		TempDir:           "/tmp/miniodb_compaction",
+		CompressionType:   "snappy",
 	}
 
 	// 存储引擎优化配置默认值 - 当前禁用以保持系统简单性

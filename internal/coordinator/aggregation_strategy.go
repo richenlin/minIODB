@@ -66,15 +66,54 @@ func (s *SimpleAggregateStrategy) Reduce(results []string, analyzed *AnalyzedQue
 		}
 	}
 
+	// 如果没有分析到聚合函数，直接返回聚合后的所有数值
+	if len(analyzed.Aggregations) == 0 {
+		resultRow := make(map[string]interface{})
+		for key, val := range aggregated {
+			resultRow[key] = val
+		}
+		output, err := json.Marshal([]map[string]interface{}{resultRow})
+		if err != nil {
+			return "", err
+		}
+		return string(output), nil
+	}
+
 	resultRow := make(map[string]interface{})
 	for _, agg := range analyzed.Aggregations {
-		key := agg.Alias
-		if key == "" {
-			key = fmt.Sprintf("%s_%s", strings.ToLower(aggTypeName(agg.Type)), agg.Column)
+		// 确定输出的 key
+		outputKey := agg.Alias
+		if outputKey == "" {
+			outputKey = fmt.Sprintf("%s_%s", strings.ToLower(aggTypeName(agg.Type)), agg.Column)
 		}
 
-		if val, ok := aggregated[key]; ok {
-			resultRow[key] = val
+		// 尝试多种可能的输入 key 匹配
+		possibleKeys := []string{
+			outputKey,                              // 完整的 key，如 "count_*"
+			strings.ToLower(aggTypeName(agg.Type)), // 只有聚合类型，如 "count"
+			agg.Alias,                              // 别名
+		}
+
+		found := false
+		for _, key := range possibleKeys {
+			if val, ok := aggregated[key]; ok {
+				resultRow[key] = val // 使用原始输入 key 保持与输入一致
+				found = true
+				break
+			}
+		}
+
+		// 如果没有找到匹配，保留原始聚合结果中与聚合类型相关的项
+		if !found {
+			aggTypeLower := strings.ToLower(aggTypeName(agg.Type))
+			for key, val := range aggregated {
+				keyLower := strings.ToLower(key)
+				// 检查 key 是否包含聚合类型名称（如 "count", "sum" 等）
+				if keyLower == aggTypeLower || strings.Contains(keyLower, aggTypeLower) {
+					resultRow[key] = val
+					break
+				}
+			}
 		}
 	}
 

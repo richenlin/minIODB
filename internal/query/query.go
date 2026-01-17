@@ -65,9 +65,10 @@ type Querier struct {
 	fileCache  *FileCache
 
 	// 性能优化组件
-	dbPool        *DuckDBPool
-	preparedStmts map[string]*sql.Stmt
-	stmtMutex     sync.RWMutex
+	dbPool         *DuckDBPool
+	preparedStmts  map[string]*sql.Stmt
+	stmtMutex      sync.RWMutex
+	queryOptimizer *QueryOptimizer // 查询优化器（文件剪枝、谓词下推）
 
 	// 统计信息
 	queryStats *QueryStats
@@ -149,6 +150,7 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		tableExtractor: NewTableExtractor(),
 		preparedStmts:  make(map[string]*sql.Stmt),
 		queryStats:     queryStats,
+		queryOptimizer: NewQueryOptimizer(), // 查询优化器（文件剪枝、谓词下推）
 	}
 
 	return querier, nil
@@ -203,9 +205,9 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 	}
 	defer q.returnDBConnection(db)
 
-	// 5. 为每个表准备数据文件（使用同一个数据库连接）
+	// 5. 为每个表准备数据文件（使用同一个数据库连接，支持文件剪枝）
 	for _, tableName := range validTables {
-		if err := q.prepareTableDataWithCacheAndDB(ctx, db, tableName); err != nil {
+		if err := q.prepareTableDataWithPruning(ctx, db, tableName, sqlQuery); err != nil {
 			q.updateErrorStats()
 			return "", fmt.Errorf("failed to prepare data for table %s: %w", tableName, err)
 		}
@@ -946,4 +948,150 @@ func (q *Querier) prepareTableDataWithCacheAndDB(ctx context.Context, db *sql.DB
 	}
 
 	return q.createTableViewWithDB(db, tableName, allFiles)
+}
+
+// prepareTableDataWithPruning 使用文件剪枝准备表数据
+// 当文件元数据可用时，此方法会使用 QueryOptimizer 进行智能文件剪枝
+func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, tableName string, sqlQuery string) error {
+	// 1. 获取缓冲区数据文件
+	bufferFiles := q.getBufferFilesForTable(tableName)
+
+	// 2. 获取存储文件的元数据（用于剪枝）
+	storageFilesMetadata, err := q.getStorageFilesMetadata(ctx, tableName)
+	if err != nil {
+		q.logger.Warn("Failed to get file metadata, falling back to no pruning",
+			zap.String("table", tableName),
+			zap.Error(err))
+		// 回退到普通方式
+		return q.prepareTableDataWithCacheAndDB(ctx, db, tableName)
+	}
+
+	// 3. 使用查询优化器进行文件剪枝
+	var storageFiles []string
+	if q.queryOptimizer != nil && len(storageFilesMetadata) > 0 {
+		optimized, err := q.queryOptimizer.OptimizeQuery(sqlQuery, storageFilesMetadata)
+		if err != nil {
+			q.logger.Warn("Query optimization failed, using all files",
+				zap.Error(err))
+			// 使用所有文件
+			for _, meta := range storageFilesMetadata {
+				localPath, err := q.getFileWithCache(ctx, meta.FilePath)
+				if err == nil {
+					storageFiles = append(storageFiles, localPath)
+				}
+			}
+		} else {
+			// 使用剪枝后的文件
+			for _, meta := range optimized.SelectedFiles {
+				localPath, err := q.getFileWithCache(ctx, meta.FilePath)
+				if err == nil {
+					storageFiles = append(storageFiles, localPath)
+				}
+			}
+			if optimized.FilesSkipped > 0 {
+				q.logger.Info("File pruning applied",
+					zap.String("table", tableName),
+					zap.Int("files_skipped", optimized.FilesSkipped),
+					zap.Int("files_selected", len(optimized.SelectedFiles)),
+					zap.Int64("estimated_rows", optimized.EstimatedRows))
+			}
+		}
+	} else {
+		// 无优化器或无元数据，使用所有文件
+		for _, meta := range storageFilesMetadata {
+			localPath, err := q.getFileWithCache(ctx, meta.FilePath)
+			if err == nil {
+				storageFiles = append(storageFiles, localPath)
+			}
+		}
+	}
+
+	// 4. 创建或更新DuckDB视图
+	allFiles := append(bufferFiles, storageFiles...)
+	if len(allFiles) == 0 {
+		logger.GetLogger().Sugar().Infof("No data files found for table: %s", tableName)
+		return nil
+	}
+
+	return q.createTableViewWithDB(db, tableName, allFiles)
+}
+
+// getStorageFilesMetadata 获取存储文件的元数据
+// TODO: 当前返回基础元数据，未来可从 Redis 索引中获取完整的 MinValues/MaxValues
+func (q *Querier) getStorageFilesMetadata(ctx context.Context, tableName string) ([]*storage.FileMetadata, error) {
+	var files []*storage.FileMetadata
+
+	// 单节点模式：直接从 MinIO 列出文件
+	if q.redisPool == nil {
+		return q.getStorageFilesMetadataFromMinIO(ctx, tableName)
+	}
+
+	// 分布式模式：从 Redis 索引获取文件列表
+	redisClient := q.redisPool.GetClient()
+
+	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
+	keys, err := redisClient.Keys(ctx, pattern).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file index keys: %w", err)
+	}
+
+	for _, key := range keys {
+		objectNames, err := redisClient.SMembers(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+
+		for _, objectName := range objectNames {
+			// 创建基础文件元数据
+			// TODO: 从 Redis 读取完整的元数据（包括 MinValues/MaxValues）
+			metadata := &storage.FileMetadata{
+				FilePath:  objectName,
+				MinValues: make(map[string]interface{}),
+				MaxValues: make(map[string]interface{}),
+			}
+			files = append(files, metadata)
+		}
+	}
+
+	return files, nil
+}
+
+// getStorageFilesMetadataFromMinIO 从 MinIO 获取文件元数据
+func (q *Querier) getStorageFilesMetadataFromMinIO(ctx context.Context, tableName string) ([]*storage.FileMetadata, error) {
+	if q.minioClient == nil {
+		return []*storage.FileMetadata{}, nil
+	}
+
+	prefix := tableName + "/"
+	bucket := q.config.MinIO.Bucket
+
+	var files []*storage.FileMetadata
+	opts := minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	}
+	objectCh := q.minioClient.ListObjects(ctx, bucket, opts)
+
+	for object := range objectCh {
+		if object.Err != nil {
+			continue
+		}
+
+		if filepath.Ext(object.Key) != ".parquet" {
+			continue
+		}
+
+		// 创建基础文件元数据
+		// TODO: 从 Parquet 文件头读取完整的元数据（包括 MinValues/MaxValues）
+		metadata := &storage.FileMetadata{
+			FilePath:  object.Key,
+			FileSize:  object.Size,
+			CreatedAt: object.LastModified,
+			MinValues: make(map[string]interface{}),
+			MaxValues: make(map[string]interface{}),
+		}
+		files = append(files, metadata)
+	}
+
+	return files, nil
 }

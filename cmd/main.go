@@ -13,22 +13,22 @@ import (
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 
-	"minIODB/internal/buffer"
 	"minIODB/config"
+	"minIODB/internal/buffer"
+	"minIODB/internal/compaction"
 	"minIODB/internal/coordinator"
 	"minIODB/internal/discovery"
 	"minIODB/internal/ingest"
-	"minIODB/pkg/logger"
+	"minIODB/internal/metadata"
 	"minIODB/internal/metrics"
 	"minIODB/internal/query"
+	"minIODB/internal/recovery"
 	"minIODB/internal/service"
 	"minIODB/internal/storage"
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
-
-	"minIODB/internal/metadata"
+	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
-	"minIODB/internal/recovery"
 )
 
 func main() {
@@ -182,6 +182,36 @@ func main() {
 		logger.Logger.Info("Metrics server and system monitor started")
 	}
 
+	// 初始化并启动 Compaction Manager
+	var compactionManager *compaction.Manager
+	if cfg.Compaction.Enabled {
+		minioPool := poolManager.GetMinIOPool()
+		if minioPool != nil {
+			compactionConfig := &compaction.Config{
+				TargetFileSize:    cfg.Compaction.TargetFileSize,
+				MinFilesToCompact: cfg.Compaction.MinFilesToCompact,
+				MaxFilesToCompact: cfg.Compaction.MaxFilesToCompact,
+				CooldownPeriod:    cfg.Compaction.CooldownPeriod,
+				CheckInterval:     cfg.Compaction.CheckInterval,
+				TempDir:           cfg.Compaction.TempDir,
+				CompressionType:   cfg.Compaction.CompressionType,
+			}
+
+			var err error
+			compactionManager, err = compaction.NewManager(minioPool.GetClient(), cfg.MinIO.Bucket, compactionConfig)
+			if err != nil {
+				logger.Logger.Warn("Failed to create compaction manager", zap.Error(err))
+			} else {
+				compactionManager.Start(ctx)
+				logger.Logger.Info("Compaction manager started",
+					zap.Duration("check_interval", cfg.Compaction.CheckInterval),
+					zap.Int64("target_file_size", cfg.Compaction.TargetFileSize))
+			}
+		} else {
+			logger.Logger.Warn("Compaction manager disabled - MinIO pool not available")
+		}
+	}
+
 	// 创建MinIODB服务
 	miniodbService, err := service.NewMinIODBService(cfg, ingesterService, querierService, redisPool, metadataManager)
 	if err != nil {
@@ -230,19 +260,27 @@ func main() {
 	logger.Logger.Info("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool)
+	waitForShutdown(ctx, cancel, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager)
 	logger.Logger.Info("MinIODB server stopped")
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	grpcService *grpcTransport.Server, restServer *restTransport.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
-	metadataManager *metadata.Manager, redisPool *pool.RedisPool) {
+	metadataManager *metadata.Manager, redisPool *pool.RedisPool,
+	compactionManager *compaction.Manager) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
 	logger.Logger.Info("Received shutdown signal")
+
+	// 停止 Compaction Manager
+	if compactionManager != nil {
+		logger.Logger.Info("Stopping compaction manager...")
+		compactionManager.Stop()
+		logger.Logger.Info("Compaction manager stopped")
+	}
 
 	logger.Logger.Info("Stopping gRPC server...")
 	grpcService.Stop()

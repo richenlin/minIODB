@@ -1,12 +1,15 @@
 package buffer
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"minIODB/config"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConcurrentBuffer_BasicOperations(t *testing.T) {
@@ -200,4 +203,130 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 	// 验证刷新后的状态
 	stats := cb.GetStats()
 	assert.True(t, stats.TotalTasks >= 0, "Should have non-negative total tasks")
+}
+
+func TestConcurrentBuffer_WALIntegration(t *testing.T) {
+	// 创建临时 WAL 目录
+	walDir := filepath.Join(os.TempDir(), "wal_test_"+time.Now().Format("20060102150405"))
+	err := os.MkdirAll(walDir, 0755)
+	require.NoError(t, err, "Failed to create WAL directory")
+	defer os.RemoveAll(walDir)
+
+	// 创建测试配置
+	cfg := &config.Config{
+		MinIO: config.MinioConfig{
+			Bucket: "test-bucket",
+		},
+		TableManagement: config.TableManagementConfig{
+			DefaultTable: "test",
+		},
+	}
+
+	// 创建启用 WAL 的 ConcurrentBuffer 配置
+	bufferConfig := &ConcurrentBufferConfig{
+		BufferSize:     1000,          // 设置大缓冲区避免自动刷新
+		FlushInterval:  1 * time.Hour, // 设置长刷新间隔
+		WorkerPoolSize: 1,
+		TaskQueueSize:  10,
+		BatchFlushSize: 10,
+		EnableBatching: false,
+		FlushTimeout:   30 * time.Second,
+		MaxRetries:     1,
+		RetryDelay:     100 * time.Millisecond,
+		WALEnabled:     true,
+		WALDir:         walDir,
+		WALSyncOnWrite: true,
+	}
+
+	// 第一阶段：创建 ConcurrentBuffer 并写入数据
+	cb1 := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig)
+
+	// 添加多条数据
+	testRows := []DataRow{
+		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "payload1"},
+		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Payload: "payload2"},
+		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Payload: "payload3"},
+	}
+
+	for _, row := range testRows {
+		cb1.Add(row)
+	}
+
+	// 验证数据在缓冲区中
+	assert.Equal(t, 2, cb1.Size(), "Should have 2 buffer keys (id1 and id2)")
+	assert.Equal(t, 3, cb1.PendingWrites(), "Should have 3 pending writes")
+
+	// 模拟崩溃：直接关闭 WAL，不执行正常的 Stop()
+	if cb1.wal != nil {
+		cb1.wal.Close()
+	}
+	// 手动关闭 shutdown channel 防止 goroutine 泄漏
+	close(cb1.shutdown)
+	cb1.workerWg.Wait()
+
+	// 第二阶段：创建新的 ConcurrentBuffer，应该从 WAL 恢复数据
+	cb2 := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig)
+	defer cb2.Stop()
+
+	// 验证数据从 WAL 恢复
+	assert.Equal(t, 2, cb2.Size(), "Should have recovered 2 buffer keys from WAL")
+	assert.Equal(t, 3, cb2.PendingWrites(), "Should have recovered 3 pending writes from WAL")
+
+	// 验证恢复的数据内容
+	allKeys := cb2.GetAllKeys()
+	assert.Len(t, allKeys, 2, "Should have 2 buffer keys after recovery")
+
+	// 获取所有恢复的数据
+	totalRecovered := 0
+	for _, key := range allKeys {
+		rows := cb2.Get(key)
+		totalRecovered += len(rows)
+	}
+	assert.Equal(t, 3, totalRecovered, "Should have recovered all 3 rows")
+}
+
+func TestConcurrentBuffer_WALDisabled(t *testing.T) {
+	// 创建测试配置
+	cfg := &config.Config{
+		MinIO: config.MinioConfig{
+			Bucket: "test-bucket",
+		},
+		TableManagement: config.TableManagementConfig{
+			DefaultTable: "test",
+		},
+	}
+
+	// 创建禁用 WAL 的 ConcurrentBuffer 配置
+	bufferConfig := &ConcurrentBufferConfig{
+		BufferSize:     1000,
+		FlushInterval:  1 * time.Hour,
+		WorkerPoolSize: 1,
+		TaskQueueSize:  10,
+		BatchFlushSize: 10,
+		EnableBatching: false,
+		FlushTimeout:   30 * time.Second,
+		MaxRetries:     1,
+		RetryDelay:     100 * time.Millisecond,
+		WALEnabled:     false, // 禁用 WAL
+	}
+
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig)
+	defer cb.Stop()
+
+	// 添加数据
+	row := DataRow{
+		Table:     "test",
+		ID:        "test-id",
+		Timestamp: time.Now().UnixNano(),
+		Payload:   "test-payload",
+	}
+	cb.Add(row)
+
+	// 验证数据添加成功（即使没有 WAL）
+	assert.Equal(t, 1, cb.Size(), "Should have 1 buffer key")
+	assert.Equal(t, 1, cb.PendingWrites(), "Should have 1 pending write")
+
+	// 验证 WAL 相关字段
+	assert.False(t, cb.walEnabled, "WAL should be disabled")
+	assert.Nil(t, cb.wal, "WAL instance should be nil")
 }

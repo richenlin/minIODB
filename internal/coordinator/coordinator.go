@@ -4,16 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	pb "minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
 	"minIODB/internal/discovery"
-	"minIODB/pkg/logger"
 	"minIODB/internal/query"
 	"minIODB/pkg/consistenthash"
+	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 	"minIODB/pkg/retry"
 
@@ -103,20 +102,22 @@ func NewCoordinatorMetrics() *CoordinatorMetrics {
 
 // QueryCoordinator 查询协调器
 type QueryCoordinator struct {
-	redisPool      *pool.RedisPool
-	registry       *discovery.ServiceRegistry
-	localQuerier   LocalQuerier
-	cfg            *config.Config
-	circuitBreaker *retry.CircuitBreaker
-	mu             sync.RWMutex
-	activeQueries  map[string]*QueryInfo
-	nodeStatus     map[string]*NodeStatus
-	loadBalancer   *LoadBalancer
-	healthChecker  *HealthChecker
-	metrics        *CoordinatorMetrics
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
+	redisPool       *pool.RedisPool
+	registry        *discovery.ServiceRegistry
+	localQuerier    LocalQuerier
+	cfg             *config.Config
+	circuitBreaker  *retry.CircuitBreaker
+	mu              sync.RWMutex
+	activeQueries   map[string]*QueryInfo
+	nodeStatus      map[string]*NodeStatus
+	loadBalancer    *LoadBalancer
+	healthChecker   *HealthChecker
+	metrics         *CoordinatorMetrics
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	queryAnalyzer   *QueryAnalyzer   // 查询分析器
+	strategyFactory *StrategyFactory // 聚合策略工厂
 }
 
 // LocalQuerier 本地查询接口
@@ -141,18 +142,20 @@ func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceR
 	cb := retry.NewCircuitBreaker("query_coordinator", retry.DefaultCircuitBreakerConfig)
 
 	qc := &QueryCoordinator{
-		redisPool:      redisPool,
-		registry:       registry,
-		localQuerier:   localQuerier,
-		cfg:            cfg,
-		circuitBreaker: cb,
-		activeQueries:  make(map[string]*QueryInfo),
-		nodeStatus:     make(map[string]*NodeStatus),
-		loadBalancer:   NewLoadBalancer(cfg),
-		healthChecker:  NewHealthChecker(cfg),
-		metrics:        NewCoordinatorMetrics(),
-		ctx:            ctx,
-		cancel:         cancel,
+		redisPool:       redisPool,
+		registry:        registry,
+		localQuerier:    localQuerier,
+		cfg:             cfg,
+		circuitBreaker:  cb,
+		activeQueries:   make(map[string]*QueryInfo),
+		nodeStatus:      make(map[string]*NodeStatus),
+		loadBalancer:    NewLoadBalancer(cfg),
+		healthChecker:   NewHealthChecker(cfg),
+		metrics:         NewCoordinatorMetrics(),
+		ctx:             ctx,
+		cancel:          cancel,
+		queryAnalyzer:   NewQueryAnalyzer(),   // 初始化查询分析器
+		strategyFactory: NewStrategyFactory(), // 初始化聚合策略工厂
 	}
 
 	// 启动监控goroutine
@@ -502,20 +505,19 @@ func (qc *QueryCoordinator) aggregateQueryResults(results []QueryResult, sql str
 
 // mergeResults 合并多个查询结果
 func (qc *QueryCoordinator) mergeResults(results []string, sql string) (string, error) {
-	// 分析SQL类型来决定如何合并结果
-	lowerSQL := strings.ToLower(sql)
+	// 使用查询分析器分析 SQL
+	analyzed := qc.queryAnalyzer.Analyze(sql)
 
-	// 如果是聚合查询（COUNT, SUM, AVG等），需要特殊处理
-	if strings.Contains(lowerSQL, "count(") {
-		return qc.aggregateCountResults(results)
-	}
+	// 获取适合的聚合策略
+	strategyName := qc.queryAnalyzer.GetMapReduceStrategy(analyzed)
+	strategy := qc.strategyFactory.GetStrategy(strategyName)
 
-	if strings.Contains(lowerSQL, "sum(") {
-		return qc.aggregateSumResults(results)
-	}
+	logger.LogDebug(context.Background(), "Using aggregation strategy",
+		zap.String("strategy", strategyName),
+		zap.Int("result_count", len(results)))
 
-	// 对于普通SELECT查询，简单合并所有结果
-	return qc.unionResults(results)
+	// 使用策略进行结果聚合
+	return strategy.Reduce(results, analyzed)
 }
 
 // aggregateCountResults 聚合COUNT查询结果
