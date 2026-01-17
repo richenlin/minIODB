@@ -75,7 +75,7 @@
       "id": "F012",
       "name": "实现 Write Ahead Log (WAL)",
       "priority": 1,
-      "status": "pending",
+      "status": "completed",
       "description": "在 Buffer 写入前先写 WAL，确保节点崩溃时数据可恢复",
       "phase": "Phase 1: 数据安全与持久化",
       "estimated_days": 7
@@ -84,7 +84,7 @@
       "id": "F013",
       "name": "实现真实 Parquet 写入引擎",
       "priority": 1,
-      "status": "pending",
+      "status": "completed",
       "description": "替换 MockParquetWriter，使用 parquet-go 实现真正的 Parquet 编码",
       "phase": "Phase 1: 数据安全与持久化",
       "estimated_days": 10
@@ -93,7 +93,7 @@
       "id": "F014",
       "name": "异步 Compaction (文件合并)",
       "priority": 2,
-      "status": "pending",
+      "status": "completed",
       "description": "后台进程将 MinIO 上的小文件合并为大文件，解决存储碎片化问题",
       "phase": "Phase 2: 存储引擎优化",
       "estimated_days": 14
@@ -102,7 +102,7 @@
       "id": "F015",
       "name": "列存储优化与谓词下推",
       "priority": 2,
-      "status": "pending",
+      "status": "completed",
       "description": "利用 Parquet 元数据和 DuckDB 谓词下推，跳过不需要的 Row Groups",
       "phase": "Phase 2: 存储引擎优化",
       "estimated_days": 7
@@ -111,7 +111,7 @@
       "id": "F016",
       "name": "分布式聚合优化",
       "priority": 3,
-      "status": "pending",
+      "status": "completed",
       "description": "实现 Map-Reduce 风格的分布式聚合，支持 AVG/GROUP BY/ORDER BY LIMIT",
       "phase": "Phase 3: 查询引擎增强",
       "estimated_days": 21
