@@ -34,7 +34,7 @@ services:
 
   # MinIO - 主存储服务
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: miniodb-minio
     restart: unless-stopped
     ports:
@@ -65,7 +65,7 @@ services:
 
   # MinIO Backup - 备份存储服务
   minio-backup:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: miniodb-minio-backup
     restart: unless-stopped
     ports:

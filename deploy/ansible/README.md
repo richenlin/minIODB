@@ -268,7 +268,7 @@ redis:
 
 # MinIO配置（自动部署模式）
 minio:
-  image: "minio/minio:latest"
+  image: "minio/minio:RELEASE.2025-04-22T22-12-26Z"
   api_port: 9000
   console_port: 9001
   access_key: "{{ vault_minio_access_key }}"

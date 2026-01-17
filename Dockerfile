@@ -33,10 +33,10 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN go build -o miniodb cmd/server/main.go
+RUN go build -o miniodb cmd/main.go
 
 # 使用Ubuntu作为运行时镜像
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y \

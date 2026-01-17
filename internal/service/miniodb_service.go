@@ -13,6 +13,7 @@ import (
 
 	"minIODB/api/proto/miniodb/v1"
 	"minIODB/internal/config"
+	"minIODB/internal/idgen"
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
 	"minIODB/internal/pool"
@@ -28,12 +29,14 @@ import (
 // MinIODBService 实现MinIODBServiceServer接口
 type MinIODBService struct {
 	miniodb.UnimplementedMinIODBServiceServer
-	cfg          *config.Config
-	ingester     *ingest.Ingester
-	querier      *query.Querier
-	redisPool    *pool.RedisPool
-	tableManager *TableManager
-	metadataMgr  *metadata.Manager
+	cfg           *config.Config
+	ingester      *ingest.Ingester
+	querier       *query.Querier
+	redisPool     *pool.RedisPool
+	tableManager  *TableManager
+	metadataMgr   *metadata.Manager
+	configManager *TableConfigManager
+	idGenerator   idgen.IDGenerator
 }
 
 // NewMinIODBService 创建新的MinIODBService实例
@@ -42,14 +45,65 @@ func NewMinIODBService(cfg *config.Config, ingester *ingest.Ingester, querier *q
 
 	tableManager := NewTableManager(redisPool, nil, nil, cfg)
 
+	// 创建表配置管理器
+	var redisPoolForConfig *pool.RedisPool
+	if redisPool != nil {
+		redisPoolForConfig = redisPool
+	}
+	configManager := NewTableConfigManager(redisPoolForConfig, cfg.Tables.DefaultConfig)
+
+	// 创建ID生成器
+	// 从配置中获取节点ID（用于Snowflake）
+	nodeID := int64(1) // 默认节点ID
+	if cfg.Server.NodeID != "" {
+		// 尝试从NodeID字符串中提取数字
+		if id, err := extractNodeIDNumber(cfg.Server.NodeID); err == nil {
+			nodeID = id
+		}
+	}
+
+	idGenerator, err := idgen.NewGenerator(&idgen.GeneratorConfig{
+		NodeID:          nodeID,
+		DefaultStrategy: cfg.Tables.DefaultConfig.IDStrategy,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ID generator: %w", err)
+	}
+
 	return &MinIODBService{
-		cfg:          cfg,
-		ingester:     ingester,
-		querier:      querier,
-		redisPool:    redisPool,
-		tableManager: tableManager,
-		metadataMgr:  metadataMgr,
+		cfg:           cfg,
+		ingester:      ingester,
+		querier:       querier,
+		redisPool:     redisPool,
+		tableManager:  tableManager,
+		metadataMgr:   metadataMgr,
+		configManager: configManager,
+		idGenerator:   idGenerator,
 	}, nil
+}
+
+// extractNodeIDNumber 从节点ID字符串中提取数字
+func extractNodeIDNumber(nodeID string) (int64, error) {
+	// 尝试直接解析
+	if id, err := strconv.ParseInt(nodeID, 10, 64); err == nil {
+		return id % 1024, nil // 限制在0-1023范围内
+	}
+
+	// 提取字符串中的数字
+	re := regexp.MustCompile(`\d+`)
+	matches := re.FindStringSubmatch(nodeID)
+	if len(matches) > 0 {
+		if id, err := strconv.ParseInt(matches[0], 10, 64); err == nil {
+			return id % 1024, nil
+		}
+	}
+
+	// 使用哈希
+	hash := int64(0)
+	for _, c := range nodeID {
+		hash = hash*31 + int64(c)
+	}
+	return (hash & 0x7FFFFFFF) % 1024, nil
 }
 
 // WriteData 写入数据
@@ -112,18 +166,55 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 	}, nil
 }
 
-// validateWriteRequest 验证写入请求
+// validateWriteRequest 验证写入请求（基于表配置）
 func (s *MinIODBService) validateWriteRequest(req *miniodb.WriteDataRequest) error {
 	if req.Data == nil {
 		return status.Error(codes.InvalidArgument, "Data record is required")
 	}
 
+	// 获取表配置
+	tableName := req.Table
+	if tableName == "" {
+		tableName = s.cfg.TableManagement.DefaultTable
+	}
+	tableConfig := s.GetTableConfig(context.Background(), tableName)
+
+	// ID验证逻辑：
+	// - AutoGenerateID = true: 用户可选提供ID，不提供则自动生成
+	// - AutoGenerateID = false: 用户必须提供ID
 	if req.Data.Id == "" {
-		return status.Error(codes.InvalidArgument, "ID is required and cannot be empty")
+		// 如果ID为空且不允许自动生成，则报错
+		if !tableConfig.AutoGenerateID {
+			return status.Error(codes.InvalidArgument, "ID is required for this table (auto_generate_id is disabled)")
+		}
+		// 否则允许为空，后续会自动生成
 	}
 
-	if len(req.Data.Id) > 255 {
-		return status.Error(codes.InvalidArgument, "ID cannot exceed 255 characters")
+	// 如果ID不为空，进行验证
+	if req.Data.Id != "" {
+		// 验证长度
+		maxLength := tableConfig.IDValidation.MaxLength
+		if maxLength <= 0 {
+			maxLength = 255 // 默认最大长度
+		}
+		if len(req.Data.Id) > maxLength {
+			return status.Error(codes.InvalidArgument,
+				fmt.Sprintf("ID length %d exceeds maximum %d", len(req.Data.Id), maxLength))
+		}
+
+		// 验证格式（使用配置的正则模式）
+		pattern := tableConfig.IDValidation.Pattern
+		if pattern == "" {
+			pattern = "^[a-zA-Z0-9_-]+$" // 默认模式
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return status.Error(codes.Internal, "Invalid ID validation pattern in config")
+		}
+		if !re.MatchString(req.Data.Id) {
+			return status.Error(codes.InvalidArgument,
+				fmt.Sprintf("ID contains invalid characters, must match pattern: %s", pattern))
+		}
 	}
 
 	if req.Data.Timestamp == nil {
@@ -134,15 +225,40 @@ func (s *MinIODBService) validateWriteRequest(req *miniodb.WriteDataRequest) err
 		return status.Error(codes.InvalidArgument, "Payload is required")
 	}
 
-	// 验证ID格式（只允许字母、数字、连字符和下划线）
-	for _, r := range req.Data.Id {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '-' || r == '_') {
-			return status.Error(codes.InvalidArgument, "ID contains invalid characters, only alphanumeric, dash and underscore allowed")
+	return nil
+}
+
+// GetTableConfig 获取表配置
+func (s *MinIODBService) GetTableConfig(ctx context.Context, tableName string) config.TableConfig {
+	// 优先从元数据管理器获取
+	if s.metadataMgr != nil {
+		cfg, err := s.metadataMgr.GetTableConfig(ctx, tableName)
+		if err == nil && cfg != nil {
+			return *cfg
 		}
 	}
 
-	return nil
+	// 后备：从configManager获取
+	if s.configManager != nil {
+		return s.configManager.GetTableConfig(ctx, tableName)
+	}
+
+	// 如果都不可用，返回默认配置
+	return s.cfg.Tables.DefaultConfig
+}
+
+// GenerateID 生成ID
+func (s *MinIODBService) GenerateID(ctx context.Context, tableName string, tableConfig config.TableConfig) (string, error) {
+	if s.idGenerator == nil {
+		return "", fmt.Errorf("ID generator not initialized")
+	}
+
+	strategy := idgen.IDGeneratorStrategy(tableConfig.IDStrategy)
+	if strategy == "" {
+		strategy = idgen.StrategyUUID // 默认使用UUID
+	}
+
+	return s.idGenerator.Generate(tableName, strategy, tableConfig.IDPrefix)
 }
 
 // QueryData 查询数据
@@ -810,12 +926,30 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 	// 转换配置
 	var tableConfig *config.TableConfig
 	if req.Config != nil {
+		// ID验证规则
+		idValidation := config.IDValidationRules{
+			MaxLength:    255, // 默认值
+			Pattern:      "^[a-zA-Z0-9_-]+$",
+			AllowedChars: "",
+		}
+		if req.Config.IdValidation != nil {
+			idValidation.MaxLength = int(req.Config.IdValidation.MaxLength)
+			if req.Config.IdValidation.Pattern != "" {
+				idValidation.Pattern = req.Config.IdValidation.Pattern
+			}
+			idValidation.AllowedChars = req.Config.IdValidation.AllowedChars
+		}
+
 		tableConfig = &config.TableConfig{
-			BufferSize:    int(req.Config.BufferSize),
-			FlushInterval: time.Duration(req.Config.FlushIntervalSeconds) * time.Second,
-			RetentionDays: int(req.Config.RetentionDays),
-			BackupEnabled: req.Config.BackupEnabled,
-			Properties:    req.Config.Properties,
+			BufferSize:     int(req.Config.BufferSize),
+			FlushInterval:  time.Duration(req.Config.FlushIntervalSeconds) * time.Second,
+			RetentionDays:  int(req.Config.RetentionDays),
+			BackupEnabled:  req.Config.BackupEnabled,
+			Properties:     req.Config.Properties,
+			IDStrategy:     req.Config.IdStrategy,
+			IDPrefix:       req.Config.IdPrefix,
+			AutoGenerateID: req.Config.AutoGenerateId,
+			IDValidation:   idValidation,
 		}
 	}
 
@@ -829,6 +963,23 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 		}, nil
 	}
 
+	// 保存表配置到元数据管理器（优先）
+	if s.metadataMgr != nil && tableConfig != nil {
+		if err := s.metadataMgr.SaveTableConfig(ctx, req.TableName, *tableConfig); err != nil {
+			log.Printf("WARN: Failed to save table config to metadata: %v", err)
+			// 不影响表创建成功，继续尝试保存到configManager
+		}
+	}
+
+	// 兼容：同时保存到configManager（如果可用）
+	if s.configManager != nil && tableConfig != nil {
+		if err := s.configManager.SetTableConfig(ctx, req.TableName, *tableConfig); err != nil {
+			log.Printf("WARN: Failed to save table config to cache: %v", err)
+			// 不影响表创建成功
+		}
+	}
+
+	log.Printf("Successfully created table: %s with ID strategy: %s", req.TableName, tableConfig.IDStrategy)
 	return &miniodb.CreateTableResponse{
 		Success: true,
 		Message: fmt.Sprintf("Table %s created successfully", req.TableName),

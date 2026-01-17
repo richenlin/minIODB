@@ -265,6 +265,33 @@ func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (
 		log.Printf("Received WriteData request for ID: %s", req.Data.Id)
 	}
 
+	// ID自动生成逻辑（与REST API保持一致）
+	if req.Data != nil && req.Data.Id == "" {
+		// 确定表名
+		tableName := req.Table
+		if tableName == "" {
+			tableName = s.cfg.TableManagement.DefaultTable
+		}
+
+		// 获取表配置
+		tableConfig := s.miniodbService.GetTableConfig(ctx, tableName)
+
+		// 如果表配置允许自动生成ID
+		if tableConfig.AutoGenerateID {
+			generatedID, err := s.miniodbService.GenerateID(ctx, tableName, tableConfig)
+			if err != nil {
+				log.Printf("ERROR: Failed to generate ID: %v", err)
+				return &miniodb.WriteDataResponse{
+					Success: false,
+					Message: fmt.Sprintf("Failed to generate ID: %v", err),
+					NodeId:  s.cfg.Server.NodeID,
+				}, nil
+			}
+			req.Data.Id = generatedID
+			log.Printf("Auto-generated ID for table %s: %s", tableName, req.Data.Id)
+		}
+	}
+
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.WriteData(ctx, req)
 	if err != nil {

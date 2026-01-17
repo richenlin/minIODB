@@ -158,6 +158,19 @@ message TableConfig {
   int32 retention_days = 3;             // 数据保留天数
   bool backup_enabled = 4;              // 是否启用备份
   map<string, string> properties = 5;   // 扩展属性
+  
+  // ID生成配置
+  string id_strategy = 6;               // ID生成策略: uuid, snowflake, custom, user_provided
+  string id_prefix = 7;                 // ID前缀（用于custom和snowflake策略）
+  bool auto_generate_id = 8;            // 是否自动生成ID（未提供时）
+  IDValidationRules id_validation = 9;  // ID验证规则
+}
+
+// ID验证规则
+message IDValidationRules {
+  int32 max_length = 1;                 // 最大长度（默认255）
+  string pattern = 2;                   // 正则验证模式
+  string allowed_chars = 3;             // 允许的字符集
 }
 
 // 创建表请求

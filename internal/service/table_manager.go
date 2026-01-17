@@ -99,6 +99,16 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 		if tableConfig.Properties == nil {
 			tableConfig.Properties = make(map[string]string)
 		}
+		// ID配置默认值
+		if tableConfig.IDStrategy == "" {
+			tableConfig.IDStrategy = defaultConfig.IDStrategy
+		}
+		if tableConfig.IDValidation.MaxLength <= 0 {
+			tableConfig.IDValidation.MaxLength = defaultConfig.IDValidation.MaxLength
+		}
+		if tableConfig.IDValidation.Pattern == "" {
+			tableConfig.IDValidation.Pattern = defaultConfig.IDValidation.Pattern
+		}
 	}
 
 	// 如果Redis连接池为空，跳过Redis操作
@@ -124,6 +134,13 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 		"flush_interval": int64(tableConfig.FlushInterval.Seconds()),
 		"retention_days": tableConfig.RetentionDays,
 		"backup_enabled": tableConfig.BackupEnabled,
+		// ID生成配置
+		"id_strategy":                 tableConfig.IDStrategy,
+		"id_prefix":                   tableConfig.IDPrefix,
+		"auto_generate_id":            fmt.Sprintf("%t", tableConfig.AutoGenerateID),
+		"id_validation_max_length":    tableConfig.IDValidation.MaxLength,
+		"id_validation_pattern":       tableConfig.IDValidation.Pattern,
+		"id_validation_allowed_chars": tableConfig.IDValidation.AllowedChars,
 	}
 
 	// 添加属性

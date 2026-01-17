@@ -37,7 +37,7 @@ k8s/
 4. **容器镜像**: 确保以下镜像可用：
    - `miniodb:latest` (需要先构建应用镜像)
    - `redis:7-alpine`
-   - `minio/minio:latest`
+   - `minio/minio:RELEASE.2025-04-22T22-12-26Z`
    - `minio/mc:latest`
 
 ## 快速部署

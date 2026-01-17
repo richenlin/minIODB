@@ -126,6 +126,21 @@ deploy_docker() {
     
     cd "$(dirname "$0")/docker"
     
+    # 检测系统架构并设置相应的 Dockerfile
+    local arch=$(uname -m)
+    local dockerfile="Dockerfile"
+    local platform_tag="latest"
+    
+    if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
+        dockerfile="Dockerfile.arm"
+        platform_tag="latest-arm64"
+        log_info "检测到 ARM64 架构，使用 $dockerfile"
+    else
+        dockerfile="Dockerfile"
+        platform_tag="latest-amd64"
+        log_info "检测到 AMD64 架构，使用 $dockerfile"
+    fi
+    
     # 检查 .env 文件
     if [[ ! -f .env ]]; then
         if [[ -f env.example ]]; then
@@ -143,6 +158,8 @@ deploy_docker() {
     # 设置环境变量
     export MINIODB_ENV=$env
     export DATA_PATH=$data_path
+    export DOCKERFILE=$dockerfile
+    export PLATFORM_TAG=$platform_tag
     
     if [[ $DRY_RUN == "true" ]]; then
         log_info "干运行模式 - 将要执行的命令:"

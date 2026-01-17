@@ -384,8 +384,17 @@ table_management:
     retention_days: 365
     backup_enabled: true
     properties: {}
+    # ID生成配置（默认要求用户提供ID，向后兼容）
+    id_strategy: "user_provided"      # 策略: uuid, snowflake, custom, user_provided
+    id_prefix: ""                     # ID前缀（用于custom和snowflake策略）
+    auto_generate_id: false           # 是否自动生成ID（默认false以保持向后兼容）
+    id_validation:
+      required: true                  # 是否必须提供ID（默认true以保持向后兼容）
+      max_length: 255                 # ID最大长度
+      pattern: "^[a-zA-Z0-9_-]+$"    # ID验证正则模式
+      allowed_chars: "utf-8"               # 允许的字符集 默认utf-8
   
-  tables: {}
+  # 表级别配置示例（覆盖默认配置）
 
 # 存储引擎优化配置 
 storage_engine:

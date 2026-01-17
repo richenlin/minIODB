@@ -23,6 +23,7 @@ const (
 	MetadataTypeServiceRegistry MetadataType = "service_registry" // 服务注册信息
 	MetadataTypeDataIndex       MetadataType = "data_index"       // 数据索引
 	MetadataTypeTableSchema     MetadataType = "table_schema"     // 表结构
+	MetadataTypeTableConfig     MetadataType = "table_config"     // 表配置
 	MetadataTypeClusterInfo     MetadataType = "cluster_info"     // 集群信息
 )
 
@@ -129,7 +130,7 @@ func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage s
 // Start 启动备份管理器
 func (bm *BackupManager) Start() error {
 	bm.logger.Printf("Starting metadata backup manager, interval: %v", bm.config.Interval)
-	bm.logger.Printf("Backup configuration: bucket=%s, storage=%v, objectStorage=%v, cacheStorage=%v", 
+	bm.logger.Printf("Backup configuration: bucket=%s, storage=%v, objectStorage=%v, cacheStorage=%v",
 		bm.bucket, bm.storage != nil, bm.objectStorage != nil, bm.cacheStorage != nil)
 
 	// 立即执行一次备份

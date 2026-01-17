@@ -36,11 +36,22 @@ type Config struct {
 
 // TableConfig 表级配置
 type TableConfig struct {
-	BufferSize    int               `yaml:"buffer_size"`
-	FlushInterval time.Duration     `yaml:"flush_interval"`
-	RetentionDays int               `yaml:"retention_days"`
-	BackupEnabled bool              `yaml:"backup_enabled"`
-	Properties    map[string]string `yaml:"properties"`
+	BufferSize     int               `yaml:"buffer_size"`
+	FlushInterval  time.Duration     `yaml:"flush_interval"`
+	RetentionDays  int               `yaml:"retention_days"`
+	BackupEnabled  bool              `yaml:"backup_enabled"`
+	Properties     map[string]string `yaml:"properties"`
+	IDStrategy     string            `yaml:"id_strategy" json:"id_strategy"`           // ID生成策略: uuid, snowflake, custom, user_provided
+	IDPrefix       string            `yaml:"id_prefix" json:"id_prefix"`               // ID前缀（用于custom和snowflake策略）
+	AutoGenerateID bool              `yaml:"auto_generate_id" json:"auto_generate_id"` // 是否自动生成ID（未提供时）
+	IDValidation   IDValidationRules `yaml:"id_validation" json:"id_validation"`       // ID验证规则
+}
+
+// IDValidationRules ID验证规则
+type IDValidationRules struct {
+	MaxLength    int    `yaml:"max_length" json:"max_length"`       // 最大长度（默认255）
+	Pattern      string `yaml:"pattern" json:"pattern"`             // 正则验证模式
+	AllowedChars string `yaml:"allowed_chars" json:"allowed_chars"` // 允许的字符集
 }
 
 // TablesConfig 表配置管理
@@ -790,11 +801,19 @@ func (c *Config) setDefaults() {
 	// 表级默认配置
 	c.Tables = TablesConfig{
 		DefaultConfig: TableConfig{
-			BufferSize:    1000,
-			FlushInterval: 30 * time.Second,
-			RetentionDays: 365,
-			BackupEnabled: true,
-			Properties:    make(map[string]string),
+			BufferSize:     1000,
+			FlushInterval:  30 * time.Second,
+			RetentionDays:  365,
+			BackupEnabled:  true,
+			Properties:     make(map[string]string),
+			IDStrategy:     "user_provided", // 默认要求用户提供ID（向后兼容）
+			IDPrefix:       "",
+			AutoGenerateID: false, // 默认不自动生成（向后兼容）
+			IDValidation: IDValidationRules{
+				MaxLength:    255,
+				Pattern:      "^[a-zA-Z0-9_-]+$",
+				AllowedChars: "",
+			},
 		},
 		Tables: make(map[string]TableConfig),
 	}

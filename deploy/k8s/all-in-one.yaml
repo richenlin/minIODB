@@ -175,7 +175,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: minio/minio:latest
+        image: minio/minio:RELEASE.2025-04-22T22-12-26Z
         ports:
         - containerPort: 9000
         - containerPort: 9001

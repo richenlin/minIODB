@@ -165,6 +165,20 @@ type TableConfig struct {
 	RetentionDays        int32             `json:"retention_days"`
 	BackupEnabled        bool              `json:"backup_enabled"`
 	Properties           map[string]string `json:"properties"`
+
+	// ID生成配置
+	IDStrategy     string             `json:"id_strategy,omitempty"`      // ID生成策略: uuid, snowflake, custom, user_provided
+	IDPrefix       string             `json:"id_prefix,omitempty"`        // ID前缀（用于custom和snowflake策略）
+	AutoGenerateID bool               `json:"auto_generate_id,omitempty"` // 是否自动生成ID（未提供时）
+	IDValidation   *IDValidationRules `json:"id_validation,omitempty"`    // ID验证规则
+}
+
+// IDValidationRules ID验证规则
+type IDValidationRules struct {
+	Required     bool   `json:"required"`                // 是否必须提供ID
+	MaxLength    int32  `json:"max_length"`              // 最大长度
+	Pattern      string `json:"pattern,omitempty"`       // 正则验证模式
+	AllowedChars string `json:"allowed_chars,omitempty"` // 允许的字符集
 }
 
 // ListTablesRequest 列出表请求
@@ -498,7 +512,7 @@ func (s *Server) healthCheck(c *gin.Context) {
 func (s *Server) writeData(c *gin.Context) {
 	var req struct {
 		Table     string                 `json:"table"`
-		ID        string                 `json:"id" binding:"required"`
+		ID        string                 `json:"id"` // 移除 binding:"required"，改为可选
 		Timestamp time.Time              `json:"timestamp" binding:"required"`
 		Payload   map[string]interface{} `json:"payload" binding:"required"`
 	}
@@ -506,6 +520,38 @@ func (s *Server) writeData(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 确定表名
+	tableName := req.Table
+	if tableName == "" {
+		tableName = s.cfg.TableManagement.DefaultTable
+	}
+
+	// ID自动生成逻辑
+	if req.ID == "" {
+		// 获取表配置
+		tableConfig := s.miniodbService.GetTableConfig(c.Request.Context(), tableName)
+
+		// 如果表配置允许自动生成ID
+		if tableConfig.AutoGenerateID {
+			// 使用服务层的ID生成器
+			generatedID, err := s.generateID(c.Request.Context(), tableName)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to generate ID: " + err.Error(),
+				})
+				return
+			}
+			req.ID = generatedID
+			log.Printf("Auto-generated ID for table %s: %s", tableName, req.ID)
+		} else {
+			// 如果不允许自动生成且未提供ID，返回错误
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "ID is required for this table. Set auto_generate_id=true in table config to enable auto-generation.",
+			})
+			return
+		}
 	}
 
 	// 构建Protobuf请求
@@ -537,7 +583,19 @@ func (s *Server) writeData(c *gin.Context) {
 		"success": resp.Success,
 		"message": resp.Message,
 		"node_id": resp.NodeId,
+		"id":      req.ID, // 返回使用的ID（可能是生成的）
 	})
+}
+
+// generateID 生成ID（辅助方法）
+func (s *Server) generateID(ctx context.Context, tableName string) (string, error) {
+	// 获取表配置
+	tableConfig := s.miniodbService.GetTableConfig(ctx, tableName)
+
+	// 通过gRPC调用MinIODB服务的ID生成器
+	// 这里我们需要调用服务层的方法
+	// 为简单起见，直接使用内部方法
+	return s.miniodbService.GenerateID(ctx, tableName, tableConfig)
 }
 
 // queryData 处理数据查询请求
@@ -832,15 +890,46 @@ func (s *Server) revokeToken(c *gin.Context) {
 
 // createTable 处理创建表请求
 func (s *Server) createTable(c *gin.Context) {
-	var req miniodbv1.CreateTableRequest
+	var req CreateTableRequest
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	// 转换为Protobuf请求
+	protoReq := &miniodbv1.CreateTableRequest{
+		TableName:   req.TableName,
+		IfNotExists: req.IfNotExists,
+	}
+
+	// 转换表配置
+	if req.Config != nil {
+		protoConfig := &miniodbv1.TableConfig{
+			BufferSize:           req.Config.BufferSize,
+			FlushIntervalSeconds: req.Config.FlushIntervalSeconds,
+			RetentionDays:        req.Config.RetentionDays,
+			BackupEnabled:        req.Config.BackupEnabled,
+			Properties:           req.Config.Properties,
+			IdStrategy:           req.Config.IDStrategy,
+			IdPrefix:             req.Config.IDPrefix,
+			AutoGenerateId:       req.Config.AutoGenerateID,
+		}
+
+		// 转换ID验证规则
+		if req.Config.IDValidation != nil {
+			protoConfig.IdValidation = &miniodbv1.IDValidationRules{
+				MaxLength:    req.Config.IDValidation.MaxLength,
+				Pattern:      req.Config.IDValidation.Pattern,
+				AllowedChars: req.Config.IDValidation.AllowedChars,
+			}
+		}
+
+		protoReq.Config = protoConfig
+	}
+
 	// 调用统一服务
-	resp, err := s.miniodbService.CreateTable(c.Request.Context(), &req)
+	resp, err := s.miniodbService.CreateTable(c.Request.Context(), protoReq)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
