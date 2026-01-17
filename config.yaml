@@ -345,6 +345,25 @@ monitoring:
   path: "/metrics"
   prometheus: true
 
+# SLA监控配置
+sla:
+  enabled: true
+  query_latency_p50: "100ms"
+  query_latency_p95: "1s"
+  query_latency_p99: "5s"
+  cache_hit_rate: 0.7
+  file_prune_rate: 0.3
+  write_latency_p95: "500ms"
+  alert_on_violation: true
+
+# 基准测试配置
+benchmark:
+  enabled: false
+  auto_run: false
+  run_interval: "1h"
+  timeout: "30s"
+  max_retries: 3
+
 # 认证配置
 auth:
   enable_jwt: true

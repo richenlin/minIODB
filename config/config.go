@@ -36,6 +36,8 @@ type Config struct {
 	FileMetadata      FileMetadataConfig      `yaml:"file_metadata"` // 文件元数据配置
 	Coordinator       CoordinatorConfig       `yaml:"coordinator"`   // 协调器配置
 	Subscription      SubscriptionConfig      `yaml:"subscription"`  // 数据订阅配置
+	SLA               SLAConfig               `yaml:"sla"`           // SLA监控配置
+	Benchmark         BenchmarkConfig         `yaml:"benchmark"`     // 基准测试配置
 }
 
 // TableConfig 表级配置
@@ -371,6 +373,27 @@ type MonitoringConfig struct {
 	Port       string `yaml:"port"`
 	Path       string `yaml:"path"`
 	Prometheus bool   `yaml:"prometheus"`
+}
+
+// SLAConfig SLA监控配置
+type SLAConfig struct {
+	Enabled          bool          `yaml:"enabled"`
+	QueryLatencyP50  time.Duration `yaml:"query_latency_p50"`
+	QueryLatencyP95  time.Duration `yaml:"query_latency_p95"`
+	QueryLatencyP99  time.Duration `yaml:"query_latency_p99"`
+	CacheHitRate     float64       `yaml:"cache_hit_rate"`
+	FilePruneRate    float64       `yaml:"file_prune_rate"`
+	WriteLatencyP95  time.Duration `yaml:"write_latency_p95"`
+	AlertOnViolation bool          `yaml:"alert_on_violation"`
+}
+
+// BenchmarkConfig 基准测试配置
+type BenchmarkConfig struct {
+	Enabled     bool          `yaml:"enabled"`
+	AutoRun     bool          `yaml:"auto_run"`
+	RunInterval time.Duration `yaml:"run_interval"`
+	Timeout     time.Duration `yaml:"timeout"`
+	MaxRetries  int           `yaml:"max_retries"`
 }
 
 // LogConfig 日志配置

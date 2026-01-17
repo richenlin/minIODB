@@ -115,6 +115,42 @@
       "description": "实现 Map-Reduce 风格的分布式聚合，支持 AVG/GROUP BY/ORDER BY LIMIT",
       "phase": "Phase 3: 查询引擎增强",
       "estimated_days": 21
+    },
+    {
+      "id": "P0-CORE01",
+      "name": "性能监控和SLA系统",
+      "priority": 1,
+      "status": "completed",
+      "description": "建立完整的性能监控体系，明确P95/P99 SLA，实现性能基准测试",
+      "phase": "性能优化 Phase 0: 基础设施",
+      "estimated_days": 10
+    },
+    {
+      "id": "P0-CORE02",
+      "name": "列剪枝优化",
+      "priority": 1,
+      "status": "pending",
+      "description": "实现列剪枝，只读取查询需要的列，减少50-80%数据读取量",
+      "phase": "性能优化 Phase 1: 核心优化",
+      "estimated_days": 12
+    },
+    {
+      "id": "P0-CORE03",
+      "name": "减少数据可见延迟",
+      "priority": 1,
+      "status": "pending",
+      "description": "实现混合查询，数据可见延迟从15秒降到1-3秒",
+      "phase": "性能优化 Phase 1: 核心优化",
+      "estimated_days": 10
+    },
+    {
+      "id": "P1-ENH01",
+      "name": "近似算法支持",
+      "priority": 2,
+      "status": "pending",
+      "description": "实现HyperLogLog等近似算法，COUNT DISTINCT性能提升10-100倍",
+      "phase": "性能优化 Phase 2: 功能增强",
+      "estimated_days": 10
     }
   ]
 }
