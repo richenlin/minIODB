@@ -25,6 +25,7 @@ import (
 	"minIODB/internal/recovery"
 	"minIODB/internal/service"
 	"minIODB/internal/storage"
+	"minIODB/internal/subscription"
 	grpcTransport "minIODB/internal/transport/grpc"
 	restTransport "minIODB/internal/transport/rest"
 	"minIODB/pkg/logger"
@@ -212,11 +213,56 @@ func main() {
 		}
 	}
 
+	// 初始化数据订阅管理器
+	var subscriptionManager *subscription.Manager
+	if cfg.Subscription.Enabled {
+		subscriptionManager = subscription.NewManager()
+
+		// 初始化 Redis 订阅者
+		if cfg.Subscription.Redis.Enabled && redisPool != nil {
+			redisSubscriber, err := subscription.NewRedisSubscriber(redisPool, &cfg.Subscription.Redis)
+			if err != nil {
+				logger.Logger.Warn("Failed to create Redis subscriber", zap.Error(err))
+			} else {
+				if err := subscriptionManager.RegisterSubscriber(redisSubscriber); err != nil {
+					logger.Logger.Warn("Failed to register Redis subscriber", zap.Error(err))
+				}
+			}
+		}
+
+		// 初始化 Kafka 订阅者
+		if cfg.Subscription.Kafka.Enabled {
+			kafkaSubscriber, err := subscription.NewKafkaSubscriber(&cfg.Subscription.Kafka)
+			if err != nil {
+				logger.Logger.Warn("Failed to create Kafka subscriber", zap.Error(err))
+			} else {
+				if err := subscriptionManager.RegisterSubscriber(kafkaSubscriber); err != nil {
+					logger.Logger.Warn("Failed to register Kafka subscriber", zap.Error(err))
+				}
+			}
+		}
+
+		// 启动订阅管理器
+		if subscriptionManager.SubscriberCount() > 0 {
+			if err := subscriptionManager.Start(ctx); err != nil {
+				logger.Logger.Warn("Failed to start subscription manager", zap.Error(err))
+			} else {
+				logger.Logger.Info("Subscription manager started",
+					zap.Int("subscriber_count", subscriptionManager.SubscriberCount()))
+			}
+		}
+	}
+
 	// 创建MinIODB服务
 	miniodbService, err := service.NewMinIODBService(cfg, ingesterService, querierService, redisPool, metadataManager)
 	if err != nil {
 		logger.Logger.Error("Failed to create MinIODB service", zap.Error(err))
 		os.Exit(1)
+	}
+
+	// 设置订阅管理器到服务（用于发布写入事件）
+	if subscriptionManager != nil {
+		miniodbService.SetSubscriptionManager(subscriptionManager)
 	}
 
 	// 启动服务注册
@@ -260,7 +306,7 @@ func main() {
 	logger.Logger.Info("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager)
+	waitForShutdown(ctx, cancel, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager, subscriptionManager)
 	logger.Logger.Info("MinIODB server stopped")
 }
 
@@ -268,12 +314,22 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	grpcService *grpcTransport.Server, restServer *restTransport.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
 	metadataManager *metadata.Manager, redisPool *pool.RedisPool,
-	compactionManager *compaction.Manager) {
+	compactionManager *compaction.Manager, subscriptionManager *subscription.Manager) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
 	logger.Logger.Info("Received shutdown signal")
+
+	// 停止订阅管理器
+	if subscriptionManager != nil {
+		logger.Logger.Info("Stopping subscription manager...")
+		if err := subscriptionManager.Stop(ctx); err != nil {
+			logger.Logger.Error("Error stopping subscription manager", zap.Error(err))
+		} else {
+			logger.Logger.Info("Subscription manager stopped")
+		}
+	}
 
 	// 停止 Compaction Manager
 	if compactionManager != nil {

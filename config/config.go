@@ -35,6 +35,7 @@ type Config struct {
 	Compaction        CompactionConfig        `yaml:"compaction"`    // Compaction 配置
 	FileMetadata      FileMetadataConfig      `yaml:"file_metadata"` // 文件元数据配置
 	Coordinator       CoordinatorConfig       `yaml:"coordinator"`   // 协调器配置
+	Subscription      SubscriptionConfig      `yaml:"subscription"`  // 数据订阅配置
 }
 
 // TableConfig 表级配置
@@ -609,6 +610,54 @@ type CoordinatorConfig struct {
 	NodeMonitorInterval     time.Duration `yaml:"node_monitor_interval"`     // 节点监控间隔
 }
 
+// SubscriptionConfig 数据订阅配置
+type SubscriptionConfig struct {
+	Enabled bool                    `yaml:"enabled"` // 是否启用订阅
+	Redis   RedisSubscriptionConfig `yaml:"redis"`   // Redis 订阅配置
+	Kafka   KafkaSubscriptionConfig `yaml:"kafka"`   // Kafka 订阅配置
+}
+
+// RedisSubscriptionConfig Redis 订阅配置（使用 Redis Streams）
+type RedisSubscriptionConfig struct {
+	Enabled       bool          `yaml:"enabled"`        // 是否启用 Redis 订阅
+	StreamPrefix  string        `yaml:"stream_prefix"`  // Stream key 前缀
+	ConsumerGroup string        `yaml:"consumer_group"` // 消费者组名称
+	ConsumerName  string        `yaml:"consumer_name"`  // 消费者名称（可选，默认自动生成）
+	BatchSize     int           `yaml:"batch_size"`     // 批量读取大小
+	BlockTimeout  time.Duration `yaml:"block_timeout"`  // 阻塞读取超时
+	MaxRetries    int           `yaml:"max_retries"`    // 最大重试次数
+	RetryDelay    time.Duration `yaml:"retry_delay"`    // 重试延迟
+	MaxLen        int64         `yaml:"max_len"`        // Stream 最大长度（0 表示不限制）
+	AutoAck       bool          `yaml:"auto_ack"`       // 是否自动确认
+}
+
+// KafkaSubscriptionConfig Kafka 订阅配置
+type KafkaSubscriptionConfig struct {
+	Enabled         bool          `yaml:"enabled"`          // 是否启用 Kafka 订阅
+	Brokers         []string      `yaml:"brokers"`          // Kafka broker 地址列表
+	TopicPrefix     string        `yaml:"topic_prefix"`     // Topic 前缀
+	ConsumerGroup   string        `yaml:"consumer_group"`   // 消费者组名称
+	BatchSize       int           `yaml:"batch_size"`       // 批量读取大小
+	BatchTimeout    time.Duration `yaml:"batch_timeout"`    // 批量超时
+	MaxRetries      int           `yaml:"max_retries"`      // 最大重试次数
+	RetryBackoff    time.Duration `yaml:"retry_backoff"`    // 重试退避时间
+	SessionTimeout  time.Duration `yaml:"session_timeout"`  // 会话超时
+	HeartbeatPeriod time.Duration `yaml:"heartbeat_period"` // 心跳周期
+	AutoCommit      bool          `yaml:"auto_commit"`      // 是否自动提交 offset
+	CommitInterval  time.Duration `yaml:"commit_interval"`  // 提交间隔
+	StartOffset     string        `yaml:"start_offset"`     // 起始 offset: earliest, latest
+	// TLS 配置
+	UseTLS   bool   `yaml:"use_tls"`   // 是否使用 TLS
+	CertFile string `yaml:"cert_file"` // 证书文件路径
+	KeyFile  string `yaml:"key_file"`  // 密钥文件路径
+	CAFile   string `yaml:"ca_file"`   // CA 证书文件路径
+	// SASL 认证配置
+	UseSASL       bool   `yaml:"use_sasl"`       // 是否使用 SASL 认证
+	SASLUsername  string `yaml:"sasl_username"`  // SASL 用户名
+	SASLPassword  string `yaml:"sasl_password"`  // SASL 密码
+	SASLMechanism string `yaml:"sasl_mechanism"` // SASL 机制: plain, scram-sha-256, scram-sha-512
+}
+
 // GetTableConfig 获取指定表的配置，如果不存在则返回默认配置
 func (c *Config) GetTableConfig(tableName string) *TableConfig {
 	if tableConfig, exists := c.Tables.Tables[tableName]; exists {
@@ -1128,6 +1177,41 @@ func (c *Config) setDefaults() {
 		DistributedQueryTimeout: 30 * time.Second,
 		RemoteQueryTimeout:      10 * time.Second,
 		NodeMonitorInterval:     30 * time.Second,
+	}
+
+	// 数据订阅配置默认值
+	c.Subscription = SubscriptionConfig{
+		Enabled: false, // 默认不启用
+		Redis: RedisSubscriptionConfig{
+			Enabled:       false,
+			StreamPrefix:  "miniodb:stream:",
+			ConsumerGroup: "miniodb-workers",
+			ConsumerName:  "", // 空表示自动生成
+			BatchSize:     100,
+			BlockTimeout:  5 * time.Second,
+			MaxRetries:    3,
+			RetryDelay:    1 * time.Second,
+			MaxLen:        0, // 不限制
+			AutoAck:       true,
+		},
+		Kafka: KafkaSubscriptionConfig{
+			Enabled:         false,
+			Brokers:         []string{"localhost:9092"},
+			TopicPrefix:     "miniodb-",
+			ConsumerGroup:   "miniodb-workers",
+			BatchSize:       100,
+			BatchTimeout:    1 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			SessionTimeout:  30 * time.Second,
+			HeartbeatPeriod: 3 * time.Second,
+			AutoCommit:      true,
+			CommitInterval:  1 * time.Second,
+			StartOffset:     "latest",
+			UseTLS:          false,
+			UseSASL:         false,
+			SASLMechanism:   "plain",
+		},
 	}
 }
 

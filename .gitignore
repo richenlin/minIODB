@@ -8,3 +8,8 @@ test/performance/test_results/
 minIODB
 pkg/pool/logs/*.log
 pkg/retry/logs/*.log
+internal/buffer/data/wal/*.log
+internal/buffer/logs/*.log
+internal/coordinator/logs/*.log
+internal/wal/logs/*.log
+internal/query/logs/*.log

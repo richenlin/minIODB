@@ -1,0 +1,5 @@
+# MinIODB Python SDK 依赖
+redis>=4.0.0
+kafka-python>=2.0.0
+grpcio>=1.50.0
+grpcio-tools>=1.50.0

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,9 +16,12 @@ import (
 	"minIODB/internal/metadata"
 	"minIODB/internal/query"
 	"minIODB/internal/security"
+	"minIODB/internal/subscription"
 	"minIODB/pkg/idgen"
+	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -29,14 +31,15 @@ import (
 // MinIODBService 实现MinIODBServiceServer接口
 type MinIODBService struct {
 	miniodb.UnimplementedMinIODBServiceServer
-	cfg           *config.Config
-	ingester      *ingest.Ingester
-	querier       *query.Querier
-	redisPool     *pool.RedisPool
-	tableManager  *TableManager
-	metadataMgr   *metadata.Manager
-	configManager *TableConfigManager
-	idGenerator   idgen.IDGenerator
+	cfg                 *config.Config
+	ingester            *ingest.Ingester
+	querier             *query.Querier
+	redisPool           *pool.RedisPool
+	tableManager        *TableManager
+	metadataMgr         *metadata.Manager
+	configManager       *TableConfigManager
+	idGenerator         idgen.IDGenerator
+	subscriptionManager *subscription.Manager // 数据订阅管理器
 }
 
 // NewMinIODBService 创建新的MinIODBService实例
@@ -158,12 +161,84 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		logger.GetLogger().Sugar().Infof("WARN: Failed to update last write time for table %s: %v", tableName, err)
 	}
 
+	// 发布写入事件到订阅通道（异步，不影响主流程）
+	if s.subscriptionManager != nil && s.subscriptionManager.IsRunning() {
+		go s.publishWriteEvent(ctx, tableName, req.Data)
+	}
+
 	logger.GetLogger().Sugar().Infof("Successfully ingested data for table: %s, ID: %s", tableName, req.Data.Id)
 	return &miniodb.WriteDataResponse{
 		Success: true,
 		Message: fmt.Sprintf("Data successfully ingested for table: %s, ID: %s", tableName, req.Data.Id),
 		NodeId:  s.cfg.Server.NodeID,
 	}, nil
+}
+
+// SetSubscriptionManager 设置订阅管理器
+func (s *MinIODBService) SetSubscriptionManager(manager *subscription.Manager) {
+	s.subscriptionManager = manager
+}
+
+// publishWriteEvent 发布写入事件到订阅通道
+func (s *MinIODBService) publishWriteEvent(ctx context.Context, table string, data *miniodb.DataRecord) {
+	// 将 protobuf Struct 转换为 map
+	payload := make(map[string]interface{})
+	if data.Payload != nil {
+		for k, v := range data.Payload.Fields {
+			payload[k] = structValueToInterface(v)
+		}
+	}
+
+	// 创建数据记录
+	record := subscription.DataRecord{
+		ID:        data.Id,
+		Timestamp: data.Timestamp.AsTime().UnixMilli(),
+		Payload:   payload,
+	}
+
+	// 创建写入事件
+	event := subscription.NewInsertEvent(table, record).
+		WithSource(s.cfg.Server.NodeID)
+
+	// 发布到所有订阅者
+	if err := s.subscriptionManager.PublishToAll(ctx, event); err != nil {
+		logger.GetLogger().Warn("Failed to publish write event",
+			zap.String("table", table),
+			zap.String("record_id", data.Id),
+			zap.Error(err))
+	}
+}
+
+// structValueToInterface 将 protobuf Value 转换为 interface{}
+func structValueToInterface(v *structpb.Value) interface{} {
+	if v == nil {
+		return nil
+	}
+	switch v.Kind.(type) {
+	case *structpb.Value_NullValue:
+		return nil
+	case *structpb.Value_NumberValue:
+		return v.GetNumberValue()
+	case *structpb.Value_StringValue:
+		return v.GetStringValue()
+	case *structpb.Value_BoolValue:
+		return v.GetBoolValue()
+	case *structpb.Value_StructValue:
+		result := make(map[string]interface{})
+		for k, sv := range v.GetStructValue().Fields {
+			result[k] = structValueToInterface(sv)
+		}
+		return result
+	case *structpb.Value_ListValue:
+		list := v.GetListValue().Values
+		result := make([]interface{}, len(list))
+		for i, lv := range list {
+			result[i] = structValueToInterface(lv)
+		}
+		return result
+	default:
+		return nil
+	}
 }
 
 // validateWriteRequest 验证写入请求（基于表配置）

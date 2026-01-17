@@ -569,3 +569,47 @@ compaction:
   temp_dir: "/tmp/miniodb_compaction"
   compression_type: "snappy"
   max_rows_per_file: 1000000      # 每个文件最大行数
+
+# 数据订阅配置
+subscription:
+  enabled: false                    # 是否启用数据订阅
+  
+  # Redis Streams 订阅配置
+  redis:
+    enabled: false                  # 是否启用 Redis 订阅
+    stream_prefix: "miniodb:stream:" # Stream key 前缀
+    consumer_group: "miniodb-workers" # 消费者组
+    consumer_name: ""               # 消费者名称（空表示自动生成）
+    batch_size: 100                 # 批量读取大小
+    block_timeout: 5s               # 阻塞读取超时
+    max_retries: 3                  # 最大重试次数
+    retry_delay: 1s                 # 重试延迟
+    max_len: 0                      # Stream 最大长度（0表示不限制）
+    auto_ack: true                  # 自动确认消息
+  
+  # Kafka 订阅配置
+  kafka:
+    enabled: false                  # 是否启用 Kafka 订阅
+    brokers:                        # Kafka broker 地址列表
+      - "localhost:9092"
+    topic_prefix: "miniodb-"        # Topic 前缀
+    consumer_group: "miniodb-workers" # 消费者组
+    batch_size: 100                 # 批量读取大小
+    batch_timeout: 1s               # 批量超时
+    max_retries: 3                  # 最大重试次数
+    retry_backoff: 100ms            # 重试退避时间
+    session_timeout: 30s            # 会话超时
+    heartbeat_period: 3s            # 心跳周期
+    auto_commit: true               # 自动提交 offset
+    commit_interval: 1s             # 提交间隔
+    start_offset: "latest"          # 起始 offset: earliest, latest
+    # TLS 配置（可选）
+    use_tls: false
+    # cert_file: "/path/to/cert.pem"
+    # key_file: "/path/to/key.pem"
+    # ca_file: "/path/to/ca.pem"
+    # SASL 认证配置（可选）
+    use_sasl: false
+    # sasl_username: "user"
+    # sasl_password: "password"
+    # sasl_mechanism: "plain"       # plain, scram-sha-256, scram-sha-512
