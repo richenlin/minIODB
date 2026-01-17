@@ -71,6 +71,7 @@ type Querier struct {
 	preparedStmts  map[string]*sql.Stmt
 	stmtMutex      sync.RWMutex
 	queryOptimizer *QueryOptimizer // 查询优化器（文件剪枝、谓词下推）
+	columnPruner   *ColumnPruner   // 列剪枝优化器
 
 	// 统计信息
 	queryStats *QueryStats
@@ -152,7 +153,8 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		tableExtractor: NewTableExtractor(),
 		preparedStmts:  make(map[string]*sql.Stmt),
 		queryStats:     queryStats,
-		queryOptimizer: NewQueryOptimizer(), // 查询优化器（文件剪枝、谓词下推）
+		queryOptimizer: NewQueryOptimizer(),                                           // 查询优化器（文件剪枝、谓词下推）
+		columnPruner:   NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy), // 列剪枝优化器
 	}
 
 	return querier, nil
@@ -372,6 +374,55 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 	}
 
 	logger.GetLogger().Sugar().Infof("View verification successful for table %s", tableName)
+	return nil
+}
+
+// createTableViewWithDBWithColumnPruning 在指定的DuckDB连接中创建表视图（带列剪枝优化）
+func (q *Querier) createTableViewWithDBWithColumnPruning(db *sql.DB, tableName string, files []string, sqlQuery string) error {
+	if len(files) == 0 {
+		return nil
+	}
+
+	// 提取需要的列
+	requiredColumns := q.columnPruner.ExtractRequiredColumns(sqlQuery)
+
+	// 构建优化的视图SQL
+	createViewSQL := q.columnPruner.BuildOptimizedViewSQL(tableName, files, requiredColumns)
+
+	// 使用安全的 SQL 构建器删除旧视图
+	dropViewSQL, err := security.DefaultSanitizer.BuildSafeDropViewSQL(tableName)
+	if err != nil {
+		return fmt.Errorf("invalid table name for drop view: %w", err)
+	}
+	logger.GetLogger().Sugar().Infof("Executing DROP VIEW SQL: %s", dropViewSQL)
+	if _, err := db.Exec(dropViewSQL); err != nil {
+		logger.GetLogger().Sugar().Infof("WARN: failed to drop existing view for table %s: %v", tableName, err)
+	}
+
+	// 执行优化的创建视图
+	logger.GetLogger().Sugar().Infof("Creating optimized view for table %s with %d files, columns: %v", tableName, len(files), requiredColumns)
+	logger.GetLogger().Sugar().Infof("Executing CREATE VIEW SQL: %s", createViewSQL)
+
+	if _, err := db.Exec(createViewSQL); err != nil {
+		logger.GetLogger().Sugar().Infof("ERROR: Failed to create optimized view for table %s: %w", tableName, err)
+		logger.GetLogger().Sugar().Infof("ERROR: SQL execution error: %v", err)
+		return fmt.Errorf("failed to create optimized view for table %s: %w", tableName, err)
+	}
+
+	logger.GetLogger().Sugar().Infof("Successfully created optimized view for table %s with column pruning", tableName)
+
+	// 验证视图
+	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, requiredColumns, "LIMIT 0")
+	if err != nil {
+		return fmt.Errorf("invalid table name for verification: %w", err)
+	}
+
+	if _, err := db.Query(testSQL); err != nil {
+		logger.GetLogger().Sugar().Infof("ERROR: Optimized view verification failed for table %s: %v", tableName, err)
+		return fmt.Errorf("optimized view creation verification failed for table %s: %w", tableName, err)
+	}
+
+	logger.GetLogger().Sugar().Infof("Optimized view verification successful for table %s", tableName)
 	return nil
 }
 
@@ -1008,14 +1059,15 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 		}
 	}
 
-	// 4. 创建或更新DuckDB视图
+	// 4. 创建或更新DuckDB视图（带列剪枝优化）
 	allFiles := append(bufferFiles, storageFiles...)
 	if len(allFiles) == 0 {
 		logger.GetLogger().Sugar().Infof("No data files found for table: %s", tableName)
 		return nil
 	}
 
-	return q.createTableViewWithDB(db, tableName, allFiles)
+	// 使用列剪枝优化创建视图
+	return q.createTableViewWithDBWithColumnPruning(db, tableName, allFiles, sqlQuery)
 }
 
 // getStorageFilesMetadata 获取存储文件的元数据（包括 MinValues/MaxValues 用于文件剪枝）
