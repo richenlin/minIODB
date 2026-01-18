@@ -676,3 +676,19 @@ func (qc *QueryCoordinator) monitorNodes() {
 		}
 	}
 }
+
+// Stop 停止查询协调器
+func (qc *QueryCoordinator) Stop() error {
+	qc.logger.Info("Stopping query coordinator...")
+
+	// 取消Context
+	if qc.cancel != nil {
+		qc.cancel()
+	}
+
+	// 等待所有goroutine完成
+	qc.wg.Wait()
+
+	qc.logger.Info("Query coordinator stopped gracefully")
+	return nil
+}

@@ -47,6 +47,7 @@ type Manager struct {
 	config          *Config
 	nodeID          string
 	mutex           sync.RWMutex
+	wg              sync.WaitGroup
 }
 
 // NewManager 创建新的元数据管理器
@@ -92,7 +93,11 @@ func (m *Manager) Start() error {
 	m.logger.Info("Starting metadata manager")
 
 	// 执行启动时同步检查（不阻塞启动过程）
-	go m.performStartupSync()
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.performStartupSync()
+	}()
 
 	// 启动备份管理器
 	if err := m.backupManager.Start(); err != nil {
@@ -632,6 +637,9 @@ func (m *Manager) Stop() error {
 	if err := m.backupManager.Stop(); err != nil {
 		m.logger.Error("Error stopping backup manager", zap.Error(err))
 	}
+
+	// 等待启动同步完成
+	m.wg.Wait()
 
 	m.logger.Info("Metadata manager stopped")
 	return nil

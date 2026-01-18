@@ -1,8 +1,10 @@
 package monitoring
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -197,10 +199,17 @@ var (
 // MetricsCollector 指标收集器
 type MetricsCollector struct {
 	startTime time.Time
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
 }
 
-// NewMetricsCollector 创建指标收集器
+// NewMetricsCollector 保留原有构造函数（向后兼容）
 func NewMetricsCollector() *MetricsCollector {
+	return NewMetricsCollectorWithContext(context.Background())
+}
+
+// NewMetricsCollectorWithContext 新增带Context的构造函数
+func NewMetricsCollectorWithContext(ctx context.Context) *MetricsCollector {
 	// 注册所有指标
 	prometheus.MustRegister(
 		httpRequestsTotal,
@@ -228,16 +237,26 @@ func NewMetricsCollector() *MetricsCollector {
 
 	collector := &MetricsCollector{
 		startTime: time.Now(),
+		stopCh:    make(chan struct{}),
 	}
 
 	// 启动系统指标更新
+	collector.wg.Add(1)
 	go collector.updateSystemMetrics()
+
+	// 监听Context取消
+	go func() {
+		<-ctx.Done()
+		collector.Stop()
+	}()
 
 	return collector
 }
 
 // updateSystemMetrics 更新系统指标
 func (mc *MetricsCollector) updateSystemMetrics() {
+	defer mc.wg.Done()
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -245,8 +264,16 @@ func (mc *MetricsCollector) updateSystemMetrics() {
 		select {
 		case <-ticker.C:
 			systemUptime.Set(time.Since(mc.startTime).Seconds())
+		case <-mc.stopCh:
+			return
 		}
 	}
+}
+
+// Stop 停止MetricsCollector的后台goroutine
+func (mc *MetricsCollector) Stop() {
+	close(mc.stopCh)
+	mc.wg.Wait()
 }
 
 // RecordHTTPRequest 记录HTTP请求
@@ -320,4 +347,4 @@ func UpdateClusterMetrics(totalNodes, healthyNodes int) {
 // GetMetricsHandler 获取Prometheus指标处理器
 func GetMetricsHandler() http.Handler {
 	return promhttp.Handler()
-} 
+}

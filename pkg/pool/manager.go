@@ -151,13 +151,17 @@ func (pm *PoolManager) performHealthCheck() {
 	defer cancel()
 
 	// 检查Redis连接池
-	if err := pm.redisPool.HealthCheck(ctx); err != nil {
-		pm.logger.Sugar().Infof("WARN: Redis health check failed: %v", err)
+	if pm.redisPool != nil {
+		if err := pm.redisPool.HealthCheck(ctx); err != nil {
+			pm.logger.Sugar().Infof("WARN: Redis health check failed: %v", err)
+		}
 	}
 
 	// 检查MinIO连接池
-	if err := pm.minioPool.HealthCheck(ctx); err != nil {
-		pm.logger.Sugar().Infof("WARN: MinIO health check failed: %v", err)
+	if pm.minioPool != nil {
+		if err := pm.minioPool.HealthCheck(ctx); err != nil {
+			pm.logger.Sugar().Infof("WARN: MinIO health check failed: %v", err)
+		}
 	}
 
 	// 检查备份MinIO连接池

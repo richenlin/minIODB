@@ -1502,8 +1502,10 @@ func (s *MinIODBService) GetMetadataStatus(ctx context.Context, req *miniodb.Get
 // HealthCheck 健康检查
 func (s *MinIODBService) HealthCheck(ctx context.Context) error {
 	// 检查Redis连接池
-	if err := s.redisPool.HealthCheck(ctx); err != nil {
-		return fmt.Errorf("redis health check failed: %w", err)
+	if s.redisPool != nil {
+		if err := s.redisPool.HealthCheck(ctx); err != nil {
+			return fmt.Errorf("redis health check failed: %w", err)
+		}
 	}
 
 	// 检查配置是否有效

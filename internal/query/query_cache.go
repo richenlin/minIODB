@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -23,6 +24,10 @@ type QueryCache struct {
 	cacheHits      int64
 	cacheMisses    int64
 	cacheKeyPrefix string
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // CacheConfig 缓存配置
@@ -58,6 +63,11 @@ type CacheStats struct {
 
 // NewQueryCache 创建查询缓存管理器
 func NewQueryCache(redisClient *redis.Client, config *CacheConfig, logger *zap.Logger) *QueryCache {
+	return NewQueryCacheWithContext(context.Background(), redisClient, config, logger)
+}
+
+// NewQueryCacheWithContext 创建带Context的查询缓存管理器
+func NewQueryCacheWithContext(ctx context.Context, redisClient *redis.Client, config *CacheConfig, logger *zap.Logger) *QueryCache {
 	if config == nil {
 		config = &CacheConfig{
 			DefaultTTL:     30 * time.Minute,
@@ -68,14 +78,25 @@ func NewQueryCache(redisClient *redis.Client, config *CacheConfig, logger *zap.L
 		}
 	}
 
-	return &QueryCache{
+	cacheCtx, cancel := context.WithCancel(ctx)
+	qc := &QueryCache{
 		redisClient:    redisClient,
 		logger:         logger,
 		defaultTTL:     config.DefaultTTL,
 		maxCacheSize:   config.MaxCacheSize,
 		enableMetrics:  config.EnableMetrics,
 		cacheKeyPrefix: config.KeyPrefix,
+		ctx:            cacheCtx,
+		cancel:         cancel,
 	}
+
+	// 监听Context取消
+	go func() {
+		<-ctx.Done()
+		qc.Stop()
+	}()
+
+	return qc
 }
 
 // Get 从缓存获取查询结果
@@ -255,8 +276,11 @@ func (qc *QueryCache) updateAccessStats(ctx context.Context, cacheKey string, en
 	entry.AccessCount++
 
 	// 异步更新Redis中的访问计数
+	qc.wg.Add(1)
 	go func() {
-		updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer qc.wg.Done()
+
+		updateCtx, cancel := context.WithTimeout(qc.ctx, 5*time.Second)
 		defer cancel()
 
 		data, err := json.Marshal(entry)
@@ -264,6 +288,15 @@ func (qc *QueryCache) updateAccessStats(ctx context.Context, cacheKey string, en
 			qc.redisClient.Set(updateCtx, cacheKey, data, qc.defaultTTL)
 		}
 	}()
+}
+
+// Stop 停止QueryCache的后台goroutine
+func (qc *QueryCache) Stop() {
+	if qc.cancel != nil {
+		qc.cancel()
+	}
+	qc.wg.Wait()
+	qc.logger.Info("QueryCache stopped gracefully")
 }
 
 // checkCacheSizeLimit 检查缓存大小限制

@@ -160,6 +160,24 @@
       "description": "为18个REST API接口集成Swagger/OpenAPI文档，支持在线浏览和调试",
       "phase": "开发体验优化",
       "estimated_days": 1
+    },
+    {
+      "id": "F018",
+      "name": "Goroutine优化与Context传递机制",
+      "priority": 1,
+      "status": "completed",
+      "description": "修复6个高风险goroutine泄漏点，实现统一Context传递和优雅关闭机制",
+      "phase": "稳定性优化",
+      "estimated_days": 1
+    },
+    {
+      "id": "F019",
+      "name": "OLAP核心组件并发优化",
+      "priority": 1,
+      "status": "completed",
+      "description": "优化7个OLAP核心组件的goroutine管理，完善WaitGroup跟踪和Stop方法",
+      "phase": "稳定性优化",
+      "estimated_days": 3
     }
   ]
 }

@@ -24,19 +24,35 @@ type TokenManager struct {
 	localRefreshMap map[string]string
 	mutex           sync.RWMutex
 	useRedis        bool
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
 }
 
+// NewTokenManager 保留原有构造函数（向后兼容）
 func NewTokenManager(redisClient *redis.Client) *TokenManager {
+	return NewTokenManagerWithContext(context.Background(), redisClient)
+}
+
+// NewTokenManagerWithContext 新增带Context的构造函数
+func NewTokenManagerWithContext(ctx context.Context, redisClient *redis.Client) *TokenManager {
 	tm := &TokenManager{
 		redisClient:     redisClient,
 		localBlacklist:  make(map[string]time.Time),
 		localRefreshMap: make(map[string]string),
 		useRedis:        redisClient != nil,
+		stopCh:          make(chan struct{}),
 	}
 
 	if !tm.useRedis {
+		tm.wg.Add(1)
 		go tm.cleanupLocalBlacklist()
 	}
+
+	// 监听Context取消
+	go func() {
+		<-ctx.Done()
+		tm.Stop()
+	}()
 
 	return tm
 }
@@ -121,17 +137,33 @@ func (tm *TokenManager) IsTokenRevoked(ctx context.Context, token string) bool {
 }
 
 func (tm *TokenManager) cleanupLocalBlacklist() {
+	defer tm.wg.Done()
+
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		tm.mutex.Lock()
-		now := time.Now()
-		for token, expiry := range tm.localBlacklist {
-			if now.After(expiry) {
-				delete(tm.localBlacklist, token)
+	for {
+		select {
+		case <-ticker.C:
+			tm.mutex.Lock()
+			now := time.Now()
+			cleaned := 0
+			for token, expiry := range tm.localBlacklist {
+				if now.After(expiry) {
+					delete(tm.localBlacklist, token)
+					cleaned++
+				}
 			}
+			tm.mutex.Unlock()
+
+		case <-tm.stopCh:
+			return
 		}
-		tm.mutex.Unlock()
 	}
+}
+
+// Stop 停止TokenManager的后台goroutine
+func (tm *TokenManager) Stop() {
+	close(tm.stopCh)
+	tm.wg.Wait()
 }

@@ -15,6 +15,6 @@ internal/coordinator/logs/*.log
 internal/wal/logs/*.log
 internal/query/logs/*.log
 
-data/wal/wal_1768717153602471000.log
+data/wal/*.log
 .gitignore
 logs/minIODB.log

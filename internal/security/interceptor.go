@@ -19,12 +19,15 @@ type GRPCInterceptor struct {
 	authManager *AuthManager
 	// 不需要认证的方法列表
 	skipAuthMethods []string
-	
+
 	// 限流相关
-	rateLimitEnabled   bool
-	requestsPerMinute  int
-	rateLimitClients   map[string]*grpcClientData
-	rateLimitMutex     sync.RWMutex
+	rateLimitEnabled  bool
+	requestsPerMinute int
+	rateLimitClients  map[string]*grpcClientData
+	rateLimitMutex    sync.RWMutex
+
+	stopCh chan struct{}
+	wg     sync.WaitGroup
 }
 
 // grpcClientData gRPC客户端限流数据
@@ -43,11 +46,13 @@ func NewGRPCInterceptor(authManager *AuthManager) *GRPCInterceptor {
 		rateLimitEnabled:  false,
 		requestsPerMinute: 0,
 		rateLimitClients:  make(map[string]*grpcClientData),
+		stopCh:            make(chan struct{}),
 	}
-	
+
 	// 启动清理goroutine
+	interceptor.wg.Add(1)
 	go interceptor.startRateLimitCleanup()
-	
+
 	return interceptor
 }
 
@@ -86,7 +91,7 @@ func (gi *GRPCInterceptor) UnaryServerInterceptor() grpc.UnaryServerInterceptor 
 			ID:       claims.UserID,
 			Username: claims.Username,
 		}
-		
+
 		ctx = ContextWithUser(ctx, user)
 		ctx = ContextWithClaims(ctx, claims)
 
@@ -125,7 +130,7 @@ func (gi *GRPCInterceptor) StreamServerInterceptor() grpc.StreamServerIntercepto
 			ID:       claims.UserID,
 			Username: claims.Username,
 		}
-		
+
 		ctx := ContextWithUser(stream.Context(), user)
 		ctx = ContextWithClaims(ctx, claims)
 
@@ -214,7 +219,7 @@ func (gi *GRPCInterceptor) SkipAuthMethod(method string) {
 func (gi *GRPCInterceptor) EnableRateLimit(requestsPerMinute int) {
 	gi.rateLimitMutex.Lock()
 	defer gi.rateLimitMutex.Unlock()
-	
+
 	gi.rateLimitEnabled = requestsPerMinute > 0
 	gi.requestsPerMinute = requestsPerMinute
 }
@@ -223,7 +228,7 @@ func (gi *GRPCInterceptor) EnableRateLimit(requestsPerMinute int) {
 func (gi *GRPCInterceptor) DisableRateLimit() {
 	gi.rateLimitMutex.Lock()
 	defer gi.rateLimitMutex.Unlock()
-	
+
 	gi.rateLimitEnabled = false
 	gi.requestsPerMinute = 0
 }
@@ -236,22 +241,22 @@ func (gi *GRPCInterceptor) RateLimitInterceptor() grpc.UnaryServerInterceptor {
 		enabled := gi.rateLimitEnabled
 		limit := gi.requestsPerMinute
 		gi.rateLimitMutex.RUnlock()
-		
+
 		if !enabled || limit <= 0 {
 			return handler(ctx, req)
 		}
-		
+
 		// 获取客户端IP
 		clientIP := gi.getClientIP(ctx)
 		if clientIP == "" {
 			clientIP = "unknown"
 		}
-		
+
 		// 检查限流
 		if err := gi.checkRateLimit(clientIP, limit); err != nil {
 			return nil, err
 		}
-		
+
 		// 继续处理请求
 		return handler(ctx, req)
 	}
@@ -265,22 +270,22 @@ func (gi *GRPCInterceptor) StreamRateLimitInterceptor() grpc.StreamServerInterce
 		enabled := gi.rateLimitEnabled
 		limit := gi.requestsPerMinute
 		gi.rateLimitMutex.RUnlock()
-		
+
 		if !enabled || limit <= 0 {
 			return handler(srv, stream)
 		}
-		
+
 		// 获取客户端IP
 		clientIP := gi.getClientIP(stream.Context())
 		if clientIP == "" {
 			clientIP = "unknown"
 		}
-		
+
 		// 检查限流
 		if err := gi.checkRateLimit(clientIP, limit); err != nil {
 			return err
 		}
-		
+
 		// 继续处理请求
 		return handler(srv, stream)
 	}
@@ -296,7 +301,7 @@ func (gi *GRPCInterceptor) getClientIP(ctx context.Context) string {
 		// 如果不是TCP地址，返回地址字符串
 		return peer.Addr.String()
 	}
-	
+
 	// 尝试从metadata获取转发的IP
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		// 检查常见的转发头
@@ -307,19 +312,19 @@ func (gi *GRPCInterceptor) getClientIP(ctx context.Context) string {
 			return xri[0]
 		}
 	}
-	
+
 	return ""
 }
 
 // checkRateLimit 检查并记录请求的限流状态
 func (gi *GRPCInterceptor) checkRateLimit(clientIP string, limit int) error {
 	now := time.Now()
-	
+
 	// 获取或创建客户端数据
 	gi.rateLimitMutex.RLock()
 	data, exists := gi.rateLimitClients[clientIP]
 	gi.rateLimitMutex.RUnlock()
-	
+
 	if !exists {
 		gi.rateLimitMutex.Lock()
 		// 双重检查
@@ -331,10 +336,10 @@ func (gi *GRPCInterceptor) checkRateLimit(clientIP string, limit int) error {
 		}
 		gi.rateLimitMutex.Unlock()
 	}
-	
+
 	data.mutex.Lock()
 	defer data.mutex.Unlock()
-	
+
 	// 清理过期的请求记录
 	var validRequests []time.Time
 	for _, reqTime := range data.requests {
@@ -343,38 +348,48 @@ func (gi *GRPCInterceptor) checkRateLimit(clientIP string, limit int) error {
 		}
 	}
 	data.requests = validRequests
-	
+
 	// 检查请求频率
 	if len(data.requests) >= limit {
 		return status.Errorf(codes.ResourceExhausted,
 			"rate limit exceeded: %d requests per minute (client: %s)",
 			limit, clientIP)
 	}
-	
+
 	// 记录当前请求
 	data.requests = append(data.requests, now)
-	
+
 	return nil
 }
 
 // startRateLimitCleanup 启动限流数据清理goroutine
 func (gi *GRPCInterceptor) startRateLimitCleanup() {
+	defer gi.wg.Done()
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
 			gi.cleanupRateLimitData()
+		case <-gi.stopCh:
+			return
 		}
 	}
+}
+
+// Stop 停止GRPCInterceptor的后台goroutine
+func (gi *GRPCInterceptor) Stop() {
+	close(gi.stopCh)
+	gi.wg.Wait()
 }
 
 // cleanupRateLimitData 清理过期的限流数据
 func (gi *GRPCInterceptor) cleanupRateLimitData() {
 	gi.rateLimitMutex.Lock()
 	defer gi.rateLimitMutex.Unlock()
-	
+
 	now := time.Now()
 	for ip, data := range gi.rateLimitClients {
 		data.mutex.Lock()
@@ -384,7 +399,7 @@ func (gi *GRPCInterceptor) cleanupRateLimitData() {
 				validRequests = append(validRequests, reqTime)
 			}
 		}
-		
+
 		if len(validRequests) == 0 {
 			delete(gi.rateLimitClients, ip)
 		} else {
@@ -392,4 +407,4 @@ func (gi *GRPCInterceptor) cleanupRateLimitData() {
 		}
 		data.mutex.Unlock()
 	}
-} 
+}

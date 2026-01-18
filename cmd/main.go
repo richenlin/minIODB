@@ -40,6 +40,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -66,6 +67,9 @@ import (
 )
 
 func main() {
+	// 创建全局WaitGroup用于等待所有goroutine
+	var wg sync.WaitGroup
+
 	// 解析命令行参数，支持多个默认配置文件路径
 	configPath := ""
 	if len(os.Args) > 1 {
@@ -344,17 +348,21 @@ func main() {
 
 	// 启动备份goroutine
 	if cfg.Backup.Enabled && backupMinio != nil {
-		go startBackupRoutine(primaryMinio, backupMinio, *cfg)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			startBackupRoutine(ctx, primaryMinio, backupMinio, *cfg)
+		}()
 	}
 
 	logger.Logger.Info("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager, subscriptionManager)
+	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager, subscriptionManager)
 	logger.Logger.Info("MinIODB server stopped")
 }
 
-func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
 	grpcService *grpcTransport.Server, restServer *restTransport.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
 	metadataManager *metadata.Manager, redisPool *pool.RedisPool,
@@ -365,6 +373,32 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 	<-sigChan
 	logger.Logger.Info("Received shutdown signal")
 
+	// 1. 首先取消Context，通知所有goroutine停止
+	logger.Logger.Info("Canceling all contexts...")
+	cancel()
+
+	// 2. 停止接收新请求
+	logger.Logger.Info("Stopping gRPC server...")
+	grpcService.Stop()
+	logger.Logger.Info("gRPC server stopped")
+
+	logger.Logger.Info("Stopping REST server...")
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel2()
+	if err := restServer.Stop(ctx2); err != nil {
+		logger.Logger.Error("Error shutting down REST server", zap.Error(err))
+	} else {
+		logger.Logger.Info("REST server stopped")
+	}
+
+	logger.Logger.Info("Stopping metrics server...")
+	if err := metricsServer.Shutdown(context.Background()); err != nil {
+		logger.Logger.Error("Error shutting down metrics server", zap.Error(err))
+	} else {
+		logger.Logger.Info("Metrics server stopped")
+	}
+
+	// 3. 停止后台任务
 	// 停止订阅管理器
 	if subscriptionManager != nil {
 		logger.Logger.Info("Stopping subscription manager...")
@@ -375,44 +409,32 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc,
 		}
 	}
 
-	// 停止 Compaction Manager
 	if compactionManager != nil {
 		logger.Logger.Info("Stopping compaction manager...")
 		compactionManager.Stop()
 		logger.Logger.Info("Compaction manager stopped")
 	}
 
-	logger.Logger.Info("Stopping gRPC server...")
-	grpcService.Stop()
-	logger.Logger.Info("gRPC server stopped")
-
-	logger.Logger.Info("Stopping REST server...")
-	ctx2, cancel2 := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel2()
-
-	if err := restServer.Stop(ctx2); err != nil {
-		logger.Logger.Error("Error shutting down REST server", zap.Error(err))
-	} else {
-		logger.Logger.Info("REST server stopped")
-	}
-
-	logger.Logger.Info("Stopping metrics server...")
-	if err := metricsServer.Shutdown(ctx); err != nil {
-		logger.Logger.Error("Error shutting down metrics server", zap.Error(err))
-	} else {
-		logger.Logger.Info("Metrics server stopped")
-	}
-
+	// 4. 等待所有goroutine完成（带超时）
 	logger.Logger.Info("Waiting for background tasks to complete...")
-	time.Sleep(2 * time.Second)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
-	cancel()
+	select {
+	case <-done:
+		logger.Logger.Info("All goroutines stopped gracefully")
+	case <-time.After(30 * time.Second):
+		logger.Logger.Warn("Timeout waiting for goroutines, forcing shutdown")
+	}
 
 	logger.Logger.Info("Shutdown complete")
 	os.Exit(0)
 }
 
-func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
+func startBackupRoutine(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config) {
 	backupInterval := time.Duration(cfg.Backup.Interval) * time.Hour
 	if backupInterval == 0 {
 		backupInterval = 24 * time.Hour
@@ -423,13 +445,18 @@ func startBackupRoutine(primaryMinio, backupMinio storage.Uploader, cfg config.C
 
 	logger.Logger.Info("Backup routine started", zap.Duration("interval", backupInterval))
 
-	for range ticker.C {
-		logger.Logger.Info("Starting scheduled backup...")
-
-		if err := performDataBackup(primaryMinio, backupMinio, cfg); err != nil {
-			logger.Logger.Error("Backup failed", zap.Error(err))
-		} else {
-			logger.Logger.Info("Backup completed successfully")
+	for {
+		select {
+		case <-ticker.C:
+			logger.Logger.Info("Starting scheduled backup...")
+			if err := performDataBackup(primaryMinio, backupMinio, cfg); err != nil {
+				logger.Logger.Error("Backup failed", zap.Error(err))
+			} else {
+				logger.Logger.Info("Backup completed successfully")
+			}
+		case <-ctx.Done():
+			logger.Logger.Info("Backup routine stopped gracefully")
+			return
 		}
 	}
 }

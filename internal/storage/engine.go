@@ -128,6 +128,8 @@ type OptimizationScheduler struct {
 	isRunning    bool
 	mutex        sync.RWMutex
 	logger       *zap.Logger
+	wg           sync.WaitGroup
+	stopCh       chan struct{}
 }
 
 // OptimizationTask 优化任务
@@ -179,6 +181,7 @@ type PerformanceMonitor struct {
 	stopChan        chan struct{}
 	mutex           sync.RWMutex
 	logger          *zap.Logger
+	wg              sync.WaitGroup
 }
 
 // MetricHistory 指标历史
@@ -647,6 +650,7 @@ func (os *OptimizationScheduler) Start(engine *StorageEngine) {
 	}
 
 	os.isRunning = true
+	os.stopCh = make(chan struct{})
 
 	// 启动工作器
 	for i := 0; i < os.workerCount; i++ {
@@ -658,12 +662,21 @@ func (os *OptimizationScheduler) Start(engine *StorageEngine) {
 			logger:   os.logger,
 		}
 		os.workers[i] = worker
-		go worker.run(os.taskQueue)
+
+		os.wg.Add(1)
+		go func(w *OptimizationWorker) {
+			defer os.wg.Done()
+			w.run(os.taskQueue)
+		}(worker)
 	}
 
 	// 启动调度定时器
 	os.scheduler = time.NewTicker(engine.config.OptimizeInterval)
-	go os.scheduleLoop(engine)
+	os.wg.Add(1)
+	go func() {
+		defer os.wg.Done()
+		os.scheduleLoop(engine)
+	}()
 
 	engine.logger.Sugar().Infof("Optimization scheduler started with %d workers", os.workerCount)
 }
@@ -671,18 +684,20 @@ func (os *OptimizationScheduler) Start(engine *StorageEngine) {
 // Stop 停止调度器
 func (os *OptimizationScheduler) Stop() {
 	os.mutex.Lock()
-	defer os.mutex.Unlock()
-
 	if !os.isRunning {
+		os.mutex.Unlock()
 		return
 	}
-
 	os.isRunning = false
+	os.mutex.Unlock()
 
 	// 停止定时器
 	if os.scheduler != nil {
 		os.scheduler.Stop()
 	}
+
+	// 关闭停止信号
+	close(os.stopCh)
 
 	// 停止工作器
 	for _, worker := range os.workers {
@@ -691,35 +706,43 @@ func (os *OptimizationScheduler) Stop() {
 		}
 	}
 
-	os.logger.Sugar().Infof("Optimization scheduler stopped")
+	// 等待所有goroutine完成
+	os.wg.Wait()
+
+	os.logger.Sugar().Infof("Optimization scheduler stopped gracefully")
 }
 
 // scheduleLoop 调度循环
 func (os *OptimizationScheduler) scheduleLoop(engine *StorageEngine) {
-	for range os.scheduler.C {
-		if !os.isRunning {
-			break
-		}
-
-		// 创建自动优化任务
-		task := &OptimizationTask{
-			ID:       fmt.Sprintf("auto_optimize_%d", time.Now().Unix()),
-			Type:     "composite",
-			Priority: 5,
-			Schedule: "immediate",
-			Target:   "all",
-			Status:   "pending",
-			Parameters: map[string]interface{}{
-				"auto_generated":    true,
-				"optimization_mode": engine.config.PerformanceMode,
-			},
-		}
-
+	for {
 		select {
-		case os.taskQueue <- task:
-			os.logger.Sugar().Infof("Scheduled auto optimization task: %s", task.ID)
-		default:
-			os.logger.Sugar().Infof("Task queue full, skipping auto optimization")
+		case <-os.scheduler.C:
+			if !os.isRunning {
+				return
+			}
+
+			// 创建自动优化任务
+			task := &OptimizationTask{
+				ID:       fmt.Sprintf("auto_optimize_%d", time.Now().Unix()),
+				Type:     "composite",
+				Priority: 5,
+				Schedule: "immediate",
+				Target:   "all",
+				Status:   "pending",
+				Parameters: map[string]interface{}{
+					"auto_generated":    true,
+					"optimization_mode": engine.config.PerformanceMode,
+				},
+			}
+
+			select {
+			case os.taskQueue <- task:
+				os.logger.Sugar().Infof("Scheduled auto optimization task: %s", task.ID)
+			default:
+				os.logger.Sugar().Infof("Task queue full, skipping auto optimization")
+			}
+		case <-os.stopCh:
+			return
 		}
 	}
 }
@@ -785,6 +808,7 @@ func (pm *PerformanceMonitor) Start() {
 	}
 
 	pm.isMonitoring = true
+	pm.wg.Add(1)
 	go pm.monitorLoop()
 
 	pm.logger.Sugar().Infof("Performance monitor started with interval: %v", pm.monitorInterval)
@@ -793,20 +817,23 @@ func (pm *PerformanceMonitor) Start() {
 // Stop 停止性能监控
 func (pm *PerformanceMonitor) Stop() {
 	pm.mutex.Lock()
-	defer pm.mutex.Unlock()
-
 	if !pm.isMonitoring {
+		pm.mutex.Unlock()
 		return
 	}
-
 	pm.isMonitoring = false
-	close(pm.stopChan)
+	pm.mutex.Unlock()
 
-	pm.logger.Sugar().Infof("Performance monitor stopped")
+	close(pm.stopChan)
+	pm.wg.Wait()
+
+	pm.logger.Sugar().Infof("Performance monitor stopped gracefully")
 }
 
 // monitorLoop 监控循环
 func (pm *PerformanceMonitor) monitorLoop() {
+	defer pm.wg.Done()
+
 	ticker := time.NewTicker(pm.monitorInterval)
 	defer ticker.Stop()
 
@@ -815,6 +842,7 @@ func (pm *PerformanceMonitor) monitorLoop() {
 		case <-ticker.C:
 			pm.collectMetrics()
 		case <-pm.stopChan:
+			pm.logger.Sugar().Info("Performance monitor loop stopped")
 			return
 		}
 	}

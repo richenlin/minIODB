@@ -535,8 +535,26 @@ func (q *Querier) writeBufferToParquet(filePath string, rows []buffer.DataRow) e
 	return q.buffer.WriteTempParquetFile(filePath, rows)
 }
 
+// Stop 停止查询处理器（优雅关闭）
+func (q *Querier) Stop() error {
+	q.logger.Info("Stopping Querier...")
+
+	// 停止QueryCache
+	if q.queryCache != nil {
+		q.queryCache.Stop()
+	}
+
+	// 关闭资源
+	if err := q.Close(); err != nil {
+		return err
+	}
+
+	q.logger.Info("Querier stopped gracefully")
+	return nil
+}
+
 // Close 关闭查询处理器
-func (q *Querier) Close() {
+func (q *Querier) Close() error {
 	if q.db != nil {
 		q.db.Close()
 	}
@@ -561,6 +579,8 @@ func (q *Querier) Close() {
 
 	// 清理临时文件
 	os.RemoveAll(q.tempDir)
+
+	return nil
 }
 
 // =============================================================================

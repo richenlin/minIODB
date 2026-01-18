@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -28,20 +29,20 @@ type PathRateLimit struct {
 
 // SmartRateLimiterConfig 智能限流器配置
 type SmartRateLimiterConfig struct {
-	Enabled     bool              `yaml:"enabled"`
-	DefaultTier string            `yaml:"default_tier"`
-	Tiers       []RateLimitTier   `yaml:"tiers"`
-	PathLimits  []PathRateLimit   `yaml:"path_limits"`
-	CleanupInterval time.Duration `yaml:"cleanup_interval"`
+	Enabled         bool            `yaml:"enabled"`
+	DefaultTier     string          `yaml:"default_tier"`
+	Tiers           []RateLimitTier `yaml:"tiers"`
+	PathLimits      []PathRateLimit `yaml:"path_limits"`
+	CleanupInterval time.Duration   `yaml:"cleanup_interval"`
 }
 
 // TokenBucket 令牌桶实现
 type TokenBucket struct {
-	capacity       int           // 桶容量
-	tokens         int           // 当前令牌数
-	refillRate     float64       // 令牌补充速率 (tokens/second)
-	lastRefill     time.Time     // 上次补充时间
-	mutex          sync.RWMutex  // 读写锁
+	capacity   int          // 桶容量
+	tokens     int          // 当前令牌数
+	refillRate float64      // 令牌补充速率 (tokens/second)
+	lastRefill time.Time    // 上次补充时间
+	mutex      sync.RWMutex // 读写锁
 }
 
 // NewTokenBucket 创建新的令牌桶
@@ -58,16 +59,16 @@ func NewTokenBucket(capacity int, refillRate float64) *TokenBucket {
 func (tb *TokenBucket) TryConsume(tokens int) bool {
 	tb.mutex.Lock()
 	defer tb.mutex.Unlock()
-	
+
 	// 补充令牌
 	tb.refill()
-	
+
 	// 检查是否有足够的令牌
 	if tb.tokens >= tokens {
 		tb.tokens -= tokens
 		return true
 	}
-	
+
 	return false
 }
 
@@ -75,7 +76,7 @@ func (tb *TokenBucket) TryConsume(tokens int) bool {
 func (tb *TokenBucket) refill() {
 	now := time.Now()
 	elapsed := now.Sub(tb.lastRefill).Seconds()
-	
+
 	// 计算应该补充的令牌数
 	tokensToAdd := int(elapsed * tb.refillRate)
 	if tokensToAdd > 0 {
@@ -91,13 +92,13 @@ func (tb *TokenBucket) refill() {
 func (tb *TokenBucket) GetWaitTime(tokens int) time.Duration {
 	tb.mutex.RLock()
 	defer tb.mutex.RUnlock()
-	
+
 	tb.refill()
-	
+
 	if tb.tokens >= tokens {
 		return 0
 	}
-	
+
 	// 计算需要等待的时间
 	tokensNeeded := tokens - tb.tokens
 	waitSeconds := float64(tokensNeeded) / tb.refillRate
@@ -119,10 +120,17 @@ type SmartRateLimiter struct {
 	clients map[string]*ClientRateLimit
 	tiers   map[string]RateLimitTier
 	mutex   sync.RWMutex
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
 }
 
-// NewSmartRateLimiter 创建智能限流器
+// NewSmartRateLimiter 保留原有构造函数（向后兼容）
 func NewSmartRateLimiter(config SmartRateLimiterConfig) *SmartRateLimiter {
+	return NewSmartRateLimiterWithContext(context.Background(), config)
+}
+
+// NewSmartRateLimiterWithContext 新增带Context的构造函数
+func NewSmartRateLimiterWithContext(ctx context.Context, config SmartRateLimiterConfig) *SmartRateLimiter {
 	// 如果配置为空或不完整，使用默认配置
 	if len(config.Tiers) == 0 || len(config.PathLimits) == 0 {
 		defaultConfig := GetDefaultSmartRateLimiterConfig()
@@ -137,24 +145,32 @@ func NewSmartRateLimiter(config SmartRateLimiterConfig) *SmartRateLimiter {
 			defaultConfig.CleanupInterval = config.CleanupInterval
 		}
 		config = defaultConfig
-		fmt.Printf("Smart rate limiter using default configuration with %d tiers and %d path rules\n", 
+		fmt.Printf("Smart rate limiter using default configuration with %d tiers and %d path rules\n",
 			len(config.Tiers), len(config.PathLimits))
 	}
-	
+
 	limiter := &SmartRateLimiter{
 		config:  config,
 		clients: make(map[string]*ClientRateLimit),
 		tiers:   make(map[string]RateLimitTier),
+		stopCh:  make(chan struct{}),
 	}
-	
+
 	// 构建等级映射
 	for _, tier := range config.Tiers {
 		limiter.tiers[tier.Name] = tier
 	}
-	
+
 	// 启动清理goroutine
+	limiter.wg.Add(1)
 	go limiter.cleanup()
-	
+
+	// 监听Context取消
+	go func() {
+		<-ctx.Done()
+		limiter.Stop()
+	}()
+
 	return limiter
 }
 
@@ -223,12 +239,12 @@ func (srl *SmartRateLimiter) getTierForPath(path string) RateLimitTier {
 			}
 		}
 	}
-	
+
 	// 返回默认等级
 	if defaultTier, exists := srl.tiers[srl.config.DefaultTier]; exists {
 		return defaultTier
 	}
-	
+
 	// 如果没有默认等级，返回一个保守的配置
 	return RateLimitTier{
 		Name:            "fallback",
@@ -242,11 +258,11 @@ func (srl *SmartRateLimiter) getTierForPath(path string) RateLimitTier {
 // getClientRateLimit 获取或创建客户端限流状态
 func (srl *SmartRateLimiter) getClientRateLimit(clientIP string, tier RateLimitTier) *ClientRateLimit {
 	key := fmt.Sprintf("%s:%s", clientIP, tier.Name)
-	
+
 	srl.mutex.RLock()
 	client, exists := srl.clients[key]
 	srl.mutex.RUnlock()
-	
+
 	if !exists {
 		srl.mutex.Lock()
 		// 双重检查
@@ -258,7 +274,7 @@ func (srl *SmartRateLimiter) getClientRateLimit(clientIP string, tier RateLimitT
 		}
 		srl.mutex.Unlock()
 	}
-	
+
 	return client
 }
 
@@ -267,21 +283,21 @@ func (srl *SmartRateLimiter) checkRateLimit(clientIP, path string) (bool, time.D
 	if !srl.config.Enabled {
 		return true, 0, nil
 	}
-	
+
 	tier := srl.getTierForPath(path)
 	client := srl.getClientRateLimit(clientIP, tier)
-	
+
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
-	
+
 	now := time.Now()
-	
+
 	// 检查是否在退避期
 	if now.Before(client.backoffUntil) {
 		waitTime := client.backoffUntil.Sub(now)
 		return false, waitTime, fmt.Errorf("client in backoff period")
 	}
-	
+
 	// 尝试消费令牌
 	if client.tokenBucket.TryConsume(1) {
 		// 成功消费，重置违规计数
@@ -290,14 +306,14 @@ func (srl *SmartRateLimiter) checkRateLimit(clientIP, path string) (bool, time.D
 		}
 		return true, 0, nil
 	}
-	
+
 	// 令牌不足，记录违规
 	client.violationCount++
 	client.lastViolation = now
-	
+
 	// 计算等待时间
 	waitTime := client.tokenBucket.GetWaitTime(1)
-	
+
 	// 如果违规次数过多，进入退避期
 	if client.violationCount >= 5 {
 		backoffDuration := tier.BackoffDuration * time.Duration(client.violationCount-4)
@@ -307,31 +323,47 @@ func (srl *SmartRateLimiter) checkRateLimit(clientIP, path string) (bool, time.D
 		client.backoffUntil = now.Add(backoffDuration)
 		waitTime = backoffDuration
 	}
-	
+
 	return false, waitTime, fmt.Errorf("rate limit exceeded")
 }
 
 // cleanup 清理过期的客户端数据
 func (srl *SmartRateLimiter) cleanup() {
+	defer srl.wg.Done()
+
 	ticker := time.NewTicker(srl.config.CleanupInterval)
 	defer ticker.Stop()
-	
-	for range ticker.C {
-		srl.mutex.Lock()
-		now := time.Now()
-		for key, client := range srl.clients {
-			client.mutex.RLock()
-			// 如果客户端长时间没有活动，删除它
-			inactive := now.Sub(client.lastViolation) > 2*srl.config.CleanupInterval && 
-						 now.After(client.backoffUntil)
-			client.mutex.RUnlock()
-			
-			if inactive {
-				delete(srl.clients, key)
+
+	for {
+		select {
+		case <-ticker.C:
+			srl.mutex.Lock()
+			now := time.Now()
+			cleaned := 0
+			for key, client := range srl.clients {
+				client.mutex.RLock()
+				// 如果客户端长时间没有活动，删除它
+				inactive := now.Sub(client.lastViolation) > 2*srl.config.CleanupInterval &&
+					now.After(client.backoffUntil)
+				client.mutex.RUnlock()
+
+				if inactive {
+					delete(srl.clients, key)
+					cleaned++
+				}
 			}
+			srl.mutex.Unlock()
+
+		case <-srl.stopCh:
+			return
 		}
-		srl.mutex.Unlock()
 	}
+}
+
+// Stop 停止SmartRateLimiter的后台goroutine
+func (srl *SmartRateLimiter) Stop() {
+	close(srl.stopCh)
+	srl.wg.Wait()
 }
 
 // Middleware 返回Gin中间件
@@ -339,21 +371,21 @@ func (srl *SmartRateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		clientIP := c.ClientIP()
 		path := c.Request.URL.Path
-		
+
 		allowed, waitTime, err := srl.checkRateLimit(clientIP, path)
-		
+
 		if !allowed {
 			tier := srl.getTierForPath(path)
-			
+
 			// 设置响应头
 			c.Header("X-RateLimit-Limit", fmt.Sprintf("%.0f", tier.RequestsPerSec))
 			c.Header("X-RateLimit-Burst", fmt.Sprintf("%d", tier.BurstSize))
 			c.Header("X-RateLimit-Window", tier.Window.String())
-			
+
 			if waitTime > 0 {
 				c.Header("Retry-After", fmt.Sprintf("%.0f", waitTime.Seconds()))
 			}
-			
+
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error":       "rate_limit_exceeded",
 				"message":     fmt.Sprintf("Rate limit exceeded for %s API", tier.Name),
@@ -367,7 +399,7 @@ func (srl *SmartRateLimiter) Middleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		c.Next()
 	}
 }
@@ -376,14 +408,14 @@ func (srl *SmartRateLimiter) Middleware() gin.HandlerFunc {
 func (srl *SmartRateLimiter) GetStats() map[string]interface{} {
 	srl.mutex.RLock()
 	defer srl.mutex.RUnlock()
-	
+
 	stats := map[string]interface{}{
 		"enabled":       srl.config.Enabled,
 		"total_clients": len(srl.clients),
 		"tiers":         len(srl.tiers),
 		"path_limits":   len(srl.config.PathLimits),
 	}
-	
+
 	// 统计各等级的客户端数量
 	tierStats := make(map[string]int)
 	for key := range srl.clients {
@@ -394,6 +426,6 @@ func (srl *SmartRateLimiter) GetStats() map[string]interface{} {
 		}
 	}
 	stats["tier_distribution"] = tierStats
-	
+
 	return stats
-} 
+}
