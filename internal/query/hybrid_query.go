@@ -226,6 +226,19 @@ func (hq *HybridQueryExecutor) mergeResults(bufferResult, storageResult *HybridQ
 		CompletedAt: time.Now(),
 	}
 
+	// 处理 nil 情况
+	if bufferResult == nil {
+		if storageResult == nil {
+			result.Error = fmt.Errorf("both buffer and storage results are nil")
+			return result
+		}
+		return storageResult
+	}
+
+	if storageResult == nil {
+		return bufferResult
+	}
+
 	// 如果查询失败，返回另一个结果
 	if bufferResult.Error != nil && storageResult.Error != nil {
 		result.Error = fmt.Errorf("both buffer and storage queries failed: buffer=%v, storage=%v",
