@@ -54,6 +54,7 @@ import (
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
 	"minIODB/internal/metrics"
+	_ "minIODB/internal/metrics" // 强制导入metrics包触发failover_metrics注册
 	"minIODB/internal/query"
 	"minIODB/internal/recovery"
 	"minIODB/internal/service"
