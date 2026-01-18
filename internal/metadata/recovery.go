@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"minIODB/internal/storage"
+	"minIODB/pkg/logger"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // RecoveryManager 恢复管理器
@@ -26,7 +27,7 @@ type RecoveryManager struct {
 
 	nodeID string
 	bucket string
-	logger *log.Logger
+	logger *zap.Logger
 	mutex  sync.RWMutex
 }
 
@@ -112,7 +113,7 @@ func NewRecoveryManagerWithStorages(unifiedStorage storage.Storage, cacheStorage
 		objectStorage: objectStorage,
 		nodeID:        nodeID,
 		bucket:        bucket,
-		logger:        log.New(log.Writer(), "[RECOVERY] ", log.LstdFlags),
+		logger:        logger.Logger,
 	}
 
 	// 如果没有提供分离的存储接口，则从统一存储接口获取
@@ -209,7 +210,7 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 		Details:          make(map[string]interface{}),
 	}
 
-	rm.logger.Printf("Starting recovery from backup: %s", backupObjectName)
+	rm.logger.Info("Starting recovery from backup", zap.String("backup_object_name", backupObjectName))
 
 	// 下载备份文件
 	snapshot, err := rm.downloadBackup(ctx, backupObjectName)
@@ -229,7 +230,7 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 	result.Details["entries_after_filter"] = len(filteredEntries)
 
 	if options.Mode == RecoveryModeDryRun {
-		rm.logger.Printf("Dry run mode: would recover %d entries", len(filteredEntries))
+		rm.logger.Info("Dry run mode: would recover entries", zap.Int("entries", len(filteredEntries)))
 		result.Success = true
 		result.EntriesOK = len(filteredEntries)
 		result.ProcessedEntries = len(filteredEntries)
@@ -312,7 +313,7 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 		// 批量执行，避免管道过大
 		if pipeCommands >= 100 {
 			if _, err := pipe.Exec(ctx); err != nil {
-				rm.logger.Printf("Pipeline execution failed: %v", err)
+				rm.logger.Error("Pipeline execution failed", zap.Error(err))
 			}
 			pipe = client.TxPipeline()
 			pipeCommands = 0
@@ -322,7 +323,7 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 	// 执行剩余命令
 	if pipeCommands > 0 {
 		if _, err := pipe.Exec(ctx); err != nil {
-			rm.logger.Printf("Final pipeline execution failed: %v", err)
+			rm.logger.Error("Final pipeline execution failed", zap.Error(err))
 		}
 	}
 
@@ -330,15 +331,14 @@ func (rm *RecoveryManager) RecoverFromBackup(ctx context.Context, backupObjectNa
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
 
-	rm.logger.Printf("Recovery completed: success=%v, total=%d, ok=%d, error=%d, duration=%v",
-		result.Success, result.EntriesTotal, result.EntriesOK, result.EntriesError, result.Duration)
+	rm.logger.Info("Recovery completed", zap.Bool("success", result.Success), zap.Int("total", result.EntriesTotal), zap.Int("ok", result.EntriesOK), zap.Int("error", result.EntriesError), zap.Duration("duration", result.Duration))
 
 	return result, nil
 }
 
 // downloadBackup 下载备份文件
 func (rm *RecoveryManager) downloadBackup(ctx context.Context, objectName string) (*BackupSnapshot, error) {
-	rm.logger.Printf("Downloading backup: %s", objectName)
+	rm.logger.Info("Downloading backup", zap.String("object_name", objectName))
 
 	// 下载备份文件
 	var data []byte
@@ -362,8 +362,7 @@ func (rm *RecoveryManager) downloadBackup(ctx context.Context, objectName string
 		return nil, fmt.Errorf("failed to parse backup file: %w", err)
 	}
 
-	rm.logger.Printf("Downloaded backup: %s, entries: %d, timestamp: %v",
-		objectName, len(snapshot.Entries), snapshot.Timestamp)
+	rm.logger.Info("Downloaded backup", zap.String("object_name", objectName), zap.Int("entries", len(snapshot.Entries)), zap.Time("timestamp", snapshot.Timestamp))
 
 	return &snapshot, nil
 }
@@ -516,7 +515,7 @@ func (rm *RecoveryManager) ValidateBackup(ctx context.Context, objectName string
 		}
 	}
 
-	rm.logger.Printf("Backup validation passed: %s, entries: %d", objectName, len(snapshot.Entries))
+	rm.logger.Info("Backup validation passed", zap.String("object_name", objectName), zap.Int("entries", len(snapshot.Entries)))
 	return nil
 }
 

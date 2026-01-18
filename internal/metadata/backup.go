@@ -5,15 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"minIODB/internal/storage"
+	"minIODB/pkg/logger"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // MetadataType 元数据类型
@@ -64,7 +65,7 @@ type BackupManager struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	mutex    sync.RWMutex
-	logger   *log.Logger
+	logger   *zap.Logger
 	isActive bool
 
 	// 统计信息
@@ -111,7 +112,7 @@ func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage s
 		config:        config,
 		ctx:           ctx,
 		cancel:        cancel,
-		logger:        log.New(log.Writer(), "[BACKUP] ", log.LstdFlags),
+		logger:        logger.GetLogger(),
 		isActive:      false,
 		stats:         BackupStats{},
 	}
@@ -129,13 +130,12 @@ func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage s
 
 // Start 启动备份管理器
 func (bm *BackupManager) Start() error {
-	bm.logger.Printf("Starting metadata backup manager, interval: %v", bm.config.Interval)
-	bm.logger.Printf("Backup configuration: bucket=%s, storage=%v, objectStorage=%v, cacheStorage=%v",
-		bm.bucket, bm.storage != nil, bm.objectStorage != nil, bm.cacheStorage != nil)
+	bm.logger.Info("Starting metadata backup manager", zap.Duration("interval", bm.config.Interval))
+	bm.logger.Info("Backup configuration", zap.String("bucket", bm.bucket), zap.Bool("storage", bm.storage != nil), zap.Bool("objectStorage", bm.objectStorage != nil), zap.Bool("cacheStorage", bm.cacheStorage != nil))
 
 	// 立即执行一次备份
 	if err := bm.performBackup(); err != nil {
-		bm.logger.Printf("Initial backup failed: %v", err)
+		bm.logger.Error("Initial backup failed", zap.Error(err))
 	}
 
 	// 启动定期备份
@@ -151,12 +151,12 @@ func (bm *BackupManager) Start() error {
 
 // Stop 停止备份管理器
 func (bm *BackupManager) Stop() error {
-	bm.logger.Println("Stopping metadata backup manager")
+	bm.logger.Info("Stopping metadata backup manager")
 
 	bm.cancel()
 	bm.wg.Wait()
 
-	bm.logger.Println("Metadata backup manager stopped")
+	bm.logger.Info("Metadata backup manager stopped")
 	return nil
 }
 
@@ -174,7 +174,7 @@ func (bm *BackupManager) backupLoop() {
 		case <-ticker.C:
 			if err := bm.performBackup(); err != nil {
 				bm.incrementErrorCount()
-				bm.logger.Printf("Backup failed: %v", err)
+				bm.logger.Error("Backup failed", zap.Error(err))
 			}
 		}
 	}
@@ -183,8 +183,8 @@ func (bm *BackupManager) backupLoop() {
 // performBackup 执行备份
 func (bm *BackupManager) performBackup() error {
 	startTime := time.Now()
-	bm.logger.Printf("Starting metadata backup")
-	bm.logger.Printf("Backup target bucket: %s", bm.bucket)
+	bm.logger.Info("Starting metadata backup")
+	bm.logger.Info("Backup target bucket", zap.String("bucket", bm.bucket))
 
 	// 收集元数据
 	entries, err := bm.collectMetadata()
@@ -195,7 +195,7 @@ func (bm *BackupManager) performBackup() error {
 	// 获取当前版本号并递增
 	currentVersion, err := bm.getCurrentAndIncrementVersion()
 	if err != nil {
-		bm.logger.Printf("Failed to get/increment version, using default: %v", err)
+		bm.logger.Error("Failed to get/increment version, using default", zap.Error(err))
 		currentVersion = "1.0.0"
 	}
 
@@ -219,22 +219,22 @@ func (bm *BackupManager) performBackup() error {
 	reader := bytes.NewReader(data)
 
 	// 调试日志
-	bm.logger.Printf("Attempting to upload backup to bucket: %s, object: %s", bm.bucket, objectName)
+	bm.logger.Info("Attempting to upload backup to bucket", zap.String("bucket", bm.bucket), zap.String("object", objectName))
 
 	// 使用新的存储接口
 	var uploadErr error
 	if bm.objectStorage != nil {
-		bm.logger.Printf("Using object storage interface for backup upload")
+		bm.logger.Info("Using object storage interface for backup upload")
 		uploadErr = bm.objectStorage.PutObject(context.Background(), bm.bucket, objectName, reader, int64(len(data)))
 	} else if bm.storage != nil {
-		bm.logger.Printf("Using unified storage interface for backup upload")
+		bm.logger.Info("Using unified storage interface for backup upload")
 		uploadErr = bm.storage.PutObject(context.Background(), bm.bucket, objectName, reader, int64(len(data)))
 	} else {
 		return fmt.Errorf("no object storage available")
 	}
 
 	if uploadErr != nil {
-		bm.logger.Printf("Backup upload failed to bucket %s: %v", bm.bucket, uploadErr)
+		bm.logger.Error("Backup upload failed to bucket", zap.String("bucket", bm.bucket), zap.Error(uploadErr))
 		return fmt.Errorf("failed to upload backup: %w", uploadErr)
 	}
 
@@ -242,8 +242,7 @@ func (bm *BackupManager) performBackup() error {
 	bm.updateStats(startTime)
 
 	duration := time.Since(startTime)
-	bm.logger.Printf("Backup completed successfully, entries: %d, version: %s, duration: %v, object: %s",
-		len(entries), currentVersion, duration, objectName)
+	bm.logger.Info("Backup completed successfully", zap.Int("entries", len(entries)), zap.String("version", currentVersion), zap.Duration("duration", duration), zap.String("object", objectName))
 
 	return nil
 }
@@ -380,28 +379,28 @@ func (bm *BackupManager) collectMetadata() ([]*MetadataEntry, error) {
 
 	// 收集服务注册信息
 	if serviceEntries, err := bm.collectServiceRegistry(ctx, redisClient); err != nil {
-		bm.logger.Printf("Failed to collect service registry: %v", err)
+		bm.logger.Error("Failed to collect service registry", zap.Error(err))
 	} else {
 		entries = append(entries, serviceEntries...)
 	}
 
 	// 收集数据索引
 	if indexEntries, err := bm.collectDataIndex(ctx, redisClient); err != nil {
-		bm.logger.Printf("Failed to collect data index: %v", err)
+		bm.logger.Error("Failed to collect data index", zap.Error(err))
 	} else {
 		entries = append(entries, indexEntries...)
 	}
 
 	// 收集表结构信息
 	if schemaEntries, err := bm.collectTableSchema(ctx, redisClient); err != nil {
-		bm.logger.Printf("Failed to collect table schema: %v", err)
+		bm.logger.Error("Failed to collect table schema", zap.Error(err))
 	} else {
 		entries = append(entries, schemaEntries...)
 	}
 
 	// 收集集群信息
 	if clusterEntries, err := bm.collectClusterInfo(ctx, redisClient); err != nil {
-		bm.logger.Printf("Failed to collect cluster info: %v", err)
+		bm.logger.Error("Failed to collect cluster info", zap.Error(err))
 	} else {
 		entries = append(entries, clusterEntries...)
 	}
@@ -581,7 +580,7 @@ func (bm *BackupManager) cleanupLoop() {
 			return
 		case <-ticker.C:
 			if err := bm.cleanupOldBackups(); err != nil {
-				bm.logger.Printf("Cleanup failed: %v", err)
+				bm.logger.Error("Cleanup failed", zap.Error(err))
 			}
 		}
 	}
@@ -622,9 +621,9 @@ func (bm *BackupManager) cleanupOldBackups() error {
 			}
 
 			if deleteErr != nil {
-				bm.logger.Printf("Failed to delete expired backup %s: %v", obj.Name, deleteErr)
+				bm.logger.Error("Failed to delete expired backup", zap.String("object_name", obj.Name), zap.Error(deleteErr))
 			} else {
-				bm.logger.Printf("Deleted expired backup: %s", obj.Name)
+				bm.logger.Info("Deleted expired backup", zap.String("object_name", obj.Name))
 			}
 		}
 	}

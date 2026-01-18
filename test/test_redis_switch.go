@@ -1,25 +1,26 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"minIODB/pkg/logger"
 
 	"minIODB/config"
 	"minIODB/internal/discovery"
+
+	"go.uber.org/zap"
 )
 
 func main() {
-	fmt.Println("=== Redis开关功能测试 ===")
+	logger.Logger.Info("=== Redis开关功能测试 ===")
 
 	// 测试1: Redis启用的情况
-	fmt.Println("\n1. 测试Redis启用的情况:")
+	logger.Logger.Info("\n1. 测试Redis启用的情况:")
 	testRedisEnabled()
 
 	// 测试2: Redis禁用的情况
-	fmt.Println("\n2. 测试Redis禁用的情况:")
+	logger.Logger.Info("\n2. 测试Redis禁用的情况:")
 	testRedisDisabled()
 
-	fmt.Println("\n=== 测试完成 ===")
+	logger.Logger.Info("\n=== 测试完成 ===")
 }
 
 func testRedisEnabled() {
@@ -51,35 +52,34 @@ func testRedisEnabled() {
 
 	registry, err := discovery.NewServiceRegistry(cfg, "test-node-1", "50051")
 	if err != nil {
-		log.Printf("  ❌ 创建服务注册器失败: %v", err)
+		logger.Logger.Error("  ❌ 创建服务注册器失败", zap.Error(err))
 		return
 	}
 
-	fmt.Println("  ✅ 服务注册器创建成功（Redis启用）")
+	logger.Logger.Info("  ✅ 服务注册器创建成功（Redis启用）")
 
 	// 启动服务注册
 	if err := registry.Start(); err != nil {
-		log.Printf("  ❌ 启动服务注册失败: %v", err)
+		logger.Logger.Error("  ❌ 启动服务注册失败", zap.Error(err))
 		return
 	}
 
-	fmt.Println("  ✅ 服务注册启动成功")
+	logger.Logger.Info("  ✅ 服务注册启动成功")
 
 	// 测试服务发现
 	services, err := registry.DiscoverNodes()
 	if err != nil {
-		log.Printf("  ❌ 服务发现失败: %v", err)
+		logger.Logger.Error("  ❌ 服务发现失败", zap.Error(err))
 	} else {
-		fmt.Printf("  ✅ 发现服务数量: %d\n", len(services))
+		logger.Logger.Info("  ✅ 发现服务数量", zap.Int("count", len(services)))
 		for _, service := range services {
-			fmt.Printf("    - 节点ID: %s, 地址: %s, 状态: %s\n",
-				service.NodeID, service.Address, service.Status)
+			logger.Logger.Info("    - 节点ID", zap.String("node_id", service.NodeID), zap.String("address", service.Address), zap.String("status", service.Status))
 		}
 	}
 
 	// 停止服务注册
 	registry.Stop()
-	fmt.Println("  ✅ 服务注册已停止")
+	logger.Logger.Info("  ✅ 服务注册已停止")
 }
 
 func testRedisDisabled() {
@@ -111,41 +111,40 @@ func testRedisDisabled() {
 
 	registry, err := discovery.NewServiceRegistry(cfg, "test-node-2", "50052")
 	if err != nil {
-		log.Printf("  ❌ 创建服务注册器失败: %v", err)
+		logger.Logger.Error("  ❌ 创建服务注册器失败", zap.Error(err))
 		return
 	}
 
-	fmt.Println("  ✅ 服务注册器创建成功（Redis禁用）")
+	logger.Logger.Info("  ✅ 服务注册器创建成功（Redis禁用）")
 
 	// 启动服务注册
 	if err := registry.Start(); err != nil {
-		log.Printf("  ❌ 启动服务注册失败: %v", err)
+		logger.Logger.Error("  ❌ 启动服务注册失败", zap.Error(err))
 		return
 	}
 
-	fmt.Println("  ✅ 服务注册启动成功（单节点模式）")
+	logger.Logger.Info("  ✅ 服务注册启动成功（单节点模式）")
 
 	// 测试服务发现
 	services, err := registry.DiscoverNodes()
 	if err != nil {
-		log.Printf("  ❌ 服务发现失败: %v", err)
+		logger.Logger.Error("  ❌ 服务发现失败", zap.Error(err))
 	} else {
-		fmt.Printf("  ✅ 发现服务数量: %d（单节点模式）\n", len(services))
+		logger.Logger.Info("  ✅ 发现服务数量", zap.Int("count", len(services)))
 		for _, service := range services {
-			fmt.Printf("    - 节点ID: %s, 地址: %s, 状态: %s, 模式: %s\n",
-				service.NodeID, service.Address, service.Status, service.Metadata["mode"])
+			logger.Logger.Info("    - 节点ID", zap.String("node_id", service.NodeID), zap.String("address", service.Address), zap.String("status", service.Status), zap.String("mode", service.Metadata["mode"]))
 		}
 	}
 
 	// 测试节点健康检查
 	isHealthy := registry.IsNodeHealthy("test-node-2")
-	fmt.Printf("  ✅ 节点健康状态: %v\n", isHealthy)
+	logger.Logger.Info("  ✅ 节点健康状态", zap.Bool("is_healthy", isHealthy))
 
 	// 测试获取节点（一致性哈希）
 	nodeID := registry.GetNodeForKey("test-key")
-	fmt.Printf("  ✅ 键 'test-key' 分配到节点: %s\n", nodeID)
+	logger.Logger.Info("  ✅ 键 'test-key' 分配到节点", zap.String("node_id", nodeID))
 
 	// 停止服务注册
 	registry.Stop()
-	fmt.Println("  ✅ 服务注册已停止")
+	logger.Logger.Info("  ✅ 服务注册已停止")
 }

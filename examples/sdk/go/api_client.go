@@ -18,9 +18,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	"minIODB/pkg/logger"
+	"os"
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -87,7 +89,7 @@ func (c *MinioDBClient) WriteData(ctx context.Context, table string, id string, 
 		return fmt.Errorf("write failed: %s", resp.Message)
 	}
 
-	log.Printf("✓ Data written successfully to table '%s', ID: %s, Node: %s", table, id, resp.NodeId)
+	logger.Logger.Info("Data written successfully to table", zap.String("table", table), zap.String("id", id), zap.String("node", resp.NodeId))
 	return nil
 }
 
@@ -108,7 +110,7 @@ func (c *MinioDBClient) QueryData(ctx context.Context, sql string, limit int32) 
 		return nil, fmt.Errorf("failed to parse query result: %w", err)
 	}
 
-	log.Printf("✓ Query executed successfully, has_more: %v", resp.HasMore)
+	logger.Logger.Info("Query executed successfully", zap.Bool("has_more", resp.HasMore))
 	return result, nil
 }
 
@@ -135,7 +137,7 @@ func (c *MinioDBClient) UpdateData(ctx context.Context, table string, id string,
 		return fmt.Errorf("update failed: %s", resp.Message)
 	}
 
-	log.Printf("✓ Data updated successfully, ID: %s", id)
+	logger.Logger.Info("Data updated successfully", zap.String("id", id))
 	return nil
 }
 
@@ -156,7 +158,7 @@ func (c *MinioDBClient) DeleteData(ctx context.Context, table string, id string)
 		return 0, fmt.Errorf("delete failed: %s", resp.Message)
 	}
 
-	log.Printf("✓ Data deleted successfully, deleted_count: %d", resp.DeletedCount)
+	logger.Logger.Info("Data deleted successfully", zap.Int32("deleted_count", resp.DeletedCount))
 	return resp.DeletedCount, nil
 }
 
@@ -188,7 +190,7 @@ func (c *MinioDBClient) StreamWrite(ctx context.Context, table string, records [
 			return 0, fmt.Errorf("failed to send batch: %w", err)
 		}
 
-		log.Printf("  Sent batch %d-%d", i, end-1)
+		logger.Logger.Info("Sent batch", zap.Int("start", i), zap.Int("end", end-1))
 	}
 
 	// 获取最终响应
@@ -197,7 +199,7 @@ func (c *MinioDBClient) StreamWrite(ctx context.Context, table string, records [
 		return 0, fmt.Errorf("failed to receive response: %w", err)
 	}
 
-	log.Printf("✓ Stream write completed: %d records, %d errors", resp.RecordsCount, len(resp.Errors))
+	logger.Logger.Info("Stream write completed", zap.Int64("records_count", resp.RecordsCount), zap.Int("errors_count", len(resp.Errors)))
 	return resp.RecordsCount, nil
 }
 
@@ -222,15 +224,14 @@ func (c *MinioDBClient) StreamQuery(ctx context.Context, sql string, batchSize i
 		}
 
 		allRecords = append(allRecords, resp.Records...)
-		log.Printf("  Received batch: %d records, has_more: %v, cursor: %s",
-			len(resp.Records), resp.HasMore, resp.Cursor)
+		logger.Logger.Info("Received batch", zap.Int("records_count", len(resp.Records)), zap.Bool("has_more", resp.HasMore), zap.String("cursor", resp.Cursor))
 
 		if !resp.HasMore {
 			break
 		}
 	}
 
-	log.Printf("✓ Stream query completed: %d total records", len(allRecords))
+	logger.Logger.Info("Stream query completed", zap.Int("total_records", len(allRecords)))
 	return allRecords, nil
 }
 
@@ -255,7 +256,7 @@ func (c *MinioDBClient) CreateTable(ctx context.Context, tableName string, confi
 		return fmt.Errorf("create table failed: %s", resp.Message)
 	}
 
-	log.Printf("✓ Table '%s' created successfully", tableName)
+	logger.Logger.Info("Table created successfully", zap.String("table", tableName))
 	return nil
 }
 
@@ -270,7 +271,7 @@ func (c *MinioDBClient) ListTables(ctx context.Context, pattern string) ([]*mini
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
 
-	log.Printf("✓ Listed %d tables", resp.Total)
+	logger.Logger.Info("Listed tables", zap.Int32("total", resp.Total))
 	return resp.Tables, nil
 }
 
@@ -285,7 +286,7 @@ func (c *MinioDBClient) GetTable(ctx context.Context, tableName string) (*miniod
 		return nil, fmt.Errorf("failed to get table info: %w", err)
 	}
 
-	log.Printf("✓ Got table info for '%s'", tableName)
+	logger.Logger.Info("Got table info", zap.String("table", tableName))
 	return resp.TableInfo, nil
 }
 
@@ -306,7 +307,7 @@ func (c *MinioDBClient) DeleteTable(ctx context.Context, tableName string) (int3
 		return 0, fmt.Errorf("delete table failed: %s", resp.Message)
 	}
 
-	log.Printf("✓ Table '%s' deleted successfully, files deleted: %d", tableName, resp.FilesDeleted)
+	logger.Logger.Info("Table deleted successfully", zap.String("table", tableName), zap.Int32("files_deleted", resp.FilesDeleted))
 	return resp.FilesDeleted, nil
 }
 
@@ -329,7 +330,7 @@ func (c *MinioDBClient) BackupMetadata(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("backup failed: %s", resp.Message)
 	}
 
-	log.Printf("✓ Metadata backed up successfully, ID: %s", resp.BackupId)
+	logger.Logger.Info("Metadata backed up successfully", zap.String("id", resp.BackupId))
 	return resp.BackupId, nil
 }
 
@@ -352,8 +353,7 @@ func (c *MinioDBClient) RestoreMetadata(ctx context.Context, fromLatest bool) er
 		return fmt.Errorf("restore failed: %s", resp.Message)
 	}
 
-	log.Printf("✓ Metadata restored successfully: total=%d, ok=%d, skipped=%d, errors=%d",
-		resp.EntriesTotal, resp.EntriesOk, resp.EntriesSkipped, resp.EntriesError)
+	logger.Logger.Info("Metadata restored successfully", zap.Int32("total", resp.EntriesTotal), zap.Int32("ok", resp.EntriesOk), zap.Int32("skipped", resp.EntriesSkipped), zap.Int32("errors", resp.EntriesError))
 	return nil
 }
 
@@ -368,7 +368,7 @@ func (c *MinioDBClient) ListBackups(ctx context.Context, days int32) ([]*miniodb
 		return nil, fmt.Errorf("failed to list backups: %w", err)
 	}
 
-	log.Printf("✓ Listed %d backups", resp.Total)
+	logger.Logger.Info("Listed backups", zap.Int32("total", resp.Total))
 	return resp.Backups, nil
 }
 
@@ -384,7 +384,7 @@ func (c *MinioDBClient) HealthCheck(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("health check failed: %w", err)
 	}
 
-	log.Printf("✓ Health check: status=%s, version=%s", resp.Status, resp.Version)
+	logger.Logger.Info("Health check", zap.String("status", resp.Status), zap.String("version", resp.Version))
 	return resp.Status, nil
 }
 
@@ -396,7 +396,7 @@ func (c *MinioDBClient) GetStatus(ctx context.Context) (*miniodb.GetStatusRespon
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 
-	log.Printf("✓ Got status: total_nodes=%d", resp.TotalNodes)
+	logger.Logger.Info("Got status", zap.Int32("total_nodes", resp.TotalNodes))
 	return resp, nil
 }
 
@@ -413,23 +413,21 @@ func main() {
 	// 创建客户端
 	client, err := NewMinioDBClient(*addr)
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		logger.Logger.Error("Failed to create client", zap.Error(err))
+		os.Exit(1)
 	}
 	defer client.Close()
 
-	log.Println("========================================")
-	log.Println("MinIODB Go gRPC Client Example")
-	log.Printf("Server: %s\n", *addr)
-	log.Println("========================================")
+	logger.Logger.Info("MinIODB Go gRPC Client Example", zap.String("server", *addr))
 
 	// 1. 健康检查
-	log.Println("\n--- Health Check ---")
+	logger.Logger.Info("--- Health Check ---")
 	if _, err := client.HealthCheck(ctx); err != nil {
-		log.Printf("Health check failed: %v", err)
+		logger.Logger.Error("Health check failed", zap.Error(err))
 	}
 
 	// 2. 创建表
-	log.Println("\n--- Create Table ---")
+	logger.Logger.Info("--- Create Table ---")
 	tableName := "users"
 	config := &miniodb.TableConfig{
 		BufferSize:           1000,
@@ -444,11 +442,11 @@ func main() {
 		},
 	}
 	if err := client.CreateTable(ctx, tableName, config); err != nil {
-		log.Printf("Create table failed (may already exist): %v", err)
+		logger.Logger.Error("Create table failed (may already exist)", zap.Error(err))
 	}
 
 	// 3. 写入数据
-	log.Println("\n--- Write Data ---")
+	logger.Logger.Info("--- Write Data ---")
 	for i := 0; i < 5; i++ {
 		payload := map[string]interface{}{
 			"name":       fmt.Sprintf("User %d", i),
@@ -459,39 +457,39 @@ func main() {
 		}
 		recordID := fmt.Sprintf("user_%d", i)
 		if err := client.WriteData(ctx, tableName, recordID, payload); err != nil {
-			log.Printf("Write failed: %v", err)
+			logger.Logger.Error("Write failed", zap.Error(err))
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	// 4. 查询数据
-	log.Println("\n--- Query Data ---")
+	logger.Logger.Info("--- Query Data ---")
 	result, err := client.QueryData(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 3", tableName), 3)
 	if err != nil {
-		log.Printf("Query failed: %v", err)
+		logger.Logger.Error("Query failed", zap.Error(err))
 	} else {
 		jsonData, _ := json.MarshalIndent(result, "", "  ")
-		log.Printf("Query result:\n%s", string(jsonData))
+		logger.Logger.Info("Query result", zap.String("result", string(jsonData)))
 	}
 
 	// 5. 更新数据
-	log.Println("\n--- Update Data ---")
+	logger.Logger.Info("--- Update Data ---")
 	updatePayload := map[string]interface{}{
 		"name":       "Updated User 0",
 		"updated_at": time.Now().Format(time.RFC3339),
 	}
 	if err := client.UpdateData(ctx, tableName, "user_0", updatePayload); err != nil {
-		log.Printf("Update failed: %v", err)
+		logger.Logger.Error("Update failed", zap.Error(err))
 	}
 
 	// 6. 删除数据
-	log.Println("\n--- Delete Data ---")
+	logger.Logger.Info("--- Delete Data ---")
 	if _, err := client.DeleteData(ctx, tableName, "user_4"); err != nil {
-		log.Printf("Delete failed: %v", err)
+		logger.Logger.Error("Delete failed", zap.Error(err))
 	}
 
 	// 7. 流式写入
-	log.Println("\n--- Stream Write ---")
+	logger.Logger.Info("--- Stream Write ---")
 	var streamRecords []*miniodb.DataRecord
 	for i := 10; i < 20; i++ {
 		payload, _ := structpb.NewStruct(map[string]interface{}{
@@ -506,57 +504,57 @@ func main() {
 		})
 	}
 	if _, err := client.StreamWrite(ctx, tableName, streamRecords); err != nil {
-		log.Printf("Stream write failed: %v", err)
+		logger.Logger.Error("Stream write failed", zap.Error(err))
 	}
 
 	// 8. 列出表
-	log.Println("\n--- List Tables ---")
+	logger.Logger.Info("--- List Tables ---")
 	tables, err := client.ListTables(ctx, "*")
 	if err != nil {
-		log.Printf("List tables failed: %v", err)
+		logger.Logger.Error("List tables failed", zap.Error(err))
 	} else {
 		for _, t := range tables {
-			log.Printf("  - Table: %s, Status: %s", t.Name, t.Status)
+			logger.Logger.Info("Table", zap.String("name", t.Name), zap.String("status", t.Status))
 		}
 	}
 
 	// 9. 获取表信息
-	log.Println("\n--- Get Table Info ---")
+	logger.Logger.Info("--- Get Table Info ---")
 	tableInfo, err := client.GetTable(ctx, tableName)
 	if err != nil {
-		log.Printf("Get table info failed: %v", err)
+		logger.Logger.Error("Get table info failed", zap.Error(err))
 	} else {
 		if tableInfo.Stats != nil {
-			log.Printf("  - Record count: %d", tableInfo.Stats.RecordCount)
-			log.Printf("  - File count: %d", tableInfo.Stats.FileCount)
-			log.Printf("  - Size: %d bytes", tableInfo.Stats.SizeBytes)
+			logger.Logger.Info("Record count", zap.Int64("count", tableInfo.Stats.RecordCount))
+			logger.Logger.Info("File count", zap.Int64("count", tableInfo.Stats.FileCount))
+			logger.Logger.Info("Size", zap.Int64("size", tableInfo.Stats.SizeBytes))
 		}
 	}
 
 	// 10. 获取状态
-	log.Println("\n--- Get Status ---")
+	logger.Logger.Info("--- Get Status ---")
 	status, err := client.GetStatus(ctx)
 	if err != nil {
-		log.Printf("Get status failed: %v", err)
+		logger.Logger.Error("Get status failed", zap.Error(err))
 	} else {
-		log.Printf("  - Total nodes: %d", status.TotalNodes)
-		log.Printf("  - Buffer stats: %v", status.BufferStats)
-		log.Printf("  - Redis stats: %v", status.RedisStats)
+		logger.Logger.Info("Total nodes", zap.Int32("total", status.TotalNodes))
+		logger.Logger.Info("Buffer stats", zap.Any("stats", status.BufferStats))
+		logger.Logger.Info("Redis stats", zap.Any("stats", status.RedisStats))
 	}
 
 	// 11. 列出备份
-	log.Println("\n--- List Backups ---")
+	logger.Logger.Info("--- List Backups ---")
 	backups, err := client.ListBackups(ctx, 30)
 	if err != nil {
-		log.Printf("List backups failed: %v", err)
+		logger.Logger.Error("List backups failed", zap.Error(err))
 	} else {
-		log.Printf("  Found %d backups in the last 30 days", len(backups))
+		logger.Logger.Info("Found backups", zap.Int("count", len(backups)))
 		for _, b := range backups {
-			log.Printf("  - Backup: %s, Size: %d, Node: %s", b.ObjectName, b.Size, b.NodeId)
+			logger.Logger.Info("Backup", zap.String("name", b.ObjectName), zap.Int64("size", b.Size), zap.String("node", b.NodeId))
 		}
 	}
 
-	log.Println("\n========================================")
-	log.Println("Example completed successfully!")
-	log.Println("========================================")
+	logger.Logger.Info("========================================")
+	logger.Logger.Info("Example completed successfully!")
+	logger.Logger.Info("========================================")
 }

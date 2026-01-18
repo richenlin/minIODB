@@ -15,7 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	"minIODB/pkg/logger"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,6 +24,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -350,7 +351,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("Received shutdown signal")
+		logger.Logger.Info("Received shutdown signal")
 		cancel()
 	}()
 
@@ -362,88 +363,94 @@ func main() {
 	case "grpc":
 		runGRPCExample(ctx, *grpcAddr, *table, *count)
 	default:
-		log.Fatalf("Unknown mode: %s", *mode)
+		logger.Logger.Error("Unknown mode", zap.String("mode", *mode))
+		os.Exit(1)
 	}
 }
 
 func runRedisExample(ctx context.Context, addr, password, table string, count int, batch bool) {
-	log.Printf("Connecting to Redis at %s...", addr)
+	logger.Logger.Info("Connecting to Redis", zap.String("addr", addr))
 
 	client, err := NewRedisStreamClient(addr, password, 0, "miniodb:stream:")
 	if err != nil {
-		log.Fatalf("Failed to create Redis client: %v", err)
+		logger.Logger.Error("Failed to create Redis client", zap.Error(err))
+		os.Exit(1)
 	}
 	defer client.Close()
 
-	log.Printf("Connected to Redis. Publishing %d events to table '%s'...", count, table)
+	logger.Logger.Info("Connected to Redis", zap.Int("count", count), zap.String("table", table))
 
 	if batch {
 		// 批量发送
 		events := generateEvents(table, count)
 		start := time.Now()
 		if err := client.PublishBatch(ctx, events); err != nil {
-			log.Fatalf("Failed to publish batch: %v", err)
+			logger.Logger.Error("Failed to publish batch", zap.Error(err))
+			os.Exit(1)
 		}
-		log.Printf("Published %d events in batch mode in %v", count, time.Since(start))
+		logger.Logger.Info("Published events in batch mode", zap.Int("count", count), zap.Duration("duration", time.Since(start)))
 	} else {
 		// 逐条发送
 		for i := 0; i < count; i++ {
 			event := generateEvent(table, i)
 			if err := client.Publish(ctx, event); err != nil {
-				log.Printf("Failed to publish event %d: %v", i, err)
+				logger.Logger.Error("Failed to publish event", zap.Int("index", i), zap.Error(err))
 				continue
 			}
-			log.Printf("Published event %d: %s", i+1, event.EventID)
+			logger.Logger.Info("Published event", zap.Int("index", i+1), zap.String("event_id", event.EventID))
 		}
 	}
 
-	log.Println("Done!")
+	logger.Logger.Info("Done!")
 }
 
 func runKafkaExample(ctx context.Context, brokers, table string, count int, batch bool) {
-	log.Printf("Connecting to Kafka at %s...", brokers)
+	logger.Logger.Info("Connecting to Kafka", zap.String("brokers", brokers))
 
 	client, err := NewKafkaClient([]string{brokers}, "miniodb-")
 	if err != nil {
-		log.Fatalf("Failed to create Kafka client: %v", err)
+		logger.Logger.Error("Failed to create Kafka client", zap.Error(err))
+		os.Exit(1)
 	}
 	defer client.Close()
 
-	log.Printf("Connected to Kafka. Publishing %d events to table '%s'...", count, table)
+	logger.Logger.Info("Connected to Kafka", zap.Int("count", count), zap.String("table", table))
 
 	if batch {
 		// 批量发送
 		events := generateEvents(table, count)
 		start := time.Now()
 		if err := client.PublishBatch(ctx, events); err != nil {
-			log.Fatalf("Failed to publish batch: %v", err)
+			logger.Logger.Error("Failed to publish batch", zap.Error(err))
+			os.Exit(1)
 		}
-		log.Printf("Published %d events in batch mode in %v", count, time.Since(start))
+		logger.Logger.Info("Published events in batch mode", zap.Int("count", count), zap.Duration("duration", time.Since(start)))
 	} else {
 		// 逐条发送
 		for i := 0; i < count; i++ {
 			event := generateEvent(table, i)
 			if err := client.Publish(ctx, event); err != nil {
-				log.Printf("Failed to publish event %d: %v", i, err)
+				logger.Logger.Error("Failed to publish event", zap.Int("index", i), zap.Error(err))
 				continue
 			}
-			log.Printf("Published event %d: %s", i+1, event.EventID)
+			logger.Logger.Info("Published event", zap.Int("index", i+1), zap.String("event_id", event.EventID))
 		}
 	}
 
-	log.Println("Done!")
+	logger.Logger.Info("Done!")
 }
 
 func runGRPCExample(ctx context.Context, addr, table string, count int) {
-	log.Printf("Connecting to gRPC server at %s...", addr)
+	logger.Logger.Info("Connecting to gRPC server", zap.String("addr", addr))
 
 	client, err := NewGRPCClient(addr)
 	if err != nil {
-		log.Fatalf("Failed to create gRPC client: %v", err)
+		logger.Logger.Error("Failed to create gRPC client", zap.Error(err))
+		os.Exit(1)
 	}
 	defer client.Close()
 
-	log.Printf("Connected to gRPC server. Writing %d records to table '%s'...", count, table)
+	logger.Logger.Info("Connected to gRPC server", zap.Int("count", count), zap.String("table", table))
 
 	for i := 0; i < count; i++ {
 		record := DataRecord{
@@ -458,13 +465,13 @@ func runGRPCExample(ctx context.Context, addr, table string, count int) {
 		}
 
 		if err := client.WriteData(ctx, table, record); err != nil {
-			log.Printf("Failed to write record %d: %v", i, err)
+			logger.Logger.Error("Failed to write record", zap.Int("index", i), zap.Error(err))
 			continue
 		}
-		log.Printf("Written record %d: %s", i+1, record.ID)
+		logger.Logger.Info("Written record", zap.Int("index", i+1), zap.String("record_id", record.ID))
 	}
 
-	log.Println("Done!")
+	logger.Logger.Info("Done!")
 }
 
 func generateEvent(table string, index int) *DataEvent {

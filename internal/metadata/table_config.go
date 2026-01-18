@@ -1,15 +1,16 @@
 package metadata
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"encoding/json"
 	"fmt"
+	"minIODB/pkg/logger"
 	"time"
 
 	"minIODB/config"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // TableConfigMetadata 表配置元数据
@@ -71,7 +72,7 @@ func (m *Manager) SaveTableConfig(ctx context.Context, tableName string, tableCo
 		logger.GetLogger().Sugar().Infof("WARN: Failed to add table to config list: %v", err)
 	}
 
-	m.logger.Printf("Saved table config for table: %s", tableName)
+	m.logger.Info("Saved table config for table", zap.String("table_name", tableName))
 	return nil
 }
 
@@ -132,7 +133,7 @@ func (m *Manager) DeleteTableConfig(ctx context.Context, tableName string) error
 		logger.GetLogger().Sugar().Infof("WARN: Failed to remove table from config list: %v", err)
 	}
 
-	m.logger.Printf("Deleted table config for table: %s", tableName)
+	m.logger.Info("Deleted table config for table", zap.String("table_name", tableName))
 	return nil
 }
 

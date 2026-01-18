@@ -5,7 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"log"
+	"minIODB/pkg/logger"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +15,7 @@ import (
 	"minIODB/internal/storage"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // Config 元数据管理器配置
@@ -43,7 +44,7 @@ type Manager struct {
 	cacheStorage    storage.CacheStorage
 	backupManager   *BackupManager
 	recoveryManager *RecoveryManager
-	logger          *log.Logger
+	logger          *zap.Logger
 	config          *Config
 	nodeID          string
 	mutex           sync.RWMutex
@@ -51,7 +52,6 @@ type Manager struct {
 
 // NewManager 创建新的元数据管理器
 func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, config *Config) *Manager {
-	logger := log.New(os.Stdout, "[MetadataManager] ", log.LstdFlags)
 
 	// 生成或获取节点ID
 	nodeID := generateNodeID()
@@ -59,7 +59,7 @@ func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, conf
 	manager := &Manager{
 		storage:      storage,
 		cacheStorage: cacheStorage,
-		logger:       logger,
+		logger:       logger.GetLogger(),
 		config:       config,
 		nodeID:       nodeID,
 	}
@@ -90,7 +90,7 @@ func (m *Manager) Start() error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	m.logger.Println("Starting metadata manager")
+	m.logger.Info("Starting metadata manager")
 
 	// 执行启动时同步检查（不阻塞启动过程）
 	go m.performStartupSync()
@@ -100,7 +100,7 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("failed to start backup manager: %w", err)
 	}
 
-	m.logger.Println("Metadata manager started successfully")
+	m.logger.Info("Metadata manager started successfully")
 	return nil
 }
 
@@ -109,17 +109,17 @@ func (m *Manager) performStartupSync() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // 增加超时时间
 	defer cancel()
 
-	m.logger.Printf("Starting enhanced startup synchronization check")
+	m.logger.Info("Starting enhanced startup synchronization check")
 
 	// 获取分布式锁，防止多节点并发执行
 	lockKey := "metadata:sync:lock"
 	lockAcquired, err := m.acquireDistributedLock(ctx, lockKey, 30*time.Second)
 	if err != nil {
-		m.logger.Printf("Failed to acquire sync lock: %v", err)
+		m.logger.Error("Failed to acquire sync lock", zap.Error(err))
 		return
 	}
 	if !lockAcquired {
-		m.logger.Printf("Another node is performing sync, skipping")
+		m.logger.Info("Another node is performing sync, skipping")
 		return
 	}
 	defer m.releaseDistributedLock(ctx, lockKey)
@@ -127,48 +127,47 @@ func (m *Manager) performStartupSync() {
 	// 获取版本信息（增强版）
 	versionInfo, err := m.getEnhancedVersionInfo(ctx)
 	if err != nil {
-		m.logger.Printf("Failed to get version info: %v", err)
+		m.logger.Error("Failed to get version info", zap.Error(err))
 		return
 	}
 
-	m.logger.Printf("Version info - Redis: %s, Latest Backup: %s, Status: %s",
-		versionInfo.RedisVersion, versionInfo.BackupVersion, versionInfo.Status)
+	m.logger.Info("Version info", zap.String("redis_version", versionInfo.RedisVersion), zap.String("backup_version", versionInfo.BackupVersion), zap.String("status", versionInfo.Status))
 
 	// 根据版本状态执行相应操作
 	switch versionInfo.Status {
 	case "redis_newer":
-		m.logger.Printf("Redis version is newer, performing backup")
+		m.logger.Info("Redis version is newer, performing backup")
 		if err := m.performSafeBackup(ctx, versionInfo); err != nil {
-			m.logger.Printf("Safe backup failed: %v", err)
+			m.logger.Error("Safe backup failed", zap.Error(err))
 		}
 
 	case "backup_newer":
-		m.logger.Printf("Backup version is newer, performing recovery")
+		m.logger.Info("Backup version is newer, performing recovery")
 		if err := m.performSafeRecovery(ctx, versionInfo); err != nil {
-			m.logger.Printf("Safe recovery failed: %v", err)
+			m.logger.Error("Safe recovery failed", zap.Error(err))
 		}
 
 	case "versions_equal":
-		m.logger.Printf("Versions are equal, performing consistency check")
+		m.logger.Info("Versions are equal, performing consistency check")
 		if err := m.performEnhancedConsistencyCheck(ctx, versionInfo); err != nil {
-			m.logger.Printf("Enhanced consistency check failed: %v", err)
+			m.logger.Error("Enhanced consistency check failed", zap.Error(err))
 		}
 
 	case "version_conflict":
-		m.logger.Printf("Version conflict detected, manual intervention required")
+		m.logger.Info("Version conflict detected, manual intervention required")
 		m.handleVersionConflict(ctx, versionInfo)
 
 	case "redis_version_lost":
-		m.logger.Printf("Redis version lost, attempting recovery from backup metadata")
+		m.logger.Info("Redis version lost, attempting recovery from backup metadata")
 		if err := m.recoverVersionFromBackup(ctx, versionInfo); err != nil {
-			m.logger.Printf("Version recovery failed: %v", err)
+			m.logger.Error("Version recovery failed", zap.Error(err))
 		}
 
 	default:
-		m.logger.Printf("Unknown version status: %s", versionInfo.Status)
+		m.logger.Info("Unknown version status", zap.String("status", versionInfo.Status))
 	}
 
-	m.logger.Printf("Enhanced startup synchronization check completed")
+	m.logger.Info("Enhanced startup synchronization check completed")
 }
 
 // VersionInfo 增强的版本信息
@@ -525,7 +524,7 @@ func (m *Manager) compareVersions(v1, v2 string) int {
 
 // performConsistencyCheck 执行一致性检查
 func (m *Manager) performConsistencyCheck(ctx context.Context, latestBackup *BackupInfo) error {
-	m.logger.Printf("Performing consistency check with backup: %s", latestBackup.ObjectName)
+	m.logger.Info("Performing consistency check with backup", zap.String("backup_object_name", latestBackup.ObjectName))
 
 	// 验证备份文件
 	if err := m.recoveryManager.ValidateBackup(ctx, latestBackup.ObjectName); err != nil {
@@ -559,15 +558,15 @@ func (m *Manager) performConsistencyCheck(ctx context.Context, latestBackup *Bac
 	inconsistencies := m.compareMetadata(currentMetadata, snapshot.Entries)
 
 	if len(inconsistencies) > 0 {
-		m.logger.Printf("Found %d inconsistencies during consistency check", len(inconsistencies))
+		m.logger.Info("Found inconsistencies during consistency check", zap.Int("inconsistencies_found", len(inconsistencies)))
 		for _, inconsistency := range inconsistencies {
-			m.logger.Printf("Inconsistency: %s", inconsistency)
+			m.logger.Info("Inconsistency", zap.String("inconsistency", inconsistency))
 		}
 
 		// 可以选择是否自动修复不一致的数据
 		// 这里先记录日志，不自动修复
 	} else {
-		m.logger.Printf("Consistency check passed: no inconsistencies found")
+		m.logger.Info("Consistency check passed: no inconsistencies found")
 	}
 
 	return nil
@@ -628,14 +627,14 @@ func (m *Manager) Stop() error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	m.logger.Println("Stopping metadata manager")
+	m.logger.Info("Stopping metadata manager")
 
 	// 停止备份管理器
 	if err := m.backupManager.Stop(); err != nil {
-		m.logger.Printf("Error stopping backup manager: %v", err)
+		m.logger.Error("Error stopping backup manager", zap.Error(err))
 	}
 
-	m.logger.Println("Metadata manager stopped")
+	m.logger.Info("Metadata manager stopped")
 	return nil
 }
 
@@ -644,7 +643,7 @@ func (m *Manager) ManualBackup(ctx context.Context) error {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	m.logger.Println("Starting manual backup")
+	m.logger.Info("Starting manual backup")
 	return m.backupManager.performBackup()
 }
 
@@ -661,7 +660,7 @@ func (m *Manager) RecoverFromLatest(ctx context.Context, options RecoveryOptions
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	m.logger.Println("Starting recovery from latest backup")
+	m.logger.Info("Starting recovery from latest backup")
 	return m.recoveryManager.RecoverFromLatest(ctx, options)
 }
 
@@ -670,7 +669,7 @@ func (m *Manager) RecoverFromBackup(ctx context.Context, backupObjectName string
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	m.logger.Printf("Starting recovery from backup: %s", backupObjectName)
+	m.logger.Info("Starting recovery from backup", zap.String("backup_object_name", backupObjectName))
 	return m.recoveryManager.RecoverFromBackup(ctx, backupObjectName, options)
 }
 
@@ -766,7 +765,7 @@ func (m *Manager) TriggerBackup(ctx context.Context) error {
 		return fmt.Errorf("backup manager not initialized")
 	}
 
-	m.logger.Println("Triggering manual backup")
+	m.logger.Info("Triggering manual backup")
 	return m.backupManager.performBackup()
 }
 
@@ -828,7 +827,7 @@ func (m *Manager) ListObjects(ctx context.Context, prefix string) ([]*BackupInfo
 
 // performSafeBackup 执行安全备份
 func (m *Manager) performSafeBackup(ctx context.Context, versionInfo *VersionInfo) error {
-	m.logger.Printf("Performing safe backup with version validation")
+	m.logger.Info("Performing safe backup with version validation")
 
 	// 执行备份前再次验证版本状态
 	currentVersionInfo, err := m.getEnhancedVersionInfo(ctx)
@@ -838,8 +837,7 @@ func (m *Manager) performSafeBackup(ctx context.Context, versionInfo *VersionInf
 
 	// 如果状态发生变化，重新评估
 	if currentVersionInfo.Status != versionInfo.Status {
-		m.logger.Printf("Version status changed during backup preparation: %s -> %s",
-			versionInfo.Status, currentVersionInfo.Status)
+		m.logger.Info("Version status changed during backup preparation", zap.String("status", versionInfo.Status), zap.String("current_status", currentVersionInfo.Status))
 		return fmt.Errorf("version status changed, aborting backup")
 	}
 
@@ -853,13 +851,13 @@ func (m *Manager) performSafeBackup(ctx context.Context, versionInfo *VersionInf
 		return fmt.Errorf("backup validation failed: %w", err)
 	}
 
-	m.logger.Printf("Safe backup completed successfully")
+	m.logger.Info("Safe backup completed successfully")
 	return nil
 }
 
 // performSafeRecovery 执行安全恢复
 func (m *Manager) performSafeRecovery(ctx context.Context, versionInfo *VersionInfo) error {
-	m.logger.Printf("Performing safe recovery with validation")
+	m.logger.Info("Performing safe recovery with validation")
 
 	// 1. 验证备份完整性
 	if err := m.validateBackupIntegrity(ctx, versionInfo.BackupObjectName); err != nil {
@@ -869,7 +867,7 @@ func (m *Manager) performSafeRecovery(ctx context.Context, versionInfo *VersionI
 	// 2. 创建当前数据的安全点
 	snapshotName, err := m.createDataSnapshot(ctx)
 	if err != nil {
-		m.logger.Printf("Warning: failed to create data snapshot: %v", err)
+		m.logger.Error("Warning: failed to create data snapshot", zap.Error(err))
 		// 不阻止恢复，但记录警告
 	}
 
@@ -885,9 +883,9 @@ func (m *Manager) performSafeRecovery(ctx context.Context, versionInfo *VersionI
 	if err != nil {
 		// 如果恢复失败且有快照，尝试回滚
 		if snapshotName != "" {
-			m.logger.Printf("Recovery failed, attempting rollback to snapshot: %s", snapshotName)
+			m.logger.Info("Recovery failed, attempting rollback to snapshot", zap.String("snapshot_name", snapshotName))
 			if rollbackErr := m.rollbackToSnapshot(ctx, snapshotName); rollbackErr != nil {
-				m.logger.Printf("Rollback also failed: %v", rollbackErr)
+				m.logger.Error("Rollback also failed", zap.Error(rollbackErr))
 			}
 		}
 		return fmt.Errorf("recovery failed: %w", err)
@@ -901,23 +899,23 @@ func (m *Manager) performSafeRecovery(ctx context.Context, versionInfo *VersionI
 
 	// 5. 更新版本号和时间戳
 	if err := m.updateVersionAfterRecovery(ctx, versionInfo.BackupVersion); err != nil {
-		m.logger.Printf("Warning: failed to update version after recovery: %v", err)
+		m.logger.Error("Warning: failed to update version after recovery", zap.Error(err))
 	}
 
 	// 6. 清理快照
 	if snapshotName != "" {
 		if err := m.cleanupSnapshot(ctx, snapshotName); err != nil {
-			m.logger.Printf("Warning: failed to cleanup snapshot: %v", err)
+			m.logger.Error("Warning: failed to cleanup snapshot", zap.Error(err))
 		}
 	}
 
-	m.logger.Printf("Safe recovery completed successfully")
+	m.logger.Info("Safe recovery completed successfully")
 	return nil
 }
 
 // performEnhancedConsistencyCheck 执行增强的一致性检查
 func (m *Manager) performEnhancedConsistencyCheck(ctx context.Context, versionInfo *VersionInfo) error {
-	m.logger.Printf("Performing enhanced consistency check")
+	m.logger.Info("Performing enhanced consistency check")
 
 	// 1. 基本一致性检查
 	basicResult, err := m.performBasicConsistencyCheck(ctx, versionInfo.BackupObjectName)
@@ -928,7 +926,7 @@ func (m *Manager) performEnhancedConsistencyCheck(ctx context.Context, versionIn
 	// 2. 深度数据校验
 	deepResult, err := m.performDeepDataValidation(ctx, versionInfo.BackupObjectName)
 	if err != nil {
-		m.logger.Printf("Deep validation failed: %v", err)
+		m.logger.Error("Deep validation failed", zap.Error(err))
 		// 深度校验失败不阻止启动，但记录问题
 	}
 
@@ -967,7 +965,7 @@ func (m *Manager) performEnhancedConsistencyCheck(ctx context.Context, versionIn
 
 	// 7. 根据配置决定是否自动修复
 	if report.OverallStatus == "inconsistent" && m.config.AutoRepair {
-		m.logger.Printf("Auto-repair enabled, attempting to fix inconsistencies")
+		m.logger.Info("Auto-repair enabled, attempting to fix inconsistencies")
 		return m.performAutoRepair(ctx, versionInfo, &report)
 	}
 
@@ -976,8 +974,7 @@ func (m *Manager) performEnhancedConsistencyCheck(ctx context.Context, versionIn
 
 // handleVersionConflict 处理版本冲突
 func (m *Manager) handleVersionConflict(ctx context.Context, versionInfo *VersionInfo) {
-	m.logger.Printf("Handling version conflict - Redis: %s, Backup: %s, Confidence: %.2f",
-		versionInfo.RedisVersion, versionInfo.BackupVersion, versionInfo.Confidence)
+	m.logger.Info("Handling version conflict", zap.String("redis_version", versionInfo.RedisVersion), zap.String("backup_version", versionInfo.BackupVersion), zap.Float64("confidence", versionInfo.Confidence))
 
 	// 记录冲突详情
 	conflictLog := map[string]interface{}{
@@ -989,17 +986,17 @@ func (m *Manager) handleVersionConflict(ctx context.Context, versionInfo *Versio
 		"time_diff_hours":  versionInfo.RedisTimestamp.Sub(versionInfo.BackupTimestamp).Hours(),
 	}
 
-	m.logger.Printf("Version conflict details: %+v", conflictLog)
+	m.logger.Info("Version conflict details", zap.Any("conflict_log", conflictLog))
 
 	// 根据置信度决定处理策略
 	if versionInfo.Confidence >= 0.7 {
-		m.logger.Printf("High confidence conflict, attempting automatic resolution")
+		m.logger.Info("High confidence conflict, attempting automatic resolution")
 		// 高置信度冲突，尝试自动解决
 		if err := m.resolveHighConfidenceConflict(ctx, versionInfo); err != nil {
-			m.logger.Printf("Automatic conflict resolution failed: %v", err)
+			m.logger.Error("Automatic conflict resolution failed", zap.Error(err))
 		}
 	} else {
-		m.logger.Printf("Low confidence conflict, manual intervention recommended")
+		m.logger.Info("Low confidence conflict, manual intervention recommended")
 		// 低置信度冲突，需要人工干预
 		m.createConflictReport(versionInfo)
 	}
@@ -1007,7 +1004,7 @@ func (m *Manager) handleVersionConflict(ctx context.Context, versionInfo *Versio
 
 // recoverVersionFromBackup 从备份中恢复版本信息
 func (m *Manager) recoverVersionFromBackup(ctx context.Context, versionInfo *VersionInfo) error {
-	m.logger.Printf("Attempting to recover version information from backup")
+	m.logger.Info("Attempting to recover version information from backup")
 
 	if versionInfo.BackupVersion == "" {
 		// 没有备份，初始化版本
@@ -1015,7 +1012,7 @@ func (m *Manager) recoverVersionFromBackup(ctx context.Context, versionInfo *Ver
 		if err := m.setCurrentVersion(ctx, initialVersion); err != nil {
 			return fmt.Errorf("failed to initialize version: %w", err)
 		}
-		m.logger.Printf("Initialized version to %s", initialVersion)
+		m.logger.Info("Initialized version", zap.String("version", initialVersion))
 		return nil
 	}
 
@@ -1032,10 +1029,10 @@ func (m *Manager) recoverVersionFromBackup(ctx context.Context, versionInfo *Ver
 
 	if err := client.Set(ctx, "metadata:version:timestamp",
 		versionInfo.BackupTimestamp.Format(time.RFC3339), 0).Err(); err != nil {
-		m.logger.Printf("Warning: failed to set version timestamp: %v", err)
+		m.logger.Error("Warning: failed to set version timestamp", zap.Error(err))
 	}
 
-	m.logger.Printf("Successfully recovered version %s from backup", versionInfo.BackupVersion)
+	m.logger.Info("Successfully recovered version", zap.String("version", versionInfo.BackupVersion))
 	return nil
 }
 
@@ -1101,7 +1098,7 @@ func (m *Manager) createDataSnapshot(ctx context.Context) (string, error) {
 
 	// 这里应该实现实际的快照创建逻辑
 	// 为了简化，我们只是记录快照创建的意图
-	m.logger.Printf("Creating data snapshot: %s", snapshotName)
+	m.logger.Info("Creating data snapshot", zap.String("snapshot_name", snapshotName))
 
 	return snapshotName, nil
 }
@@ -1109,7 +1106,7 @@ func (m *Manager) createDataSnapshot(ctx context.Context) (string, error) {
 // rollbackToSnapshot 回滚到指定快照
 func (m *Manager) rollbackToSnapshot(ctx context.Context, snapshotName string) error {
 	// 回滚到指定快照（简化版本）
-	m.logger.Printf("Rolling back to snapshot: %s", snapshotName)
+	m.logger.Info("Rolling back to snapshot", zap.String("snapshot_name", snapshotName))
 
 	// 这里应该实现实际的回滚逻辑
 	return nil
@@ -1123,7 +1120,7 @@ func (m *Manager) updateVersionAfterRecovery(ctx context.Context, version string
 // cleanupSnapshot 清理快照
 func (m *Manager) cleanupSnapshot(ctx context.Context, snapshotName string) error {
 	// 清理快照（简化版本）
-	m.logger.Printf("Cleaning up snapshot: %s", snapshotName)
+	m.logger.Info("Cleaning up snapshot", zap.String("snapshot_name", snapshotName))
 	return nil
 }
 
@@ -1144,7 +1141,7 @@ func (m *Manager) performDeepDataValidation(ctx context.Context, objectName stri
 	}
 
 	// 这里应该实现更深入的数据验证逻辑
-	m.logger.Printf("Performing deep data validation for backup: %s", objectName)
+	m.logger.Info("Performing deep data validation for backup", zap.String("object_name", objectName))
 
 	return result, nil
 }
@@ -1162,33 +1159,31 @@ func (m *Manager) validateTimestampConsistency(versionInfo *VersionInfo) bool {
 func (m *Manager) logConsistencyReport(report ConsistencyReport) {
 	report.CheckTime = time.Now()
 
-	m.logger.Printf("=== Consistency Check Report ===")
-	m.logger.Printf("Overall Status: %s", report.OverallStatus)
-	m.logger.Printf("Timestamp Consistent: %v", report.TimestampConsistent)
+	m.logger.Info("=== Consistency Check Report ===")
+	m.logger.Info("Overall Status", zap.String("overall_status", report.OverallStatus))
+	m.logger.Info("Timestamp Consistent", zap.Bool("timestamp_consistent", report.TimestampConsistent))
 
 	if report.BasicCheck != nil {
-		m.logger.Printf("Basic Check - Total: %d, Inconsistencies: %d",
-			report.BasicCheck.TotalEntries, report.BasicCheck.InconsistenciesFound)
+		m.logger.Info("Basic Check", zap.Int("total_entries", report.BasicCheck.TotalEntries), zap.Int("inconsistencies_found", report.BasicCheck.InconsistenciesFound))
 	}
 
 	if report.DeepValidation != nil {
-		m.logger.Printf("Deep Validation - Checked: %d, Issues: %d",
-			report.DeepValidation.CheckedEntries, report.DeepValidation.IssuesFound)
+		m.logger.Info("Deep Validation", zap.Int("checked_entries", report.DeepValidation.CheckedEntries), zap.Int("issues_found", report.DeepValidation.IssuesFound))
 	}
 
 	if len(report.Recommendations) > 0 {
-		m.logger.Printf("Recommendations:")
+		m.logger.Info("Recommendations", zap.Strings("recommendations", report.Recommendations))
 		for _, rec := range report.Recommendations {
-			m.logger.Printf("  - %s", rec)
+			m.logger.Info("  - %s", zap.String("recommendation", rec))
 		}
 	}
 
-	m.logger.Printf("=== End Report ===")
+	m.logger.Info("=== End Report ===")
 }
 
 // performAutoRepair 执行自动修复
 func (m *Manager) performAutoRepair(ctx context.Context, versionInfo *VersionInfo, report *ConsistencyReport) error {
-	m.logger.Printf("Performing auto-repair based on consistency report")
+	m.logger.Info("Performing auto-repair based on consistency report")
 
 	// 简化的自动修复逻辑
 	if report.BasicCheck != nil && report.BasicCheck.InconsistenciesFound > 0 {
@@ -1201,7 +1196,7 @@ func (m *Manager) performAutoRepair(ctx context.Context, versionInfo *VersionInf
 
 // resolveHighConfidenceConflict 处理高置信度冲突
 func (m *Manager) resolveHighConfidenceConflict(ctx context.Context, versionInfo *VersionInfo) error {
-	m.logger.Printf("Resolving high confidence version conflict")
+	m.logger.Info("Resolving high confidence version conflict")
 
 	// 基于时间戳和版本号的综合判断
 	if versionInfo.BackupTimestamp.After(versionInfo.RedisTimestamp) {
@@ -1215,23 +1210,21 @@ func (m *Manager) resolveHighConfidenceConflict(ctx context.Context, versionInfo
 
 // createConflictReport 创建冲突报告
 func (m *Manager) createConflictReport(versionInfo *VersionInfo) {
-	m.logger.Printf("=== Version Conflict Report ===")
-	m.logger.Printf("Manual intervention required!")
-	m.logger.Printf("Redis Version: %s (Timestamp: %s)",
-		versionInfo.RedisVersion, versionInfo.RedisTimestamp.Format(time.RFC3339))
-	m.logger.Printf("Backup Version: %s (Timestamp: %s)",
-		versionInfo.BackupVersion, versionInfo.BackupTimestamp.Format(time.RFC3339))
-	m.logger.Printf("Confidence: %.2f", versionInfo.Confidence)
-	m.logger.Printf("Recommended Actions:")
-	m.logger.Printf("  1. Verify system clock synchronization")
-	m.logger.Printf("  2. Check for concurrent operations")
-	m.logger.Printf("  3. Manually choose recovery or backup strategy")
-	m.logger.Printf("=== End Report ===")
+	m.logger.Info("=== Version Conflict Report ===")
+	m.logger.Info("Manual intervention required!")
+	m.logger.Info("Redis Version", zap.String("redis_version", versionInfo.RedisVersion), zap.String("redis_timestamp", versionInfo.RedisTimestamp.Format(time.RFC3339)))
+	m.logger.Info("Backup Version", zap.String("backup_version", versionInfo.BackupVersion), zap.String("backup_timestamp", versionInfo.BackupTimestamp.Format(time.RFC3339)))
+	m.logger.Info("Confidence", zap.Float64("confidence", versionInfo.Confidence))
+	m.logger.Info("Recommended Actions")
+	m.logger.Info("  1. Verify system clock synchronization")
+	m.logger.Info("  2. Check for concurrent operations")
+	m.logger.Info("  3. Manually choose recovery or backup strategy")
+	m.logger.Info("=== End Report ===")
 }
 
 // performSyncCheck 执行同步检查
 func (m *Manager) performSyncCheck(ctx context.Context, objectName string) (*SyncCheckResult, error) {
-	m.logger.Printf("Performing sync check with backup: %s", objectName)
+	m.logger.Info("Performing sync check with backup", zap.String("object_name", objectName))
 
 	// 获取当前元数据
 	currentMetadata, err := m.getCurrentMetadata(ctx)
@@ -1266,12 +1259,12 @@ func (m *Manager) performSyncCheck(ctx context.Context, objectName string) (*Syn
 	}
 
 	if len(inconsistencies) > 0 {
-		m.logger.Printf("Found %d inconsistencies during sync check", len(inconsistencies))
+		m.logger.Info("Found inconsistencies during sync check", zap.Int("inconsistencies_found", len(inconsistencies)))
 		for _, inconsistency := range inconsistencies {
-			m.logger.Printf("Inconsistency: %s", inconsistency)
+			m.logger.Info("Inconsistency", zap.String("inconsistency", inconsistency))
 		}
 	} else {
-		m.logger.Printf("Sync check passed: no inconsistencies found")
+		m.logger.Info("Sync check passed: no inconsistencies found")
 	}
 
 	return result, nil

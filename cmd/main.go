@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -66,8 +65,7 @@ func main() {
 	defer cancel()
 
 	// 创建恢复处理器
-	stdLogger := log.New(os.Stdout, "[RECOVERY] ", log.LstdFlags)
-	recoveryHandler := recovery.NewRecoveryHandler("main", stdLogger)
+	recoveryHandler := recovery.NewRecoveryHandler("main", logger.Logger)
 	defer recoveryHandler.Recover()
 
 	// 初始化存储层
