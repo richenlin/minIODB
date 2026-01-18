@@ -129,7 +129,7 @@
       "id": "P0-CORE02",
       "name": "列剪枝优化",
       "priority": 1,
-      "status": "in_progress",
+      "status": "completed",
       "description": "实现列剪枝，只读取查询需要的列，减少50-80%数据读取量",
       "phase": "性能优化 Phase 1: 核心优化",
       "estimated_days": 12
@@ -138,8 +138,8 @@
       "id": "P0-CORE03",
       "name": "减少数据可见延迟",
       "priority": 1,
-      "status": "pending",
-      "description": "实现混合查询，数据可见延迟从15秒降到1-3秒",
+      "status": "in_progress",
+      "description": "实现混合查询，数据可见延迟从15秒降到1-3秒（语法错误已修复，待测试）",
       "phase": "性能优化 Phase 1: 核心优化",
       "estimated_days": 10
     },
