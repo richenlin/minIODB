@@ -5,6 +5,7 @@ MinIODB 提供 4 种部署模式，适应不同的场景和需求。
 ## 目录
 
 - [快速开始](#快速开始)
+- [依赖管理](#依赖管理)
 - [部署模式对比](#部署模式对比)
 - [1. 单机开发模式 (dev)](#1-单机开发模式-dev)
 - [2. 单机集成测试模式 (test)](#2-单机集成测试模式-test)
@@ -40,6 +41,180 @@ MinIODB 提供 4 种部署模式，适应不同的场景和需求。
 # 清理部署
 ./deploy/deploy.sh dev --cleanup
 ```
+
+## 依赖管理
+
+MinIODB 部署脚本提供自动依赖检测和安装功能，支持在线自动安装和离线下载。
+
+### 支持的平台
+
+- **Linux**: x86-64、ARM64
+- **macOS**: ARM64 (Apple Silicon)
+
+### 依赖版本要求
+
+| 组件 | 最低版本 | 推荐版本 |
+|------|----------|----------|
+| Docker | 20.10+ | 24.0+ |
+| Docker Compose | 2.0+ | 2.23+ |
+| kubectl | 1.20+ | 1.28+ |
+| Ansible | 2.9+ | 2.15+ |
+
+### 自动检测依赖
+
+部署脚本会自动检测所需的依赖：
+
+```bash
+# 部署时会自动检查依赖
+./deploy/deploy.sh dev
+```
+
+如果依赖缺失，脚本会提示缺少的组件。
+
+### 自动安装依赖
+
+支持在线自动安装依赖：
+
+```bash
+# 自动安装所有依赖
+./deploy/deploy.sh --install-deps
+
+# 检查并安装特定部署模式需要的依赖
+./deploy/deploy.sh dev --install-deps
+./deploy/deploy.sh swarm --install-deps
+./deploy/deploy.sh k8s --install-deps
+```
+
+### 离线安装包下载
+
+如果网络不可用或需要离线部署，可以获取离线安装包下载地址：
+
+```bash
+# 显示所有依赖的离线下载地址
+./deploy/deploy.sh --show-deps
+```
+
+### 手动安装依赖
+
+#### Linux (Ubuntu/Debian)
+
+```bash
+# Docker
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg lsb-release
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Ansible
+sudo apt-get install -y ansible
+
+# kubectl
+curl -LO "https://dl.k8s.io/release/v1.28.4/bin/linux/amd64/kubectl"
+sudo chmod +x kubectl
+sudo mv kubectl /usr/local/bin/
+```
+
+#### Linux (CentOS/RHEL)
+
+```bash
+# Docker
+sudo yum install -y yum-utils
+sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Ansible
+sudo yum install -y ansible
+
+# kubectl
+curl -LO "https://dl.k8s.io/release/v1.28.4/bin/linux/amd64/kubectl"
+sudo chmod +x kubectl
+sudo mv kubectl /usr/local/bin/
+```
+
+#### Linux (Arch Linux)
+
+```bash
+# Docker 和 Docker Compose
+sudo pacman -S docker docker-compose
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Ansible
+sudo pacman -S ansible
+
+# kubectl
+sudo pacman -S kubectl
+```
+
+#### macOS (ARM64)
+
+```bash
+# 安装 Homebrew（如果尚未安装）
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Docker Desktop (包含 Docker 和 Docker Compose)
+brew install --cask docker
+
+# Ansible
+brew install ansible
+
+# kubectl
+brew install kubectl
+```
+
+### 离线包下载地址
+
+以下链接提供了各平台和架构的离线安装包：
+
+#### Docker
+
+- **Linux x86-64**: https://download.docker.com/linux/static/stable/x86_64/docker-24.0.7.tgz
+- **Linux ARM64**: https://download.docker.com/linux/static/stable/aarch64/docker-24.0.7.tgz
+- **macOS ARM64**: https://desktop.docker.com/mac/main/arm64/Docker.dmg
+
+安装方法：
+```bash
+# Linux
+tar xzvf docker-24.0.7.tgz
+sudo cp docker/* /usr/bin/
+
+# macOS
+# 下载后双击 Docker.dmg 安装
+```
+
+#### Docker Compose
+
+- **Linux x86-64**: https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-linux-x86_64
+- **Linux ARM64**: https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-linux-aarch64
+
+安装方法：
+```bash
+sudo mv docker-compose-linux-* /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+```
+
+#### kubectl
+
+- **Linux x86-64**: https://dl.k8s.io/release/v1.28.4/bin/linux/amd64/kubectl
+- **Linux ARM64**: https://dl.k8s.io/release/v1.28.4/bin/linux/arm64/kubectl
+- **macOS ARM64**: https://dl.k8s.io/release/v1.28.4/bin/darwin/arm64/kubectl
+
+安装方法：
+```bash
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+```
+
+#### Ansible
+
+Ansible 通常使用系统包管理器安装：
+
+- **Ubuntu/Debian**: `sudo apt-get install -y ansible`
+- **CentOS/RHEL**: `sudo yum install -y ansible`
+- **Arch Linux**: `sudo pacman -S ansible`
+- **macOS**: `brew install ansible`
 
 ## 部署模式对比
 

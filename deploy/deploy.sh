@@ -1,11 +1,15 @@
 #!/bin/bash
 
-#!/bin/bash
-
 # MinIODB 统一部署脚本
 # 支持4种部署模式：开发、集成测试、Swarm集群、K8s集群
 
 set -e
+
+# 获取脚本所在目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 引入依赖管理脚本
+source "$SCRIPT_DIR/scripts/dependencies.sh" 2>/dev/null || true
 
 # 颜色定义
 RED='\033[0;31m'
@@ -45,11 +49,13 @@ MinIODB 统一部署脚本
     swarm       小型集群模式 (基于Docker Swarm的3节点部署)
     k8s         Kubernetes集群模式 (4个pod部署)
 
-选项:
+ 选项:
     -c, --config FILE       指定配置文件路径
     -n, --namespace NS      Kubernetes 命名空间 (默认: miniodb-system)
     -r, --replicas NUM      副本数量 (默认: 2)
     -d, --data-path PATH    数据存储路径 (默认: ./data)
+    --install-deps         自动检测并安装依赖
+    --show-deps            显示离线安装包下载地址
     --dry-run              仅显示将要执行的命令，不实际执行
     --cleanup              清理已有部署
     --force                强制执行，跳过确认
@@ -87,36 +93,112 @@ EOF
 check_dependencies() {
     local deploy_mode=$1
 
+    local deps=""
     case $deploy_mode in
         "dev"|"test")
-            if ! command -v docker &> /dev/null; then
-                log_error "Docker 未安装或不在 PATH 中"
-                exit 1
-            fi
-            if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-                log_error "Docker Compose 未安装或不在 PATH 中"
-                exit 1
-            fi
+            deps="docker docker-compose"
             ;;
         "swarm")
-            if ! command -v docker &> /dev/null; then
-                log_error "Docker 未安装或不在 PATH 中"
-                exit 1
-            fi
+            deps="docker docker-compose ansible"
+            ;;
+        "k8s")
+            deps="kubectl"
+            ;;
+    esac
+
+    # 检测系统信息
+    detect_system 2>/dev/null || {
+        OS=$(uname -s)
+        ARCH=$(uname -m)
+        log_info "检测到系统: $OS $ARCH"
+    }
+
+    # 使用依赖管理脚本检查
+    if command -v check_and_install &> /dev/null; then
+        if [[ "$AUTO_INSTALL_DEPS" == "true" ]]; then
+            check_and_install "$deps"
+        else
+            # 只检查不安装
+            for dep in $deps; do
+                case $dep in
+                    docker)
+                        if ! command -v docker &> /dev/null; then
+                            log_error "Docker 未安装或不在 PATH 中"
+                            log_info "运行 '$0 --install-deps' 自动安装依赖"
+                            exit 1
+                        fi
+                        ;;
+                    docker-compose)
+                        if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+                            log_error "Docker Compose 未安装或不在 PATH 中"
+                            log_info "运行 '$0 --install-deps' 自动安装依赖"
+                            exit 1
+                        fi
+                        ;;
+                    kubectl)
+                        if ! command -v kubectl &> /dev/null; then
+                            log_error "kubectl 未安装或不在 PATH 中"
+                            log_info "运行 '$0 --install-deps' 自动安装依赖"
+                            exit 1
+                        fi
+                        ;;
+                    ansible)
+                        if ! command -v ansible-playbook &> /dev/null; then
+                            log_error "Ansible 未安装或不在 PATH 中"
+                            log_info "运行 '$0 --install-deps' 自动安装依赖"
+                            exit 1
+                        fi
+                        ;;
+                esac
+            done
+            log_success "依赖检查通过"
+        fi
+    else
+        # 降级检查
+        for dep in $deps; do
+            case $dep in
+                docker)
+                    if ! command -v docker &> /dev/null; then
+                        log_error "Docker 未安装或不在 PATH 中"
+                        log_info "运行 '$0 --show-deps' 查看离线安装包下载地址"
+                        exit 1
+                    fi
+                    ;;
+                docker-compose)
+                    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+                        log_error "Docker Compose 未安装或不在 PATH 中"
+                        log_info "运行 '$0 --show-deps' 查看离线安装包下载地址"
+                        exit 1
+                    fi
+                    ;;
+                kubectl)
+                    if ! command -v kubectl &> /dev/null; then
+                        log_error "kubectl 未安装或不在 PATH 中"
+                        log_info "运行 '$0 --show-deps' 查看离线安装包下载地址"
+                        exit 1
+                    fi
+                    ;;
+                ansible)
+                    if ! command -v ansible-playbook &> /dev/null; then
+                        log_error "Ansible 未安装或不在 PATH 中"
+                        log_info "运行 '$0 --show-deps' 查看离线安装包下载地址"
+                        exit 1
+                    fi
+                    ;;
+            esac
+        done
+        log_success "依赖检查通过"
+    fi
+
+    # 特殊检查：Docker 服务状态和 K8s 集群连接
+    case $deploy_mode in
+        "swarm")
             if ! docker info &> /dev/null; then
                 log_error "Docker 服务未运行"
                 exit 1
             fi
-            if ! command -v ansible-playbook &> /dev/null; then
-                log_error "Ansible 未安装或不在 PATH 中"
-                exit 1
-            fi
             ;;
         "k8s")
-            if ! command -v kubectl &> /dev/null; then
-                log_error "kubectl 未安装或不在 PATH 中"
-                exit 1
-            fi
             if ! kubectl cluster-info &> /dev/null; then
                 log_error "无法连接到 Kubernetes 集群"
                 exit 1
@@ -407,6 +489,8 @@ cleanup_deployment() {
 main() {
     local deploy_mode=""
     local cleanup=false
+    local show_deps=false
+    local auto_install_deps=false
 
     # 解析参数
     while [[ $# -gt 0 ]]; do
@@ -431,6 +515,15 @@ main() {
                 DATA_PATH=$2
                 shift 2
                 ;;
+            --install-deps)
+                auto_install_deps=true
+                AUTO_INSTALL_DEPS=true
+                shift
+                ;;
+            --show-deps)
+                show_deps=true
+                shift
+                ;;
             --dry-run)
                 DRY_RUN=true
                 shift
@@ -454,6 +547,31 @@ main() {
                 ;;
         esac
     done
+
+    # 显示离线下载地址
+    if [[ "$show_deps" == "true" ]]; then
+        if command -v show_offline_downloads &> /dev/null; then
+            detect_system 2>/dev/null
+            detect_package_manager 2>/dev/null
+            show_offline_downloads "docker docker-compose kubectl ansible"
+        else
+            log_error "依赖管理脚本不可用"
+        fi
+        exit 0
+    fi
+
+    # 自动安装依赖
+    if [[ "$auto_install_deps" == "true" ]]; then
+        if command -v check_and_install &> /dev/null; then
+            detect_system 2>/dev/null
+            detect_package_manager 2>/dev/null
+            check_and_install "docker docker-compose kubectl ansible"
+            exit 0
+        else
+            log_error "依赖管理脚本不可用"
+            exit 1
+        fi
+    fi
 
     # 检查部署模式
     if [[ -z "$deploy_mode" ]]; then
