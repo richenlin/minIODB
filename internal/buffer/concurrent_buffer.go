@@ -453,34 +453,22 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 
 	minioMetrics := metrics.NewMinIOMetrics("upload_primary")
 
-	err := minioPool.ExecuteWithRetry(ctx, func() error {
-		client := minioPool.GetClient()
+	// 使用故障切换管理器上传到主池（带自动故障切换）
+	err := w.buffer.poolManager.ExecuteWithFailover(ctx, func(pool *pool.MinIOPool) error {
+		client := pool.GetClient()
 		_, err := client.FPutObject(ctx, primaryBucket, objectName, localFilePath, minio.PutObjectOptions{})
 		return err
 	})
 
 	if err != nil {
 		minioMetrics.Finish("error")
-		return fmt.Errorf("failed to upload to primary MinIO: %w", err)
+		return fmt.Errorf("failed to upload to MinIO: %w", err)
 	}
 	minioMetrics.Finish("success")
 
-	// 上传到备份存储（如果配置了）
-	if backupPool := w.buffer.poolManager.GetBackupMinIOPool(); backupPool != nil && w.buffer.backupBucket != "" {
-		backupMetrics := metrics.NewMinIOMetrics("upload_backup")
-
-		err := backupPool.ExecuteWithRetry(ctx, func() error {
-			client := backupPool.GetClient()
-			_, err := client.FPutObject(ctx, w.buffer.backupBucket, objectName, localFilePath, minio.PutObjectOptions{})
-			return err
-		})
-
-		if err != nil {
-			w.buffer.logger.Warn("WARN: failed to upload to backup storage: %v", zap.Error(err))
-			backupMetrics.Finish("error")
-		} else {
-			backupMetrics.Finish("success")
-		}
+	// 异步同步到备份池（不阻塞主流程）
+	if failoverMgr := w.buffer.poolManager.GetFailoverManager(); failoverMgr != nil {
+		failoverMgr.EnqueueSync(primaryBucket, objectName, localFilePath)
 	}
 
 	// 提取并存储 Parquet 文件元数据到 Redis（用于查询时的文件剪枝）

@@ -129,6 +129,19 @@ network:
       disable_keep_alive: false
       disable_compression: false
     
+    # 故障切换配置
+    failover:
+      enabled: true                   # 是否启用故障切换
+      health_check_interval: 15s      # 健康检查间隔
+      
+      # 异步同步配置
+      async_sync:
+        queue_size: 1000              # 异步队列大小
+        worker_count: 3               # 同步工作器数量
+        retry_times: 3                # 重试次数
+        retry_interval: 1s            # 重试间隔
+        sync_timeout: 60s             # 同步超时
+    
     # 健康检查间隔
     health_check_interval: 15s        # 减少到15秒，更频繁的健康检查
 

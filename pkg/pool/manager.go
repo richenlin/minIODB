@@ -11,11 +11,12 @@ import (
 
 // PoolManager 统一连接池管理器
 type PoolManager struct {
-	redisPool  *RedisPool
-	minioPool  *MinIOPool
-	backupPool *MinIOPool // 备份MinIO连接池
-	logger     *zap.Logger
-	mutex      sync.RWMutex
+	redisPool       *RedisPool
+	minioPool       *MinIOPool
+	backupPool      *MinIOPool       // 备份MinIO连接池
+	failoverManager *FailoverManager // 故障切换管理器
+	logger          *zap.Logger
+	mutex           sync.RWMutex
 
 	// 监控相关
 	healthCheckInterval time.Duration
@@ -28,6 +29,7 @@ type PoolManagerConfig struct {
 	Redis               *RedisPoolConfig `yaml:"redis"`
 	MinIO               *MinIOPoolConfig `yaml:"minio"`
 	BackupMinIO         *MinIOPoolConfig `yaml:"backup_minio,omitempty"`
+	Failover            FailoverConfig   `yaml:"failover"`
 	HealthCheckInterval time.Duration    `yaml:"health_check_interval"`
 }
 
@@ -91,6 +93,25 @@ func NewPoolManager(config *PoolManagerConfig, logger *zap.Logger) (*PoolManager
 		stopHealthCheck:     make(chan struct{}),
 	}
 
+	// 初始化故障切换管理器（仅在Redis和备份池都存在且启用时）
+	if config.Failover.Enabled && redisPool != nil && backupPool != nil {
+		failoverManager := NewFailoverManager(manager, redisPool.GetUniversalClient(), config.Failover, logger)
+		if err := failoverManager.Start(); err != nil {
+			logger.Warn("Failed to start failover manager", zap.Error(err))
+		} else {
+			manager.failoverManager = failoverManager
+			logger.Info("Failover manager started successfully")
+		}
+	} else {
+		if !config.Failover.Enabled {
+			logger.Info("Failover disabled by configuration")
+		} else if redisPool == nil {
+			logger.Info("Failover disabled: Redis pool not available")
+		} else if backupPool == nil {
+			logger.Info("Failover disabled: Backup MinIO pool not available")
+		}
+	}
+
 	// 启动健康检查
 	manager.startHealthCheck()
 
@@ -117,6 +138,30 @@ func (pm *PoolManager) GetBackupMinIOPool() *MinIOPool {
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()
 	return pm.backupPool
+}
+
+// GetFailoverManager 获取故障切换管理器
+func (pm *PoolManager) GetFailoverManager() *FailoverManager {
+	pm.mutex.RLock()
+	defer pm.mutex.RUnlock()
+	return pm.failoverManager
+}
+
+// GetActiveMinIOPool 获取当前活跃的MinIO池（考虑故障切换）
+func (pm *PoolManager) GetActiveMinIOPool() *MinIOPool {
+	if pm.failoverManager != nil {
+		return pm.failoverManager.GetActivePool()
+	}
+	return pm.GetMinIOPool()
+}
+
+// ExecuteWithFailover 执行MinIO操作（带故障切换）
+func (pm *PoolManager) ExecuteWithFailover(ctx context.Context, operation func(*MinIOPool) error) error {
+	if pm.failoverManager != nil {
+		return pm.failoverManager.Execute(ctx, operation)
+	}
+	// 无故障切换管理器，直接使用主池
+	return operation(pm.minioPool)
 }
 
 // startHealthCheck 启动健康检查
@@ -279,6 +324,13 @@ func (pm *PoolManager) UpdateBackupMinIOPool(config *MinIOPoolConfig) error {
 func (pm *PoolManager) Close() error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
+
+	// 停止故障切换管理器
+	if pm.failoverManager != nil {
+		if err := pm.failoverManager.Stop(); err != nil {
+			pm.logger.Warn("Failed to stop failover manager", zap.Error(err))
+		}
+	}
 
 	// 停止健康检查
 	if pm.healthCheckRunning {

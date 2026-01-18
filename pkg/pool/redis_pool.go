@@ -275,6 +275,24 @@ func (p *RedisPool) GetClient() redis.Cmdable {
 	return p.client
 }
 
+// GetUniversalClient 获取UniversalClient接口（用于故障切换管理器）
+func (p *RedisPool) GetUniversalClient() redis.UniversalClient {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	// 根据模式返回相应的客户端
+	switch p.config.Mode {
+	case RedisModeCluster:
+		return p.clusterClient
+	default:
+		// 单机和哨兵模式都返回*redis.Client
+		if p.standaloneClient != nil {
+			return p.standaloneClient
+		}
+		return p.sentinelClient
+	}
+}
+
 // GetMode 获取Redis模式
 func (p *RedisPool) GetMode() RedisMode {
 	p.mutex.RLock()

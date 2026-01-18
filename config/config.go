@@ -123,7 +123,24 @@ type PoolsConfig struct {
 	Redis               EnhancedRedisConfig  `yaml:"redis"`                  // Redis连接池配置
 	MinIO               EnhancedMinIOConfig  `yaml:"minio"`                  // MinIO连接池配置
 	BackupMinIO         *EnhancedMinIOConfig `yaml:"backup_minio,omitempty"` // 备份MinIO连接池配置（可选）
+	Failover            FailoverConfig       `yaml:"failover"`               // 故障切换配置
 	HealthCheckInterval time.Duration        `yaml:"health_check_interval"`  // 健康检查间隔
+}
+
+// FailoverConfig 故障切换配置
+type FailoverConfig struct {
+	Enabled             bool            `yaml:"enabled"`               // 是否启用故障切换
+	HealthCheckInterval time.Duration   `yaml:"health_check_interval"` // 健康检查间隔
+	AsyncSync           AsyncSyncConfig `yaml:"async_sync"`            // 异步同步配置
+}
+
+// AsyncSyncConfig 异步同步配置
+type AsyncSyncConfig struct {
+	QueueSize     int           `yaml:"queue_size"`     // 队列大小
+	WorkerCount   int           `yaml:"worker_count"`   // 并发工作器数量
+	RetryTimes    int           `yaml:"retry_times"`    // 重试次数
+	RetryInterval time.Duration `yaml:"retry_interval"` // 重试间隔
+	SyncTimeout   time.Duration `yaml:"sync_timeout"`   // 同步超时
 }
 
 // EnhancedRedisConfig 增强的Redis配置（包含所有pool配置参数）
@@ -853,6 +870,17 @@ func (c *Config) setDefaults() {
 				KeepAlive:             30 * time.Second,
 				DisableKeepAlive:      false,
 				DisableCompression:    false,
+			},
+			Failover: FailoverConfig{
+				Enabled:             true,
+				HealthCheckInterval: 15 * time.Second,
+				AsyncSync: AsyncSyncConfig{
+					QueueSize:     1000,
+					WorkerCount:   3,
+					RetryTimes:    3,
+					RetryInterval: time.Second,
+					SyncTimeout:   60 * time.Second,
+				},
 			},
 			HealthCheckInterval: 15 * time.Second,
 		},

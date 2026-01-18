@@ -199,19 +199,22 @@ func (s *StorageImpl) PutObject(ctx context.Context, bucketName, objectName stri
 	return err
 }
 
-// GetObject 获取对象
+// GetObject 获取对象（带故障切换）
 func (s *StorageImpl) GetObject(ctx context.Context, bucketName, objectName string) (*minio.Object, error) {
-	minioPool := s.poolManager.GetMinIOPool()
-	if minioPool == nil {
-		return nil, fmt.Errorf("MinIO连接池不可用")
-	}
+	var obj *minio.Object
 
-	client := minioPool.GetClient()
-	if client == nil {
-		return nil, fmt.Errorf("MinIO客户端不可用")
-	}
+	err := s.poolManager.ExecuteWithFailover(ctx, func(pool *pool.MinIOPool) error {
+		client := pool.GetClient()
+		if client == nil {
+			return fmt.Errorf("MinIO客户端不可用")
+		}
 
-	return client.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
+		var err error
+		obj, err = client.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
+		return err
+	})
+
+	return obj, err
 }
 
 // ListObjects 列出对象
