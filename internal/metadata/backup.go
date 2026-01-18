@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"minIODB/internal/storage"
-	"minIODB/pkg/logger"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -95,12 +94,12 @@ type BackupStats struct {
 }
 
 // NewBackupManager 创建备份管理器（向后兼容）
-func NewBackupManager(storage storage.Storage, nodeID string, config BackupConfig) *BackupManager {
-	return NewBackupManagerWithStorages(storage, nil, nil, nodeID, config)
+func NewBackupManager(storage storage.Storage, nodeID string, config BackupConfig, logger *zap.Logger) *BackupManager {
+	return NewBackupManagerWithStorages(storage, nil, nil, nodeID, config, logger)
 }
 
 // NewBackupManagerWithStorages 使用分离的存储接口创建备份管理器
-func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage storage.CacheStorage, objectStorage storage.ObjectStorage, nodeID string, config BackupConfig) *BackupManager {
+func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage storage.CacheStorage, objectStorage storage.ObjectStorage, nodeID string, config BackupConfig, logger *zap.Logger) *BackupManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := &BackupManager{
@@ -112,7 +111,7 @@ func NewBackupManagerWithStorages(unifiedStorage storage.Storage, cacheStorage s
 		config:        config,
 		ctx:           ctx,
 		cancel:        cancel,
-		logger:        logger.GetLogger(),
+		logger:        logger,
 		isActive:      false,
 		stats:         BackupStats{},
 	}

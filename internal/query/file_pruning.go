@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"minIODB/internal/storage"
-	"minIODB/pkg/logger"
 
 	"go.uber.org/zap"
 )
@@ -21,11 +20,13 @@ type Predicate struct {
 
 type FilePruner struct {
 	predicates []Predicate
+	logger     *zap.Logger
 }
 
-func NewFilePruner() *FilePruner {
+func NewFilePruner(logger *zap.Logger) *FilePruner {
 	return &FilePruner{
 		predicates: make([]Predicate, 0),
+		logger:     logger,
 	}
 }
 
@@ -111,7 +112,7 @@ func (fp *FilePruner) PruneFiles(files []*storage.FileMetadata, predicates []Pre
 
 	prunedCount := len(files) - len(result)
 	if prunedCount > 0 {
-		logger.GetLogger().Debug("Pruned files based on predicates",
+		fp.logger.Debug("Pruned files based on predicates",
 			zap.Int("original", len(files)),
 			zap.Int("remaining", len(result)),
 			zap.Int("pruned", prunedCount))
@@ -194,10 +195,14 @@ func (fp *FilePruner) compareValues(a, b interface{}) int {
 	return strings.Compare(aStr, bStr)
 }
 
-type RowGroupPruner struct{}
+type RowGroupPruner struct {
+	logger *zap.Logger
+}
 
-func NewRowGroupPruner() *RowGroupPruner {
-	return &RowGroupPruner{}
+func NewRowGroupPruner(logger *zap.Logger) *RowGroupPruner {
+	return &RowGroupPruner{
+		logger: logger,
+	}
 }
 
 func (rp *RowGroupPruner) GeneratePushdownSQL(originalSQL string, predicates []Predicate) string {
@@ -225,10 +230,10 @@ type QueryOptimizer struct {
 	rowGroupPruner *RowGroupPruner
 }
 
-func NewQueryOptimizer() *QueryOptimizer {
+func NewQueryOptimizer(logger *zap.Logger) *QueryOptimizer {
 	return &QueryOptimizer{
-		filePruner:     NewFilePruner(),
-		rowGroupPruner: NewRowGroupPruner(),
+		filePruner:     NewFilePruner(logger),
+		rowGroupPruner: NewRowGroupPruner(logger),
 	}
 }
 

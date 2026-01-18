@@ -5,7 +5,6 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"minIODB/pkg/logger"
 	"os"
 	"strconv"
 	"strings"
@@ -51,7 +50,7 @@ type Manager struct {
 }
 
 // NewManager 创建新的元数据管理器
-func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, config *Config) *Manager {
+func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, config *Config, logger *zap.Logger) *Manager {
 
 	// 生成或获取节点ID
 	nodeID := generateNodeID()
@@ -59,16 +58,16 @@ func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, conf
 	manager := &Manager{
 		storage:      storage,
 		cacheStorage: cacheStorage,
-		logger:       logger.GetLogger(),
+		logger:       logger,
 		config:       config,
 		nodeID:       nodeID,
 	}
 
 	// 初始化备份管理器
-	manager.backupManager = NewBackupManager(storage, nodeID, config.Backup)
+	manager.backupManager = NewBackupManager(storage, nodeID, config.Backup, logger)
 
 	// 初始化恢复管理器
-	manager.recoveryManager = NewRecoveryManager(storage, nodeID, config.Recovery.Bucket)
+	manager.recoveryManager = NewRecoveryManager(storage, nodeID, config.Recovery.Bucket, logger)
 
 	return manager
 }

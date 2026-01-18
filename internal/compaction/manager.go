@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"minIODB/internal/storage"
-	"minIODB/pkg/logger"
 
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
@@ -49,6 +48,7 @@ type Manager struct {
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
 	stats       *Stats
+	logger      *zap.Logger
 }
 
 type Stats struct {
@@ -67,7 +67,7 @@ type FileInfo struct {
 	ModTime time.Time
 }
 
-func NewManager(minioClient *minio.Client, bucket string, config *Config) (*Manager, error) {
+func NewManager(minioClient *minio.Client, bucket string, config *Config, logger *zap.Logger) (*Manager, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -82,6 +82,7 @@ func NewManager(minioClient *minio.Client, bucket string, config *Config) (*Mana
 		bucket:      bucket,
 		stopCh:      make(chan struct{}),
 		stats:       &Stats{},
+		logger:      logger,
 	}, nil
 }
 
@@ -97,7 +98,7 @@ func (m *Manager) Start(ctx context.Context) {
 	m.wg.Add(1)
 	go m.runCompactionLoop(ctx)
 
-	logger.GetLogger().Info("Compaction manager started",
+	m.logger.Info("Compaction manager started",
 		zap.Duration("interval", m.config.CheckInterval))
 }
 
@@ -113,7 +114,7 @@ func (m *Manager) Stop() {
 	close(m.stopCh)
 	m.wg.Wait()
 
-	logger.GetLogger().Info("Compaction manager stopped")
+	m.logger.Info("Compaction manager stopped")
 }
 
 func (m *Manager) runCompactionLoop(ctx context.Context) {
@@ -130,7 +131,7 @@ func (m *Manager) runCompactionLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := m.RunCompaction(ctx); err != nil {
-				logger.GetLogger().Error("Compaction failed", zap.Error(err))
+				m.logger.Error("Compaction failed", zap.Error(err))
 				m.stats.mu.Lock()
 				m.stats.Errors++
 				m.stats.mu.Unlock()
@@ -147,7 +148,7 @@ func (m *Manager) RunCompaction(ctx context.Context) error {
 
 	for _, table := range tables {
 		if err := m.compactTable(ctx, table); err != nil {
-			logger.GetLogger().Warn("Failed to compact table",
+			m.logger.Warn("Failed to compact table",
 				zap.String("table", table),
 				zap.Error(err))
 		}
@@ -190,7 +191,7 @@ func (m *Manager) compactTable(ctx context.Context, table string) error {
 
 	candidates := m.selectCompactionCandidates(files)
 	if len(candidates) < m.config.MinFilesToCompact {
-		logger.GetLogger().Debug("Not enough files for compaction",
+		m.logger.Debug("Not enough files for compaction",
 			zap.String("table", table),
 			zap.Int("files", len(candidates)))
 		return nil
@@ -251,7 +252,7 @@ func (m *Manager) selectCompactionCandidates(files []FileInfo) []FileInfo {
 }
 
 func (m *Manager) compactFiles(ctx context.Context, table string, files []FileInfo) error {
-	logger.GetLogger().Info("Starting compaction",
+	m.logger.Info("Starting compaction",
 		zap.String("table", table),
 		zap.Int("files", len(files)))
 
@@ -263,7 +264,7 @@ func (m *Manager) compactFiles(ctx context.Context, table string, files []FileIn
 
 	var allRecords []map[string]interface{}
 	var totalSizeBefore int64
-	reader := storage.NewParquetReader(storage.DefaultParquetReaderConfig())
+	reader := storage.NewParquetReader(storage.DefaultParquetReaderConfig(), m.logger)
 
 	for _, f := range files {
 		localPath := filepath.Join(tempDir, filepath.Base(f.Path))
@@ -291,7 +292,7 @@ func (m *Manager) compactFiles(ctx context.Context, table string, files []FileIn
 	}
 	writerConfig.MaxRowsPerFile = int(maxRows)
 
-	writer, err := storage.NewParquetWriter(writerConfig)
+	writer, err := storage.NewParquetWriter(writerConfig, m.logger)
 	if err != nil {
 		return err
 	}
@@ -323,7 +324,7 @@ func (m *Manager) compactFiles(ctx context.Context, table string, files []FileIn
 
 	for _, f := range files {
 		if err := m.minioClient.RemoveObject(ctx, m.bucket, f.Path, minio.RemoveObjectOptions{}); err != nil {
-			logger.GetLogger().Warn("Failed to remove old file",
+			m.logger.Warn("Failed to remove old file",
 				zap.String("file", f.Path),
 				zap.Error(err))
 		}
@@ -337,7 +338,7 @@ func (m *Manager) compactFiles(ctx context.Context, table string, files []FileIn
 	m.stats.LastCompactionAt = time.Now()
 	m.stats.mu.Unlock()
 
-	logger.GetLogger().Info("Compaction completed",
+	m.logger.Info("Compaction completed",
 		zap.String("table", table),
 		zap.Int("inputFiles", len(files)),
 		zap.Int("outputFiles", len(outputFiles)),

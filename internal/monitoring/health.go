@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"minIODB/pkg/logger"
 	"runtime"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 )
 
 // HealthStatus 健康状态
@@ -45,16 +45,18 @@ type HealthChecker struct {
 	cfg         *config.Config
 	startTime   time.Time
 	mu          sync.RWMutex
+	logger      *zap.Logger
 }
 
 // NewHealthChecker 创建新的健康检查器
-func NewHealthChecker(redisPool *pool.RedisPool, minioClient *minio.Client, db *sql.DB, cfg *config.Config) *HealthChecker {
+func NewHealthChecker(redisPool *pool.RedisPool, minioClient *minio.Client, db *sql.DB, cfg *config.Config, logger *zap.Logger) *HealthChecker {
 	return &HealthChecker{
 		redisPool:   redisPool,
 		minioClient: minioClient,
 		db:          db,
 		cfg:         cfg,
 		startTime:   time.Now(),
+		logger:      logger,
 	}
 }
 
@@ -297,17 +299,17 @@ func (hc *HealthChecker) StartHealthCheck(ctx context.Context, interval time.Dur
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	logger.GetLogger().Sugar().Infof("Starting health check with interval: %v", interval)
+	hc.logger.Sugar().Infof("Starting health check with interval: %v", interval)
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.GetLogger().Sugar().Infof("Health check stopped")
+			hc.logger.Sugar().Infof("Health check stopped")
 			return
 		case <-ticker.C:
 			health := hc.CheckHealth(ctx)
 			if health.Status == "unhealthy" {
-				logger.GetLogger().Sugar().Infof("Health check failed: %s", health.Status)
+				hc.logger.Sugar().Infof("Health check failed: %s", health.Status)
 				// 可以在这里添加告警逻辑
 			}
 		}

@@ -50,7 +50,7 @@ func testRedisEnabled() {
 		},
 	}
 
-	registry, err := discovery.NewServiceRegistry(cfg, "test-node-1", "50051")
+	registry, err := discovery.NewServiceRegistry(cfg, "test-node-1", "50051", logger.GetLogger())
 	if err != nil {
 		logger.Logger.Error("  ❌ 创建服务注册器失败", zap.Error(err))
 		return
@@ -109,7 +109,7 @@ func testRedisDisabled() {
 		},
 	}
 
-	registry, err := discovery.NewServiceRegistry(cfg, "test-node-2", "50052")
+	registry, err := discovery.NewServiceRegistry(cfg, "test-node-2", "50052", logger.GetLogger())
 	if err != nil {
 		logger.Logger.Error("  ❌ 创建服务注册器失败", zap.Error(err))
 		return

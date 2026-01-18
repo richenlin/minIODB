@@ -77,7 +77,7 @@ network:
     minio:
       endpoint: "localhost:9000"      # 本地开发环境
       access_key_id: "minioadmin"
-      secret_access_key: "minioadmin"
+      secret_access_key: "minioadmin123"
       use_ssl: false
       region: "us-east-1"
       bucket: "miniodb-data"
@@ -108,7 +108,7 @@ network:
     backup_minio:
       endpoint: "localhost:9002"      # 本地开发环境备份端口
       access_key_id: "minioadmin"
-      secret_access_key: "minioadmin"
+      secret_access_key: "minioadmin123"
       use_ssl: false
       region: "us-east-1"
       bucket: "miniodb-backup"
@@ -134,7 +134,7 @@ network:
 
 # Redis配置（保持向后兼容）
 redis:
-  enabled: true
+  enabled: false
   mode: "standalone"
   addr: "localhost:6379"
   password: "redis123"
@@ -149,7 +149,7 @@ redis:
 minio:
   endpoint: "localhost:9000"
   access_key_id: "minioadmin"
-  secret_access_key: "minioadmin"
+  secret_access_key: "minioadmin123"
   use_ssl: false
   region: "us-east-1"
   bucket: "miniodb-data"
@@ -318,7 +318,7 @@ backup:
   minio:
     endpoint: "localhost:9002"
     access_key_id: "minioadmin"
-    secret_access_key: "minioadmin"
+    secret_access_key: "minioadmin123"
     use_ssl: false
     bucket: "miniodb-backup"
   metadata:
@@ -367,7 +367,7 @@ benchmark:
 # 认证配置
 auth:
   enable_jwt: true
-  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  jwt_secret: "5Umj+4uj1HCHXhIVqg+8oes2KM+SvwAAmqWgxBwf3FE="
   token_expiry: "24h"
   enable_api_key: true
   api_keys:
@@ -477,7 +477,7 @@ storage_engine:
 # 安全配置（保持向后兼容）
 security:
   mode: "jwt"
-  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  jwt_secret: "5Umj+4uj1HCHXhIVqg+8oes2KM+SvwAAmqWgxBwf3FE="
   enable_tls: false
   valid_tokens: 
     - "test-token-123456"

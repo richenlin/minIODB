@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"minIODB/pkg/logger"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
@@ -14,7 +16,7 @@ import (
 
 func TestDefaultRedisPoolConfig(t *testing.T) {
 	config := DefaultRedisPoolConfig()
-	
+
 	assert.NotNil(t, config)
 	assert.Equal(t, RedisModeStandalone, config.Mode)
 	assert.Equal(t, "localhost:6379", config.Addr)
@@ -38,25 +40,25 @@ func TestNewRedisPool_Standalone(t *testing.T) {
 	defer s.Close()
 
 	config := &RedisPoolConfig{
-		Mode:              RedisModeStandalone,
-		Addr:              s.Addr(),
-		Password:          "",
-		DB:                0,
-		PoolSize:          10,
-		MinIdleConns:      5,
-		MaxConnAge:        time.Hour,
-		PoolTimeout:       4 * time.Second,
-		IdleTimeout:       5 * time.Minute,
-		IdleCheckFreq:     time.Minute,
-		DialTimeout:       5 * time.Second,
-		ReadTimeout:       3 * time.Second,
-		WriteTimeout:      3 * time.Second,
-		MaxRetries:        3,
-		MinRetryBackoff:   8 * time.Millisecond,
-		MaxRetryBackoff:   512 * time.Millisecond,
+		Mode:            RedisModeStandalone,
+		Addr:            s.Addr(),
+		Password:        "",
+		DB:              0,
+		PoolSize:        10,
+		MinIdleConns:    5,
+		MaxConnAge:      time.Hour,
+		PoolTimeout:     4 * time.Second,
+		IdleTimeout:     5 * time.Minute,
+		IdleCheckFreq:   time.Minute,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     3 * time.Second,
+		WriteTimeout:    3 * time.Second,
+		MaxRetries:      3,
+		MinRetryBackoff: 8 * time.Millisecond,
+		MaxRetryBackoff: 512 * time.Millisecond,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, pool)
 	defer pool.Close()
@@ -97,7 +99,7 @@ func TestNewRedisPool_InvalidConfig(t *testing.T) {
 		Addr: "invalid:address:port",
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	assert.Error(t, err)
 	assert.Nil(t, pool)
 }
@@ -115,7 +117,7 @@ func TestNewRedisPool_Sentinel(t *testing.T) {
 
 	// 由于没有真实的哨兵服务器，这个测试会失败
 	// 但我们可以测试配置是否正确设置
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	if err != nil {
 		// 预期会失败，因为没有真实的哨兵服务器
 		assert.Error(t, err)
@@ -134,7 +136,7 @@ func TestNewRedisPool_Cluster(t *testing.T) {
 
 	// 由于没有真实的集群服务器，这个测试会失败
 	// 但我们可以测试配置是否正确设置
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	if err != nil {
 		// 预期会失败，因为没有真实的集群服务器
 		assert.Error(t, err)
@@ -154,7 +156,7 @@ func TestRedisPool_Operations(t *testing.T) {
 		MinIdleConns: 5,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, pool)
 	defer pool.Close()
@@ -192,7 +194,7 @@ func TestRedisPool_UpdatePoolSize(t *testing.T) {
 		MinIdleConns: 2,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, pool)
 	defer pool.Close()
@@ -214,7 +216,7 @@ func TestRedisPool_HealthCheckFail(t *testing.T) {
 		DialTimeout:  100 * time.Millisecond,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	if err != nil {
 		// 如果连接创建失败，这是预期的
 		assert.Error(t, err)
@@ -223,10 +225,10 @@ func TestRedisPool_HealthCheckFail(t *testing.T) {
 
 	if pool != nil {
 		defer pool.Close()
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		
+
 		err = pool.HealthCheck(ctx)
 		assert.Error(t, err)
 	}
@@ -243,7 +245,7 @@ func TestRedisPool_Close(t *testing.T) {
 		MinIdleConns: 2,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, pool)
 
@@ -267,7 +269,7 @@ func TestRedisPool_ConcurrentAccess(t *testing.T) {
 		MinIdleConns: 10,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, pool)
 	defer pool.Close()
@@ -281,7 +283,7 @@ func TestRedisPool_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func(id int) {
 			defer func() { done <- true }()
-			
+
 			client := pool.GetClient()
 			if client == nil {
 				t.Errorf("Failed to get client in goroutine %d", id)
@@ -340,7 +342,7 @@ func BenchmarkRedisPool_GetClient(b *testing.B) {
 		MinIdleConns: 50,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	require.NoError(b, err)
 	require.NotNil(b, pool)
 	defer pool.Close()
@@ -367,7 +369,7 @@ func BenchmarkRedisPool_SetGet(b *testing.B) {
 		MinIdleConns: 50,
 	}
 
-	pool, err := NewRedisPool(config)
+	pool, err := NewRedisPool(config, logger.GetLogger())
 	require.NoError(b, err)
 	require.NotNil(b, pool)
 	defer pool.Close()
@@ -383,18 +385,18 @@ func BenchmarkRedisPool_SetGet(b *testing.B) {
 		for pb.Next() {
 			key := fmt.Sprintf("bench-key-%d", i)
 			value := fmt.Sprintf("bench-value-%d", i)
-			
+
 			err := client.Set(ctx, key, value, 0).Err()
 			if err != nil {
 				b.Fatal(err)
 			}
-			
+
 			_, err = client.Get(ctx, key).Result()
 			if err != nil {
 				b.Fatal(err)
 			}
-			
+
 			i++
 		}
 	})
-} 
+}

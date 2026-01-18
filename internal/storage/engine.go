@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"sync"
@@ -9,6 +8,8 @@ import (
 
 	"minIODB/config"
 	"minIODB/pkg/pool"
+
+	"go.uber.org/zap"
 )
 
 // StorageEngine 存储引擎优化器 - 第四阶段集成器
@@ -25,6 +26,7 @@ type StorageEngine struct {
 
 	isRunning bool
 	mutex     sync.RWMutex
+	logger    *zap.Logger
 }
 
 // EngineConfig 引擎配置
@@ -125,6 +127,7 @@ type OptimizationScheduler struct {
 	workerCount  int
 	isRunning    bool
 	mutex        sync.RWMutex
+	logger       *zap.Logger
 }
 
 // OptimizationTask 优化任务
@@ -163,6 +166,7 @@ type OptimizationWorker struct {
 	engine   *StorageEngine
 	stopChan chan struct{}
 	running  bool
+	logger   *zap.Logger
 }
 
 // PerformanceMonitor 性能监控器
@@ -174,6 +178,7 @@ type PerformanceMonitor struct {
 	monitorInterval time.Duration
 	stopChan        chan struct{}
 	mutex           sync.RWMutex
+	logger          *zap.Logger
 }
 
 // MetricHistory 指标历史
@@ -209,7 +214,7 @@ type Threshold struct {
 }
 
 // NewStorageEngine 创建存储引擎优化器
-func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *StorageEngine {
+func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool, logger *zap.Logger) *StorageEngine {
 	// 创建默认配置
 	engineConfig := NewDefaultEngineConfig()
 
@@ -220,20 +225,21 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 	}
 
 	optimizer := &StorageEngine{
-		parquetOptimizer: NewParquet(),
-		shardOptimizer:   NewShardOptimizer(),
-		indexSystem:      NewIndexSystem(redisPool),
+		parquetOptimizer: NewParquet(logger),
+		shardOptimizer:   NewShardOptimizer(logger),
+		indexSystem:      NewIndexSystem(redisPool, logger),
 		memoryOptimizer: NewMemoryOptimizer(&MemoryConfig{
 			MaxMemoryUsage:  engineConfig.MemoryConfig.MaxMemoryUsage,
 			PoolSizes:       engineConfig.MemoryConfig.MemoryPoolSizes,
 			GCInterval:      engineConfig.MemoryConfig.GCInterval,
 			ZeroCopyEnabled: engineConfig.MemoryConfig.EnableZeroCopy,
-		}),
+		}, logger),
 
 		config:    engineConfig,
 		stats:     &EngineStats{},
-		scheduler: NewOptimizationScheduler(),
-		monitor:   NewPerformanceMonitor(),
+		scheduler: NewOptimizationScheduler(logger),
+		monitor:   NewPerformanceMonitor(logger),
+		logger:    logger,
 	}
 
 	// 初始化统计信息
@@ -249,7 +255,7 @@ func NewStorageEngine(appConfig *config.Config, redisPool *pool.RedisPool) *Stor
 		optimizer.monitor.Start()
 	}
 
-	logger.GetLogger().Info("Storage Engine Optimizer initialized successfully")
+	optimizer.logger.Sugar().Infof("Storage Engine Optimizer initialized successfully")
 	return optimizer
 }
 
@@ -300,18 +306,19 @@ func NewDefaultEngineConfig() *EngineConfig {
 }
 
 // NewOptimizationScheduler 创建优化调度器
-func NewOptimizationScheduler() *OptimizationScheduler {
+func NewOptimizationScheduler(logger *zap.Logger) *OptimizationScheduler {
 	return &OptimizationScheduler{
 		tasks:        make([]*OptimizationTask, 0),
 		runningTasks: make(map[string]*OptimizationTask),
 		taskQueue:    make(chan *OptimizationTask, 100),
 		workerCount:  5,
 		workers:      make([]*OptimizationWorker, 5),
+		logger:       logger,
 	}
 }
 
 // NewPerformanceMonitor 创建性能监控器
-func NewPerformanceMonitor() *PerformanceMonitor {
+func NewPerformanceMonitor(logger *zap.Logger) *PerformanceMonitor {
 	return &PerformanceMonitor{
 		metrics:         make(map[string]*MetricHistory),
 		alerts:          make([]*PerformanceAlert, 0),
@@ -335,7 +342,7 @@ func (seo *StorageEngine) StartAutoOptimization() error {
 	// 启动调度器
 	seo.scheduler.Start(seo)
 
-	logger.GetLogger().Sugar().Infof("Auto optimization started with interval: %v", seo.config.OptimizeInterval)
+	seo.logger.Sugar().Infof("Auto optimization started with interval: %v", seo.config.OptimizeInterval)
 	return nil
 }
 
@@ -351,13 +358,13 @@ func (seo *StorageEngine) StopAutoOptimization() error {
 	seo.isRunning = false
 	seo.scheduler.Stop()
 
-	logger.GetLogger().Info("Auto optimization stopped")
+	seo.logger.Sugar().Infof("Auto optimization stopped")
 	return nil
 }
 
 // OptimizeStorage 执行存储优化
 func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *OptimizationOptions) (*OptimizationResult, error) {
-	logger.GetLogger().Info("Starting comprehensive storage optimization...")
+	seo.logger.Sugar().Infof("Starting comprehensive storage optimization...")
 
 	startTime := time.Now()
 	result := &OptimizationResult{
@@ -368,36 +375,36 @@ func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *Optimiza
 	// 1. Parquet存储优化
 	if options == nil || options.EnableParquetOptimization {
 		if err := seo.optimizeParquetStorage(ctx, result); err != nil {
-			logger.GetLogger().Sugar().Infof("Parquet optimization failed: %v", err)
+			seo.logger.Sugar().Infof("Parquet optimization failed: %v", err)
 		} else {
-			logger.GetLogger().Info("✅ Parquet storage optimization completed")
+			seo.logger.Sugar().Infof("✅ Parquet storage optimization completed")
 		}
 	}
 
 	// 2. 智能分片优化
 	if options == nil || options.EnableShardOptimization {
 		if err := seo.optimizeSharding(ctx, result); err != nil {
-			logger.GetLogger().Sugar().Infof("Shard optimization failed: %v", err)
+			seo.logger.Sugar().Infof("Shard optimization failed: %v", err)
 		} else {
-			logger.GetLogger().Info("✅ Sharding optimization completed")
+			seo.logger.Sugar().Infof("✅ Sharding optimization completed")
 		}
 	}
 
 	// 3. 索引系统优化
 	if options == nil || options.EnableIndexOptimization {
 		if err := seo.optimizeIndexes(ctx, result); err != nil {
-			logger.GetLogger().Sugar().Infof("Index optimization failed: %v", err)
+			seo.logger.Sugar().Infof("Index optimization failed: %v", err)
 		} else {
-			logger.GetLogger().Info("✅ Index optimization completed")
+			seo.logger.Sugar().Infof("✅ Index optimization completed")
 		}
 	}
 
 	// 4. 内存优化
 	if options == nil || options.EnableMemoryOptimization {
 		if err := seo.optimizeMemory(ctx, result); err != nil {
-			logger.GetLogger().Sugar().Infof("Memory optimization failed: %v", err)
+			seo.logger.Sugar().Infof("Memory optimization failed: %v", err)
 		} else {
-			logger.GetLogger().Info("✅ Memory optimization completed")
+			seo.logger.Sugar().Infof("✅ Memory optimization completed")
 		}
 	}
 
@@ -413,10 +420,10 @@ func (seo *StorageEngine) OptimizeStorage(ctx context.Context, options *Optimiza
 	seo.stats.OptimizationTime = duration
 	seo.stats.mutex.Unlock()
 
-	logger.GetLogger().Sugar().Infof("🎉 Storage optimization completed successfully in %v", duration)
-	logger.GetLogger().Sugar().Infof("📈 Performance improvement: %.2f%%", result.PerformanceImprovement)
-	logger.GetLogger().Sugar().Infof("💾 Storage savings: %.2f MB", result.StorageSavings/(1024*1024))
-	logger.GetLogger().Sugar().Infof("🧠 Memory savings: %.2f MB", result.MemorySavings/(1024*1024))
+	seo.logger.Sugar().Infof("🎉 Storage optimization completed successfully in %v", duration)
+	seo.logger.Sugar().Infof("📈 Performance improvement: %.2f%%", result.PerformanceImprovement)
+	seo.logger.Sugar().Infof("💾 Storage savings: %.2f MB", result.StorageSavings/(1024*1024))
+	seo.logger.Sugar().Infof("🧠 Memory savings: %.2f MB", result.MemorySavings/(1024*1024))
 
 	return result, nil
 }
@@ -439,7 +446,7 @@ func (seo *StorageEngine) optimizeParquetStorage(ctx context.Context, result *Op
 
 	// 选择最优压缩策略
 	optimalStrategy := seo.parquetOptimizer.GetOptimalCompressionStrategy("analytical", 1.0)
-	logger.GetLogger().Sugar().Infof("Selected optimal compression strategy: %s", optimalStrategy.Name)
+	seo.logger.Sugar().Infof("Selected optimal compression strategy: %s", optimalStrategy.Name)
 
 	// 计算压缩收益
 	if bestResult, exists := compressionResults[optimalStrategy.Name]; exists {
@@ -648,6 +655,7 @@ func (os *OptimizationScheduler) Start(engine *StorageEngine) {
 			engine:   engine,
 			stopChan: make(chan struct{}),
 			running:  true,
+			logger:   os.logger,
 		}
 		os.workers[i] = worker
 		go worker.run(os.taskQueue)
@@ -657,7 +665,7 @@ func (os *OptimizationScheduler) Start(engine *StorageEngine) {
 	os.scheduler = time.NewTicker(engine.config.OptimizeInterval)
 	go os.scheduleLoop(engine)
 
-	logger.GetLogger().Sugar().Infof("Optimization scheduler started with %d workers", os.workerCount)
+	engine.logger.Sugar().Infof("Optimization scheduler started with %d workers", os.workerCount)
 }
 
 // Stop 停止调度器
@@ -683,7 +691,7 @@ func (os *OptimizationScheduler) Stop() {
 		}
 	}
 
-	logger.GetLogger().Info("Optimization scheduler stopped")
+	os.logger.Sugar().Infof("Optimization scheduler stopped")
 }
 
 // scheduleLoop 调度循环
@@ -709,16 +717,16 @@ func (os *OptimizationScheduler) scheduleLoop(engine *StorageEngine) {
 
 		select {
 		case os.taskQueue <- task:
-			logger.GetLogger().Sugar().Infof("Scheduled auto optimization task: %s", task.ID)
+			os.logger.Sugar().Infof("Scheduled auto optimization task: %s", task.ID)
 		default:
-			logger.GetLogger().Info("Task queue full, skipping auto optimization")
+			os.logger.Sugar().Infof("Task queue full, skipping auto optimization")
 		}
 	}
 }
 
 // run 工作器运行
 func (ow *OptimizationWorker) run(taskQueue <-chan *OptimizationTask) {
-	logger.GetLogger().Sugar().Infof("Optimization worker %d started", ow.id)
+	ow.logger.Sugar().Infof("Optimization worker %d started", ow.id)
 
 	for {
 		select {
@@ -728,7 +736,7 @@ func (ow *OptimizationWorker) run(taskQueue <-chan *OptimizationTask) {
 			}
 		case <-ow.stopChan:
 			ow.running = false
-			logger.GetLogger().Sugar().Infof("Optimization worker %d stopped", ow.id)
+			ow.logger.Sugar().Infof("Optimization worker %d stopped", ow.id)
 			return
 		}
 	}
@@ -736,7 +744,7 @@ func (ow *OptimizationWorker) run(taskQueue <-chan *OptimizationTask) {
 
 // processTask 处理优化任务
 func (ow *OptimizationWorker) processTask(task *OptimizationTask) {
-	logger.GetLogger().Sugar().Infof("Worker %d processing task: %s", ow.id, task.ID)
+	ow.logger.Sugar().Infof("Worker %d processing task: %s", ow.id, task.ID)
 
 	task.Status = "running"
 	task.StartTime = time.Now()
@@ -758,12 +766,12 @@ func (ow *OptimizationWorker) processTask(task *OptimizationTask) {
 	if err != nil {
 		task.Status = "failed"
 		task.Error = err.Error()
-		logger.GetLogger().Sugar().Infof("Worker %d task failed: %s - %v", ow.id, task.ID, err)
+		ow.logger.Sugar().Infof("Worker %d task failed: %s - %v", ow.id, task.ID, err)
 	} else {
 		task.Status = "completed"
 		task.Result = result
 		task.Progress = 1.0
-		logger.GetLogger().Sugar().Infof("Worker %d task completed: %s in %v", ow.id, task.ID, task.Duration)
+		ow.logger.Sugar().Infof("Worker %d task completed: %s in %v", ow.id, task.ID, task.Duration)
 	}
 }
 
@@ -779,7 +787,7 @@ func (pm *PerformanceMonitor) Start() {
 	pm.isMonitoring = true
 	go pm.monitorLoop()
 
-	logger.GetLogger().Sugar().Infof("Performance monitor started with interval: %v", pm.monitorInterval)
+	pm.logger.Sugar().Infof("Performance monitor started with interval: %v", pm.monitorInterval)
 }
 
 // Stop 停止性能监控
@@ -794,7 +802,7 @@ func (pm *PerformanceMonitor) Stop() {
 	pm.isMonitoring = false
 	close(pm.stopChan)
 
-	logger.GetLogger().Info("Performance monitor stopped")
+	pm.logger.Sugar().Infof("Performance monitor stopped")
 }
 
 // monitorLoop 监控循环

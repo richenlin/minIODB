@@ -5,12 +5,12 @@ import (
 	"io"
 	"time"
 
+	"minIODB/config"
+	"minIODB/internal/metrics"
+
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
-	"minIODB/pkg/logger"
-	"minIODB/internal/metrics"
-	"minIODB/config"
 )
 
 // ObjectInfo 简化的对象信息结构
@@ -58,10 +58,11 @@ func NewMinioClient(cfg config.MinioConfig) (*MinioClient, error) {
 // MinioClientWrapper 带metrics的MinIO客户端包装器
 type MinioClientWrapper struct {
 	client *minio.Client
+	logger *zap.Logger
 }
 
 // NewMinioClientWrapper 创建新的MinIO客户端包装器
-func NewMinioClientWrapper(cfg config.MinioConfig) (*MinioClientWrapper, error) {
+func NewMinioClientWrapper(cfg config.MinioConfig, logger *zap.Logger) (*MinioClientWrapper, error) {
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
 		Secure: cfg.UseSSL,
@@ -72,6 +73,7 @@ func NewMinioClientWrapper(cfg config.MinioConfig) (*MinioClientWrapper, error) 
 
 	return &MinioClientWrapper{
 		client: client,
+		logger: logger,
 	}, nil
 }
 
@@ -115,16 +117,16 @@ func (m *MinioClientWrapper) FPutObject(ctx context.Context, bucketName, objectN
 	info, err := m.client.FPutObject(ctx, bucketName, objectName, filePath, opts)
 	if err != nil {
 		minioMetrics.Finish("error")
-		logger.GetLogger().Error("Failed to upload file", 
-			zap.Error(err), 
-			zap.String("bucket", bucketName), 
+		m.logger.Sugar().Error("Failed to upload file",
+			zap.Error(err),
+			zap.String("bucket", bucketName),
 			zap.String("object", objectName))
 		return minio.UploadInfo{}, err
 	}
-	
-	logger.GetLogger().Info("Successfully uploaded file", 
-		zap.String("bucket", bucketName), 
-		zap.String("object", objectName), 
+
+	m.logger.Sugar().Info("Successfully uploaded file",
+		zap.String("bucket", bucketName),
+		zap.String("object", objectName),
 		zap.Int64("size", info.Size))
 	return info, nil
 }
@@ -139,16 +141,16 @@ func (m *MinioClientWrapper) PutObject(ctx context.Context, bucketName, objectNa
 	info, err := m.client.PutObject(ctx, bucketName, objectName, reader, objectSize, opts)
 	if err != nil {
 		minioMetrics.Finish("error")
-		logger.GetLogger().Error("Failed to upload object", 
-			zap.Error(err), 
-			zap.String("bucket", bucketName), 
+		m.logger.Sugar().Error("Failed to upload object",
+			zap.Error(err),
+			zap.String("bucket", bucketName),
 			zap.String("object", objectName))
 		return minio.UploadInfo{}, err
 	}
-	
-	logger.GetLogger().Info("Successfully uploaded object", 
-		zap.String("bucket", bucketName), 
-		zap.String("object", objectName), 
+
+	m.logger.Sugar().Info("Successfully uploaded object",
+		zap.String("bucket", bucketName),
+		zap.String("object", objectName),
 		zap.Int64("size", info.Size))
 	return info, nil
 }
@@ -163,9 +165,9 @@ func (m *MinioClientWrapper) GetObject(ctx context.Context, bucketName, objectNa
 	object, err := m.client.GetObject(ctx, bucketName, objectName, opts)
 	if err != nil {
 		minioMetrics.Finish("error")
-		logger.GetLogger().Error("Failed to get object", 
-			zap.Error(err), 
-			zap.String("bucket", bucketName), 
+		m.logger.Sugar().Error("Failed to get object",
+			zap.Error(err),
+			zap.String("bucket", bucketName),
 			zap.String("object", objectName))
 		return nil, err
 	}
@@ -174,16 +176,16 @@ func (m *MinioClientWrapper) GetObject(ctx context.Context, bucketName, objectNa
 	data, err := io.ReadAll(object)
 	if err != nil {
 		minioMetrics.Finish("error")
-		logger.GetLogger().Error("Failed to read object data", 
-			zap.Error(err), 
-			zap.String("bucket", bucketName), 
+		m.logger.Sugar().Error("Failed to read object data",
+			zap.Error(err),
+			zap.String("bucket", bucketName),
 			zap.String("object", objectName))
 		return nil, err
 	}
 
-	logger.GetLogger().Info("Successfully retrieved object", 
-		zap.String("bucket", bucketName), 
-		zap.String("object", objectName), 
+	m.logger.Sugar().Info("Successfully retrieved object",
+		zap.String("bucket", bucketName),
+		zap.String("object", objectName),
 		zap.Int("size", len(data)))
 	return data, nil
 }
@@ -198,15 +200,15 @@ func (m *MinioClientWrapper) RemoveObject(ctx context.Context, bucketName, objec
 	err := m.client.RemoveObject(ctx, bucketName, objectName, opts)
 	if err != nil {
 		minioMetrics.Finish("error")
-		logger.GetLogger().Error("Failed to remove object", 
-			zap.Error(err), 
-			zap.String("bucket", bucketName), 
+		m.logger.Sugar().Error("Failed to remove object",
+			zap.Error(err),
+			zap.String("bucket", bucketName),
 			zap.String("object", objectName))
 		return err
 	}
-	
-	logger.GetLogger().Info("Successfully removed object", 
-		zap.String("bucket", bucketName), 
+
+	m.logger.Sugar().Info("Successfully removed object",
+		zap.String("bucket", bucketName),
 		zap.String("object", objectName))
 	return nil
 }
@@ -231,19 +233,19 @@ func (m *MinioClientWrapper) CopyObject(ctx context.Context, dst minio.CopyDestO
 	info, err := m.client.CopyObject(ctx, dst, src)
 	if err != nil {
 		minioMetrics.Finish("error")
-		logger.GetLogger().Error("Failed to copy object", 
-			zap.Error(err), 
-			zap.String("bucket", src.Bucket), 
-			zap.String("object", src.Object), 
-			zap.String("destination_bucket", dst.Bucket), 
+		m.logger.Sugar().Error("Failed to copy object",
+			zap.Error(err),
+			zap.String("bucket", src.Bucket),
+			zap.String("object", src.Object),
+			zap.String("destination_bucket", dst.Bucket),
 			zap.String("destination_object", dst.Object))
 		return minio.UploadInfo{}, err
 	}
-	
-	logger.GetLogger().Info("Successfully copied object", 
-		zap.String("bucket", src.Bucket), 
-		zap.String("object", src.Object), 
-		zap.String("destination_bucket", dst.Bucket), 
+
+	m.logger.Sugar().Info("Successfully copied object",
+		zap.String("bucket", src.Bucket),
+		zap.String("object", src.Object),
+		zap.String("destination_bucket", dst.Bucket),
 		zap.String("destination_object", dst.Object))
 	return info, nil
 }
@@ -260,7 +262,7 @@ func (m *MinioClientWrapper) StatObject(ctx context.Context, bucketName, objectN
 		minioMetrics.Finish("error")
 		return minio.ObjectInfo{}, err
 	}
-	
+
 	return info, nil
 }
 
@@ -280,21 +282,21 @@ func (m *MinioClientWrapper) ObjectExists(ctx context.Context, bucketName, objec
 	if err != nil {
 		errResponse := minio.ToErrorResponse(err)
 		if errResponse.Code == "NoSuchKey" {
-			logger.GetLogger().Info("Object does not exist", 
-				zap.String("bucket", bucketName), 
+			m.logger.Sugar().Info("Object does not exist",
+				zap.String("bucket", bucketName),
 				zap.String("object", objectName))
 			return false, nil
 		}
 		minioMetrics.Finish("error")
-		logger.GetLogger().Error("Failed to check object existence", 
-			zap.Error(err), 
-			zap.String("bucket", bucketName), 
+		m.logger.Error("Failed to check object existence",
+			zap.Error(err),
+			zap.String("bucket", bucketName),
 			zap.String("object", objectName))
 		return false, err
 	}
 
-	logger.GetLogger().Info("Object exists", 
-		zap.String("bucket", bucketName), 
+	m.logger.Info("Object exists",
+		zap.String("bucket", bucketName),
 		zap.String("object", objectName))
 	return true, nil
 }
@@ -312,8 +314,8 @@ func (m *MinioClientWrapper) ListObjectsSimple(ctx context.Context, bucketName s
 	for object := range objectCh {
 		if object.Err != nil {
 			minioMetrics.Finish("error")
-			logger.GetLogger().Error("Error listing objects", 
-				zap.Error(object.Err), 
+			m.logger.Error("Error listing objects",
+				zap.Error(object.Err),
 				zap.String("bucket", bucketName))
 			return nil, object.Err
 		}
@@ -325,8 +327,8 @@ func (m *MinioClientWrapper) ListObjectsSimple(ctx context.Context, bucketName s
 		})
 	}
 
-	logger.GetLogger().Info("Successfully listed objects", 
-		zap.String("bucket", bucketName), 
+	m.logger.Info("Successfully listed objects",
+		zap.String("bucket", bucketName),
 		zap.Int("count", len(objects)))
 	return objects, nil
 }

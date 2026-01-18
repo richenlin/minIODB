@@ -6,6 +6,7 @@ import (
 
 	"minIODB/config"
 	"minIODB/internal/discovery"
+	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 
 	"github.com/stretchr/testify/assert"
@@ -62,12 +63,12 @@ func createTestQueryCoordinator() *QueryCoordinator {
 	redisPoolConfig.RouteRandomly = defaultConfig.RouteRandomly
 
 	// 创建Redis连接池（不会真正连接）
-	redisPool, _ := pool.NewRedisPool(redisPoolConfig)
+	redisPool, _ := pool.NewRedisPool(redisPoolConfig, logger.GetLogger())
 
 	registry := &discovery.ServiceRegistry{}
 	localQuerier := &MockLocalQuerier{}
 
-	return NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	return NewQueryCoordinator(redisPool, registry, localQuerier, cfg, logger.GetLogger())
 }
 
 func TestQueryCoordinator_extractTablesFromSQL(t *testing.T) {

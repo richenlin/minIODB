@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"minIODB/internal/wal"
-	"minIODB/pkg/logger"
 
 	"go.uber.org/zap"
 )
@@ -26,6 +25,7 @@ type DurableManager struct {
 	wal            *wal.WAL
 	lastFlushedSeq uint64
 	table          string
+	logger         *zap.Logger
 }
 
 type DurableConfig struct {
@@ -35,11 +35,11 @@ type DurableConfig struct {
 	SyncOnWrite bool
 }
 
-func NewDurableManager(cfg *DurableConfig) (*DurableManager, error) {
+func NewDurableManager(cfg *DurableConfig, logger *zap.Logger) (*DurableManager, error) {
 	walCfg := wal.DefaultConfig(cfg.WALDir)
 	walCfg.SyncOnWrite = cfg.SyncOnWrite
 
-	w, err := wal.New(walCfg)
+	w, err := wal.New(walCfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -50,10 +50,11 @@ func NewDurableManager(cfg *DurableConfig) (*DurableManager, error) {
 		flushCh: make(chan struct{}, 1),
 		wal:     w,
 		table:   cfg.Table,
+		logger:  logger,
 	}
 
 	if err := dm.recover(); err != nil {
-		logger.GetLogger().Warn("Failed to recover from WAL", zap.Error(err))
+		dm.logger.Warn("Failed to recover from WAL", zap.Error(err))
 	}
 
 	return dm, nil
@@ -69,7 +70,7 @@ func (dm *DurableManager) recover() error {
 
 		var wr walRecord
 		if err := json.Unmarshal(record.Data, &wr); err != nil {
-			logger.GetLogger().Warn("Failed to unmarshal WAL record", zap.Error(err))
+			dm.logger.Warn("Failed to unmarshal WAL record", zap.Error(err))
 			return nil
 		}
 
@@ -92,7 +93,7 @@ func (dm *DurableManager) recover() error {
 	})
 
 	if recoveredCount > 0 {
-		logger.GetLogger().Info("Recovered data from WAL",
+		dm.logger.Info("Recovered data from WAL",
 			zap.Int("records", recoveredCount),
 			zap.String("table", dm.table))
 	}
@@ -165,7 +166,7 @@ func (dm *DurableManager) Flush(flushFunc FlushFunc) error {
 	}
 
 	if err := dm.wal.Truncate(seqAtFlush); err != nil {
-		logger.GetLogger().Warn("Failed to truncate WAL", zap.Error(err))
+		dm.logger.Warn("Failed to truncate WAL", zap.Error(err))
 	}
 
 	return nil

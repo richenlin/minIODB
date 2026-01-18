@@ -138,8 +138,8 @@ go mod download
 复制并编辑配置文件：
 
 ```bash
-cp config.yaml config.local.yaml
-# 编辑config.local.yaml中的连接信息
+cp config/config.yaml config/config.local.yaml
+# 编辑config/config.local.yaml中的连接信息
 ```
 
 #### 单节点模式配置

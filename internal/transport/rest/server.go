@@ -3,7 +3,6 @@ package rest
 import (
 	"context"
 	"fmt"
-	"minIODB/pkg/logger"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,9 +15,11 @@ import (
 	"minIODB/internal/security"
 	"minIODB/internal/service"
 
+	_ "minIODB/docs"
+
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	_ "minIODB/docs"
+	"go.uber.org/zap"
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -39,6 +40,7 @@ type Server struct {
 	securityMiddleware *security.SecurityMiddleware
 	smartRateLimiter   *security.SmartRateLimiter
 	tokenManager       *security.TokenManager
+	logger             *zap.Logger
 }
 
 // WriteRequest REST API写入请求
@@ -317,7 +319,7 @@ type ValidateMetadataBackupResponse struct {
 }
 
 // NewServer 创建新的REST服务器
-func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Server {
+func NewServer(miniodbService *service.MinIODBService, cfg *config.Config, logger *zap.Logger) (*Server, error) {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
@@ -335,7 +337,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 
 	authManager, err := security.NewAuthManager(authConfig)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("Warning: Failed to initialize auth manager: %v, security features will be limited", err)
+		return nil, fmt.Errorf("failed to create auth manager: %w", err)
 	}
 
 	// 创建安全中间件
@@ -373,14 +375,14 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 		}
 
 		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
-		logger.GetLogger().Sugar().Info("REST smart rate limiter initialized with %d tiers and %d path rules",
-			len(smartRateLimitConfig.Tiers), len(smartRateLimitConfig.PathLimits))
+		logger.Info("REST smart rate limiter initialized with %d tiers and %d path rules",
+			zap.Int("tiers", len(smartRateLimitConfig.Tiers)), zap.Int("path_limits", len(smartRateLimitConfig.PathLimits)))
 	} else {
 		// 使用默认配置但禁用
 		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
 		defaultConfig.Enabled = false
 		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
-		logger.GetLogger().Sugar().Info("REST smart rate limiter disabled")
+		logger.Info("REST smart rate limiter disabled")
 	}
 
 	tokenManager := security.NewTokenManager(nil)
@@ -393,14 +395,15 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config) *Serv
 		securityMiddleware: securityMiddleware,
 		smartRateLimiter:   smartRateLimiter,
 		tokenManager:       tokenManager,
+		logger:             logger,
 	}
 
 	server.setupMiddleware()
 	server.setupRoutes()
 
-	logger.GetLogger().Sugar().Info("REST server initialized with authentication mode: %s", cfg.Security.Mode)
+	logger.Info("REST server initialized with authentication mode: %s", zap.String("mode", cfg.Security.Mode))
 
-	return server
+	return server, nil
 }
 
 // setupMiddleware 设置中间件
@@ -417,13 +420,13 @@ func (s *Server) setupMiddleware() {
 	// 智能限流中间件（优先使用）
 	if s.cfg.Security.SmartRateLimit.Enabled && s.smartRateLimiter != nil {
 		s.router.Use(s.smartRateLimiter.Middleware())
-		logger.GetLogger().Sugar().Info("Smart rate limiter middleware enabled for REST API")
+		s.logger.Info("Smart rate limiter middleware enabled for REST API")
 	} else if s.cfg.Security.RateLimit.Enabled {
 		// 传统限流中间件（向后兼容）
 		s.router.Use(s.securityMiddleware.RateLimiter(s.cfg.Security.RateLimit.RequestsPerMinute))
-		logger.GetLogger().Sugar().Info("Traditional rate limiter middleware enabled for REST API")
+		s.logger.Info("Traditional rate limiter middleware enabled for REST API")
 	} else {
-		logger.GetLogger().Sugar().Info("Rate limiting disabled for REST API")
+		s.logger.Info("Rate limiting disabled for REST API")
 	}
 }
 
@@ -446,7 +449,7 @@ func (s *Server) setupRoutes() {
 			ginSwagger.URL("/api-docs/doc.json"),
 			ginSwagger.DefaultModelsExpandDepth(-1),
 		))
-		logger.GetLogger().Sugar().Info("Swagger UI enabled at /api-docs/index.html")
+		s.logger.Info("Swagger UI enabled at /api-docs/index.html")
 	}
 
 	api := s.router.Group("/v1")
@@ -465,11 +468,11 @@ func (s *Server) setupRoutes() {
 	// 需要JWT验证的路由
 	securedRoutes := api.Group("")
 	if s.authManager != nil && s.authManager.IsEnabled() {
-		logger.GetLogger().Sugar().Info("JWT authentication enabled for REST API")
+		s.logger.Info("JWT authentication enabled for REST API")
 		// 使用简单的JWT验证中间件
 		securedRoutes.Use(s.jwtAuthMiddleware())
 	} else {
-		logger.GetLogger().Sugar().Info("JWT authentication disabled for REST API")
+		s.logger.Info("JWT authentication disabled for REST API")
 	}
 
 	// 数据操作
@@ -576,7 +579,7 @@ func (s *Server) writeData(c *gin.Context) {
 				return
 			}
 			req.ID = generatedID
-			logger.GetLogger().Sugar().Info("Auto-generated ID for table %s: %s", tableName, req.ID)
+			s.logger.Info("Auto-generated ID for table %s: %s", zap.String("table", tableName), zap.String("id", req.ID))
 		} else {
 			// 如果不允许自动生成且未提供ID，返回错误
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -891,7 +894,7 @@ func (s *Server) getToken(c *gin.Context) {
 	}
 
 	if err := s.tokenManager.StoreRefreshToken(c.Request.Context(), refreshToken, req.APIKey); err != nil {
-		logger.GetLogger().Sugar().Info("WARN: Failed to store refresh token: %v", err)
+		s.logger.Info("WARN: Failed to store refresh token: %v", zap.Error(err))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -935,7 +938,7 @@ func (s *Server) refreshToken(c *gin.Context) {
 	}
 
 	if err := s.tokenManager.RevokeRefreshToken(c.Request.Context(), req.RefreshToken); err != nil {
-		logger.GetLogger().Sugar().Info("WARN: Failed to revoke old refresh token: %v", err)
+		s.logger.Info("WARN: Failed to revoke old refresh token: %v", zap.Error(err))
 	}
 
 	accessToken, err := s.authManager.GenerateToken(userID, userID)
@@ -951,7 +954,7 @@ func (s *Server) refreshToken(c *gin.Context) {
 	}
 
 	if err := s.tokenManager.StoreRefreshToken(c.Request.Context(), newRefreshToken, userID); err != nil {
-		logger.GetLogger().Sugar().Info("WARN: Failed to store new refresh token: %v", err)
+		s.logger.Info("WARN: Failed to store new refresh token: %v", zap.Error(err))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -988,14 +991,14 @@ func (s *Server) revokeToken(c *gin.Context) {
 	}
 
 	if err := s.tokenManager.RevokeAccessToken(c.Request.Context(), req.Token); err != nil {
-		logger.GetLogger().Sugar().Info("WARN: Failed to revoke token: %v", err)
+		s.logger.Info("WARN: Failed to revoke token: %v", zap.Error(err))
 	}
 
 	tokenPreview := req.Token
 	if len(tokenPreview) > 10 {
 		tokenPreview = tokenPreview[:10] + "..."
 	}
-	logger.GetLogger().Sugar().Info("INFO: Token revoked via REST API: %s", tokenPreview)
+	s.logger.Info("INFO: Token revoked via REST API", zap.String("token", tokenPreview))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1344,12 +1347,12 @@ func (s *Server) Start(port string) error {
 		MaxHeaderBytes:    restNetworkConfig.MaxHeaderBytes,    // 1MB
 	}
 
-	logger.GetLogger().Sugar().Info("REST server starting on %s with optimized network config", port)
-	logger.GetLogger().Sugar().Info("REST server timeouts - Read: %v, Write: %v, Idle: %v, ReadHeader: %v",
-		restNetworkConfig.ReadTimeout,
-		restNetworkConfig.WriteTimeout,
-		restNetworkConfig.IdleTimeout,
-		restNetworkConfig.ReadHeaderTimeout)
+	s.logger.Info("REST server starting on %s with optimized network config", zap.String("port", port))
+	s.logger.Info("REST server timeouts - Read: %v, Write: %v, Idle: %v, ReadHeader: %v",
+		zap.Duration("read_timeout", restNetworkConfig.ReadTimeout),
+		zap.Duration("write_timeout", restNetworkConfig.WriteTimeout),
+		zap.Duration("idle_timeout", restNetworkConfig.IdleTimeout),
+		zap.Duration("read_header_timeout", restNetworkConfig.ReadHeaderTimeout))
 
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start REST server: %w", err)
@@ -1360,7 +1363,7 @@ func (s *Server) Start(port string) error {
 
 // Stop 停止服务器
 func (s *Server) Stop(ctx context.Context) error {
-	logger.GetLogger().Sugar().Info("Stopping REST server...")
+	s.logger.Info("Stopping REST server...")
 	if s.server != nil {
 		// 获取优雅关闭超时配置
 		restNetworkConfig := getRESTNetworkConfig(s.cfg)
@@ -1369,7 +1372,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(ctx, restNetworkConfig.ShutdownTimeout)
 		defer cancel()
 
-		logger.GetLogger().Sugar().Info("REST server graceful shutdown timeout: %v", restNetworkConfig.ShutdownTimeout)
+		s.logger.Info("REST server graceful shutdown timeout", zap.Duration("timeout", restNetworkConfig.ShutdownTimeout))
 		return s.server.Shutdown(shutdownCtx)
 	}
 	return nil

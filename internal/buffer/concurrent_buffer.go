@@ -15,7 +15,6 @@ import (
 	"minIODB/internal/metrics"
 	"minIODB/internal/storage"
 	"minIODB/internal/wal"
-	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
@@ -112,6 +111,8 @@ type ConcurrentBuffer struct {
 
 	// 统计信息
 	stats *ConcurrentBufferStats
+
+	logger *zap.Logger
 }
 
 // ConcurrentBufferStats 并发缓冲区统计信息
@@ -138,7 +139,8 @@ type Worker struct {
 }
 
 // NewConcurrentBuffer 创建新的并发缓冲区
-func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config, backupBucket, nodeID string, config *ConcurrentBufferConfig) *ConcurrentBuffer {
+func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config,
+	backupBucket, nodeID string, config *ConcurrentBufferConfig, logger *zap.Logger) *ConcurrentBuffer {
 	if config == nil {
 		config = DefaultConcurrentBufferConfig()
 	}
@@ -156,6 +158,7 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 		stats:          &ConcurrentBufferStats{},
 		walEnabled:     config.WALEnabled,
 		lastFlushedSeq: make(map[string]uint64),
+		logger:         logger,
 	}
 
 	// 初始化 WAL (如果启用)
@@ -163,21 +166,21 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 		walCfg := wal.DefaultConfig(config.WALDir)
 		walCfg.SyncOnWrite = config.WALSyncOnWrite
 
-		w, err := wal.New(walCfg)
+		w, err := wal.New(walCfg, cb.logger)
 		if err != nil {
-			logger.GetLogger().Error("Failed to initialize WAL, continuing without WAL",
+			cb.logger.Error("Failed to initialize WAL, continuing without WAL",
 				zap.Error(err),
 				zap.String("wal_dir", config.WALDir))
 			cb.walEnabled = false
 		} else {
 			cb.wal = w
-			logger.GetLogger().Info("WAL initialized successfully",
+			cb.logger.Info("WAL initialized successfully",
 				zap.String("wal_dir", config.WALDir),
 				zap.Bool("sync_on_write", config.WALSyncOnWrite))
 
 			// 从 WAL 恢复数据
 			if err := cb.recoverFromWAL(); err != nil {
-				logger.GetLogger().Warn("Failed to recover from WAL",
+				cb.logger.Warn("Failed to recover from WAL",
 					zap.Error(err))
 			}
 		}
@@ -189,8 +192,10 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 	// 启动定期刷新
 	go cb.periodicFlush()
 
-	logger.GetLogger().Sugar().Infof("Concurrent buffer initialized with %d workers, queue size %d, WAL enabled: %v",
-		config.WorkerPoolSize, config.TaskQueueSize, cb.walEnabled)
+	cb.logger.Info("Concurrent buffer initialized with %d workers, queue size %d, WAL enabled: %v",
+		zap.Int("worker_pool_size", config.WorkerPoolSize),
+		zap.Int("task_queue_size", config.TaskQueueSize),
+		zap.Bool("wal_enabled", cb.walEnabled))
 
 	return cb
 }
@@ -211,7 +216,7 @@ func (cb *ConcurrentBuffer) recoverFromWAL() error {
 
 		var wr walDataRow
 		if err := json.Unmarshal(record.Data, &wr); err != nil {
-			logger.GetLogger().Warn("Failed to unmarshal WAL record during recovery",
+			cb.logger.Warn("Failed to unmarshal WAL record during recovery",
 				zap.Error(err),
 				zap.Uint64("seq_num", record.SeqNum))
 			return nil // 跳过损坏的记录，继续恢复
@@ -241,7 +246,7 @@ func (cb *ConcurrentBuffer) recoverFromWAL() error {
 	}
 
 	if recoveredCount > 0 {
-		logger.GetLogger().Info("Recovered data from WAL",
+		cb.logger.Info("Recovered data from WAL",
 			zap.Int("records", recoveredCount),
 			zap.Int("buffer_keys", len(cb.buffer)),
 			zap.Uint64("max_seq_num", maxSeqNum))
@@ -287,10 +292,10 @@ func (w *Worker) run() {
 				atomic.StoreInt64(&w.active, 0)
 			}
 		case <-w.stopChan:
-			logger.GetLogger().Sugar().Infof("Worker %d stopping", w.id)
+			w.buffer.logger.Info("Worker %d stopping", zap.Int("id", w.id))
 			return
 		case <-w.buffer.shutdown:
-			logger.GetLogger().Sugar().Infof("Worker %d shutting down", w.id)
+			w.buffer.logger.Info("Worker %d shutting down", zap.Int("id", w.id))
 			return
 		}
 	}
@@ -324,7 +329,7 @@ func (w *Worker) processTask(task *FlushTask) {
 	// 执行刷新任务
 	err := w.flushData(task.BufferKey, task.Rows)
 	if err != nil {
-		logger.GetLogger().Sugar().Infof("Worker %d: flush task failed for key %s: %v", w.id, task.BufferKey, err)
+		w.buffer.logger.Info("Worker %d: flush task failed for key %s: %v", zap.Int("id", w.id), zap.String("buffer_key", task.BufferKey), zap.Error(err))
 
 		// 重试逻辑
 		if task.Retries < w.buffer.config.MaxRetries {
@@ -336,29 +341,29 @@ func (w *Worker) processTask(task *FlushTask) {
 				time.Sleep(w.buffer.config.RetryDelay * time.Duration(task.Retries))
 				select {
 				case w.buffer.taskQueue <- task:
-					logger.GetLogger().Sugar().Infof("Retrying flush task for key %s (attempt %d)", task.BufferKey, task.Retries+1)
+					w.buffer.logger.Info("Retrying flush task for key %s (attempt %d)", zap.String("buffer_key", task.BufferKey), zap.Int("attempt", task.Retries+1))
 				case <-w.buffer.shutdown:
 					// 系统关闭，放弃重试
 				}
 			}()
 		} else {
-			logger.GetLogger().Sugar().Infof("Worker %d: max retries exceeded for key %s", w.id, task.BufferKey)
+			w.buffer.logger.Info("Worker %d: max retries exceeded for key %s", zap.Int("id", w.id), zap.String("buffer_key", task.BufferKey))
 			w.buffer.updateStats(func(stats *ConcurrentBufferStats) {
 				atomic.AddInt64(&stats.FailedTasks, 1)
 			})
 		}
 	} else {
-		logger.GetLogger().Sugar().Infof("Worker %d: successfully flushed %d rows for key %s", w.id, len(task.Rows), task.BufferKey)
+		w.buffer.logger.Info("Worker %d: successfully flushed %d rows for key %s", zap.Int("id", w.id), zap.Int("rows", len(task.Rows)), zap.String("buffer_key", task.BufferKey))
 
 		// Flush 成功后，截断 WAL
 		if w.buffer.walEnabled && w.buffer.wal != nil && task.MaxSeqNum > 0 {
 			if err := w.buffer.wal.Truncate(task.MaxSeqNum); err != nil {
-				logger.GetLogger().Warn("Failed to truncate WAL after successful flush",
+				w.buffer.logger.Warn("Failed to truncate WAL after successful flush",
 					zap.Error(err),
 					zap.String("buffer_key", task.BufferKey),
 					zap.Uint64("seq_num", task.MaxSeqNum))
 			} else {
-				logger.GetLogger().Debug("WAL truncated after successful flush",
+				w.buffer.logger.Debug("WAL truncated after successful flush",
 					zap.String("buffer_key", task.BufferKey),
 					zap.Uint64("seq_num", task.MaxSeqNum))
 			}
@@ -418,7 +423,7 @@ func (w *Worker) writeParquetFile(filePath string, rows []DataRow) error {
 func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	// 如果poolManager为nil（测试模式），直接返回成功
 	if w.buffer.poolManager == nil {
-		logger.GetLogger().Sugar().Infof("Test mode: skipping upload for key %s", bufferKey)
+		w.buffer.logger.Info("Test mode: skipping upload for key %s", zap.String("buffer_key", bufferKey))
 		return nil
 	}
 
@@ -471,7 +476,7 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 		})
 
 		if err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to upload to backup storage: %v", err)
+			w.buffer.logger.Warn("WARN: failed to upload to backup storage: %v", zap.Error(err))
 			backupMetrics.Finish("error")
 		} else {
 			backupMetrics.Finish("success")
@@ -480,12 +485,12 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 
 	// 提取并存储 Parquet 文件元数据到 Redis（用于查询时的文件剪枝）
 	if err := w.extractAndStoreFileMetadata(ctx, localFilePath, objectName); err != nil {
-		logger.GetLogger().Sugar().Warnf("Failed to store file metadata (non-fatal): %v", err)
+		w.buffer.logger.Warn("Failed to store file metadata (non-fatal): %v", zap.Error(err))
 		// 不阻塞主流程，继续更新索引
 	}
 
 	if err := w.updateRedisIndex(ctx, bufferKey, objectName); err != nil {
-		logger.GetLogger().Sugar().Infof("ERROR: Redis index update failed, rolling back MinIO upload: %v", err)
+		w.buffer.logger.Error("ERROR: Redis index update failed, rolling back MinIO upload: %v", zap.Error(err))
 		w.rollbackMinIOUpload(ctx, primaryBucket, objectName)
 		return fmt.Errorf("failed to update metadata, upload rolled back: %w", err)
 	}
@@ -496,7 +501,7 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName string) {
 	minioPool := w.buffer.poolManager.GetMinIOPool()
 	if minioPool == nil {
-		logger.GetLogger().Sugar().Infof("ERROR: cannot rollback MinIO upload - pool unavailable")
+		w.buffer.logger.Error("ERROR: cannot rollback MinIO upload - pool unavailable")
 		return
 	}
 
@@ -506,9 +511,9 @@ func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName str
 	})
 
 	if err != nil {
-		logger.GetLogger().Sugar().Infof("ERROR: failed to rollback MinIO upload for %s/%s: %v", bucket, objectName, err)
+		w.buffer.logger.Error("ERROR: failed to rollback MinIO upload for %s/%s: %v", zap.String("bucket", bucket), zap.String("object_name", objectName), zap.Error(err))
 	} else {
-		logger.GetLogger().Sugar().Infof("INFO: successfully rolled back MinIO upload for %s/%s", bucket, objectName)
+		w.buffer.logger.Info("INFO: successfully rolled back MinIO upload for %s/%s", zap.String("bucket", bucket), zap.String("object_name", objectName))
 	}
 }
 
@@ -516,7 +521,7 @@ func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName str
 func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName string) error {
 	// 如果poolManager为nil（测试模式），直接返回成功
 	if w.buffer.poolManager == nil {
-		logger.GetLogger().Sugar().Infof("Test mode: skipping Redis index update for key %s", bufferKey)
+		w.buffer.logger.Info("Test mode: skipping Redis index update for key %s", zap.String("buffer_key", bufferKey))
 		return nil
 	}
 
@@ -548,7 +553,7 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 	if w.buffer.nodeID != "" {
 		nodeDataKey := fmt.Sprintf("node:data:%s", w.buffer.nodeID)
 		if _, err := client.SAdd(ctx, nodeDataKey, redisKey).Result(); err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to update node data mapping: %v", err)
+			w.buffer.logger.Warn("WARN: failed to update node data mapping: %v", zap.Error(err))
 		}
 	}
 
@@ -567,7 +572,7 @@ func (w *Worker) extractAndStoreFileMetadata(ctx context.Context, localFilePath,
 	}
 
 	// 使用 Parquet Reader 提取文件元数据
-	parquetReader := storage.NewParquetReader(nil)
+	parquetReader := storage.NewParquetReader(nil, w.buffer.logger.With(zap.String("local_file_path", localFilePath)))
 	fileMetadata, err := parquetReader.GetFileMetadata(localFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to extract parquet metadata: %w", err)
@@ -599,7 +604,7 @@ func (w *Worker) extractAndStoreFileMetadata(ctx context.Context, localFilePath,
 	// 1. 尝试存储到 Redis（分布式模式）
 	if redisPool != nil {
 		if err := w.storeMetadataToRedis(ctx, objectName, fileMetadata); err != nil {
-			logger.GetLogger().Debug("Failed to store metadata to Redis (will try MinIO sidecar)",
+			w.buffer.logger.Debug("Failed to store metadata to Redis (will try MinIO sidecar)",
 				zap.String("object", objectName),
 				zap.Error(err))
 			lastErr = err
@@ -611,7 +616,7 @@ func (w *Worker) extractAndStoreFileMetadata(ctx context.Context, localFilePath,
 	// 2. 同时存储到 MinIO sidecar（单节点模式或作为备份）
 	if minioPool != nil {
 		if err := w.storeMetadataToMinIOSidecar(ctx, minioPool, bucket, objectName, fileMetadata); err != nil {
-			logger.GetLogger().Debug("Failed to store metadata to MinIO sidecar",
+			w.buffer.logger.Debug("Failed to store metadata to MinIO sidecar",
 				zap.String("object", objectName),
 				zap.Error(err))
 			lastErr = err
@@ -622,7 +627,7 @@ func (w *Worker) extractAndStoreFileMetadata(ctx context.Context, localFilePath,
 
 	// 只要有一个成功就算成功
 	if storedToRedis || storedToMinIO {
-		logger.GetLogger().Debug("Stored file metadata",
+		w.buffer.logger.Debug("Stored file metadata",
 			zap.String("object", objectName),
 			zap.Int64("row_count", fileMetadata.RowCount),
 			zap.Int("min_values_count", len(fileMetadata.MinValues)),
@@ -731,14 +736,14 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 		}
 		data, err := json.Marshal(walData)
 		if err != nil {
-			logger.GetLogger().Error("Failed to marshal WAL data",
+			cb.logger.Error("Failed to marshal WAL data",
 				zap.Error(err),
 				zap.String("buffer_key", bufferKey))
 			// WAL 写入失败，但仍写入内存（降级模式）
 		} else {
 			seqNum, err := cb.wal.Append(wal.RecordTypeData, data)
 			if err != nil {
-				logger.GetLogger().Error("Failed to append to WAL",
+				cb.logger.Error("Failed to append to WAL",
 					zap.Error(err),
 					zap.String("buffer_key", bufferKey))
 				// WAL 写入失败，但仍写入内存（降级模式）
@@ -820,11 +825,11 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 		}
 	case <-cb.shutdown:
 		// 系统关闭，直接执行刷新
-		logger.GetLogger().Sugar().Infof("System shutting down, executing immediate flush for key %s", bufferKey)
+		cb.logger.Info("System shutting down, executing immediate flush for key %s", zap.String("buffer_key", bufferKey))
 		worker := cb.workers[0] // 使用第一个worker
 		worker.processTask(task)
 	default:
-		logger.GetLogger().Sugar().Infof("WARN: task queue full, dropping flush task for key %s", bufferKey)
+		cb.logger.Warn("WARN: task queue full, dropping flush task for key %s", zap.String("buffer_key", bufferKey))
 		cb.updateStats(func(stats *ConcurrentBufferStats) {
 			atomic.AddInt64(&stats.FailedTasks, 1)
 		})
@@ -841,7 +846,7 @@ func (cb *ConcurrentBuffer) periodicFlush() {
 		case <-ticker.C:
 			cb.flushAllBuffers()
 		case <-cb.shutdown:
-			logger.GetLogger().Info("Periodic flush stopped")
+			cb.logger.Info("Periodic flush stopped")
 			return
 		}
 	}
@@ -952,7 +957,7 @@ func (cb *ConcurrentBuffer) updateStats(updater func(*ConcurrentBufferStats)) {
 // Stop 停止缓冲区
 func (cb *ConcurrentBuffer) Stop() {
 	cb.shutdownOnce.Do(func() {
-		logger.GetLogger().Info("Stopping concurrent buffer...")
+		cb.logger.Info("Stopping concurrent buffer...")
 
 		// 刷新所有剩余数据
 		cb.flushAllBuffers()
@@ -974,14 +979,14 @@ func (cb *ConcurrentBuffer) Stop() {
 		// 关闭 WAL
 		if cb.walEnabled && cb.wal != nil {
 			if err := cb.wal.Close(); err != nil {
-				logger.GetLogger().Warn("Failed to close WAL",
+				cb.logger.Warn("Failed to close WAL",
 					zap.Error(err))
 			} else {
-				logger.GetLogger().Info("WAL closed successfully")
+				cb.logger.Info("WAL closed successfully")
 			}
 		}
 
-		logger.GetLogger().Info("Concurrent buffer stopped successfully")
+		cb.logger.Info("Concurrent buffer stopped successfully")
 	})
 }
 
@@ -1012,7 +1017,7 @@ func (cb *ConcurrentBuffer) GetTableKeys(tableName string) []string {
 // InvalidateTableConfig 使表配置缓存失效（兼容接口，ConcurrentBuffer不需要此功能）
 func (cb *ConcurrentBuffer) InvalidateTableConfig(tableName string) {
 	// ConcurrentBuffer不缓存表配置，此方法为兼容性保留
-	logger.GetLogger().Sugar().Infof("InvalidateTableConfig called for table %s (no-op in ConcurrentBuffer)", tableName)
+	cb.logger.Info("InvalidateTableConfig called for table %s (no-op in ConcurrentBuffer)", zap.String("table_name", tableName))
 }
 
 // GetTableBufferKeys 获取指定表的所有缓冲区键（别名方法，兼容性）

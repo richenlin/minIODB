@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // CircuitBreakerState 熔断器状态
@@ -64,14 +64,16 @@ type CircuitBreaker struct {
 	lastFailTime time.Time
 	mu           sync.RWMutex
 	name         string
+	logger       *zap.Logger
 }
 
 // NewCircuitBreaker 创建熔断器
-func NewCircuitBreaker(name string, config CircuitBreakerConfig) *CircuitBreaker {
+func NewCircuitBreaker(name string, config CircuitBreakerConfig, logger *zap.Logger) *CircuitBreaker {
 	return &CircuitBreaker{
 		config: config,
 		state:  CircuitBreakerClosed,
 		name:   name,
+		logger: logger,
 	}
 }
 
@@ -86,7 +88,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn Func) error {
 		if time.Since(cb.lastFailTime) > cb.config.RecoveryTimeout {
 			cb.state = CircuitBreakerHalfOpen
 			cb.successes = 0
-			logger.GetLogger().Sugar().Infof("Circuit breaker %s: transitioning to half-open state", cb.name)
+			cb.logger.Info("Circuit breaker transitioning to half-open state", zap.String("name", cb.name))
 		} else {
 			cb.mu.Unlock()
 			return fmt.Errorf("circuit breaker %s is open", cb.name)
@@ -126,13 +128,12 @@ func (cb *CircuitBreaker) onFailure() {
 		if cb.requests >= cb.config.RequestVolumeThreshold &&
 			cb.failures >= cb.config.FailureThreshold {
 			cb.state = CircuitBreakerOpen
-			logger.GetLogger().Sugar().Infof("Circuit breaker %s: opening due to %d failures out of %d requests",
-				cb.name, cb.failures, cb.requests)
+			cb.logger.Info("Circuit breaker opening due to failures", zap.String("name", cb.name), zap.Int("failures", cb.failures), zap.Int("requests", cb.requests))
 		}
 	case CircuitBreakerHalfOpen:
 		// 半开状态下失败，直接打开
 		cb.state = CircuitBreakerOpen
-		logger.GetLogger().Sugar().Infof("Circuit breaker %s: opening from half-open state due to failure", cb.name)
+		cb.logger.Info("Circuit breaker opening from half-open state due to failure", zap.String("name", cb.name))
 	}
 }
 
@@ -145,8 +146,7 @@ func (cb *CircuitBreaker) onSuccess() {
 			cb.state = CircuitBreakerClosed
 			cb.failures = 0
 			cb.requests = 0
-			logger.GetLogger().Sugar().Infof("Circuit breaker %s: closing from half-open state after %d successes",
-				cb.name, cb.successes)
+			cb.logger.Info("Circuit breaker closing from half-open state after successes", zap.String("name", cb.name), zap.Int("successes", cb.successes))
 		}
 	case CircuitBreakerClosed:
 		// 重置失败计数器
@@ -195,5 +195,5 @@ func (cb *CircuitBreaker) Reset() {
 	cb.failures = 0
 	cb.successes = 0
 	cb.requests = 0
-	logger.GetLogger().Sugar().Infof("Circuit breaker %s: reset to closed state", cb.name)
+	cb.logger.Info("Circuit breaker reset to closed state", zap.String("name", cb.name))
 }

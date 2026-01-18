@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"minIODB/config"
-	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 
 	"github.com/go-redis/redis/v8"
@@ -32,10 +31,14 @@ type RedisSubscriber struct {
 	publishedCount int64
 	consumedCount  int64
 	failedCount    int64
+	logger         *zap.Logger
 }
 
 // NewRedisSubscriber 创建 Redis Streams 订阅者
-func NewRedisSubscriber(redisPool *pool.RedisPool, cfg *config.RedisSubscriptionConfig) (*RedisSubscriber, error) {
+func NewRedisSubscriber(redisPool *pool.RedisPool, cfg *config.RedisSubscriptionConfig, logger *zap.Logger) (*RedisSubscriber, error) {
+	if logger == nil {
+		return nil, fmt.Errorf("logger is required")
+	}
 	if redisPool == nil {
 		return nil, fmt.Errorf("redis pool is required")
 	}
@@ -56,6 +59,7 @@ func NewRedisSubscriber(redisPool *pool.RedisPool, cfg *config.RedisSubscription
 		cfg:            cfg,
 		handlers:       make(map[string]EventHandler),
 		consumerName:   consumerName,
+		logger:         logger,
 	}, nil
 }
 
@@ -81,7 +85,7 @@ func (s *RedisSubscriber) Start(ctx context.Context) error {
 	}
 
 	s.SetStatus(StatusRunning)
-	logger.GetLogger().Info("Redis subscriber started",
+	s.logger.Info("Redis subscriber started",
 		zap.String("consumer_name", s.consumerName),
 		zap.String("consumer_group", s.cfg.ConsumerGroup))
 
@@ -111,11 +115,11 @@ func (s *RedisSubscriber) Stop(ctx context.Context) error {
 	case <-done:
 		// 正常完成
 	case <-ctx.Done():
-		logger.GetLogger().Warn("Redis subscriber stop timeout")
+		s.logger.Warn("Redis subscriber stop timeout")
 	}
 
 	s.SetStatus(StatusStopped)
-	logger.GetLogger().Info("Redis subscriber stopped")
+	s.logger.Info("Redis subscriber stopped")
 	return nil
 }
 
@@ -174,7 +178,7 @@ func (s *RedisSubscriber) Publish(ctx context.Context, event *DataEvent) error {
 	atomic.AddInt64(&s.publishedCount, 1)
 	s.IncrPublished(1)
 
-	logger.GetLogger().Debug("Published event to Redis Stream",
+	s.logger.Debug("Published event to Redis Stream",
 		zap.String("stream", streamKey),
 		zap.String("msg_id", msgID),
 		zap.String("event_id", event.EventID))
@@ -202,7 +206,7 @@ func (s *RedisSubscriber) PublishBatch(ctx context.Context, events []*DataEvent)
 
 	for _, event := range events {
 		if err := event.Validate(); err != nil {
-			logger.GetLogger().Warn("Skip invalid event",
+			s.logger.Warn("Skip invalid event",
 				zap.String("event_id", event.EventID),
 				zap.Error(err))
 			continue
@@ -210,7 +214,7 @@ func (s *RedisSubscriber) PublishBatch(ctx context.Context, events []*DataEvent)
 
 		eventJSON, err := event.ToJSON()
 		if err != nil {
-			logger.GetLogger().Warn("Failed to serialize event",
+			s.logger.Warn("Failed to serialize event",
 				zap.String("event_id", event.EventID),
 				zap.Error(err))
 			continue
@@ -247,7 +251,7 @@ func (s *RedisSubscriber) PublishBatch(ctx context.Context, events []*DataEvent)
 	atomic.AddInt64(&s.publishedCount, int64(len(events)))
 	s.IncrPublished(int64(len(events)))
 
-	logger.GetLogger().Debug("Published batch events to Redis Stream",
+	s.logger.Debug("Published batch events to Redis Stream",
 		zap.Int("count", len(events)))
 
 	return nil
@@ -279,7 +283,7 @@ func (s *RedisSubscriber) Subscribe(ctx context.Context, tables []string, handle
 		// 创建 Consumer Group（从最新消息开始）
 		err := client.XGroupCreateMkStream(ctx, streamKey, s.cfg.ConsumerGroup, "$").Err()
 		if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
-			logger.GetLogger().Warn("Failed to create consumer group",
+			s.logger.Warn("Failed to create consumer group",
 				zap.String("stream", streamKey),
 				zap.String("group", s.cfg.ConsumerGroup),
 				zap.Error(err))
@@ -290,7 +294,7 @@ func (s *RedisSubscriber) Subscribe(ctx context.Context, tables []string, handle
 	s.wg.Add(1)
 	go s.consumeLoop(tables)
 
-	logger.GetLogger().Info("Subscribed to tables",
+	s.logger.Info("Subscribed to tables",
 		zap.Strings("tables", tables),
 		zap.String("consumer_group", s.cfg.ConsumerGroup))
 
@@ -303,7 +307,7 @@ func (s *RedisSubscriber) consumeLoop(tables []string) {
 
 	client := s.redisPool.GetClient()
 	if client == nil {
-		logger.GetLogger().Error("Redis client not available in consume loop")
+		s.logger.Error("Redis client not available in consume loop")
 		return
 	}
 
@@ -343,7 +347,7 @@ func (s *RedisSubscriber) consumeLoop(tables []string) {
 				// context 被取消
 				return
 			}
-			logger.GetLogger().Error("Failed to read from stream",
+			s.logger.Error("Failed to read from stream",
 				zap.Error(err))
 			time.Sleep(time.Second) // 错误后等待一下
 			continue
@@ -358,14 +362,14 @@ func (s *RedisSubscriber) consumeLoop(tables []string) {
 			s.handlerMu.RUnlock()
 
 			if handler == nil {
-				logger.GetLogger().Warn("No handler for table",
+				s.logger.Warn("No handler for table",
 					zap.String("table", table))
 				continue
 			}
 
 			for _, msg := range stream.Messages {
 				if err := s.processMessage(s.ctx, client, stream.Stream, msg, handler); err != nil {
-					logger.GetLogger().Error("Failed to process message",
+					s.logger.Error("Failed to process message",
 						zap.String("stream", stream.Stream),
 						zap.String("msg_id", msg.ID),
 						zap.Error(err))
@@ -398,7 +402,7 @@ func (s *RedisSubscriber) processMessage(ctx context.Context, client redis.Cmdab
 
 		if err := handler(ctx, event); err != nil {
 			lastErr = err
-			logger.GetLogger().Warn("Handler failed, retrying",
+			s.logger.Warn("Handler failed, retrying",
 				zap.String("event_id", event.EventID),
 				zap.Int("attempt", i+1),
 				zap.Error(err))
@@ -412,7 +416,7 @@ func (s *RedisSubscriber) processMessage(ctx context.Context, client redis.Cmdab
 		// 自动确认消息
 		if s.cfg.AutoAck {
 			if err := client.XAck(ctx, streamKey, s.cfg.ConsumerGroup, msg.ID).Err(); err != nil {
-				logger.GetLogger().Warn("Failed to ack message",
+				s.logger.Warn("Failed to ack message",
 					zap.String("msg_id", msg.ID),
 					zap.Error(err))
 			}
@@ -447,7 +451,7 @@ func (s *RedisSubscriber) Unsubscribe(ctx context.Context, tables []string) erro
 	}
 	s.handlerMu.Unlock()
 
-	logger.GetLogger().Info("Unsubscribed from tables",
+	s.logger.Info("Unsubscribed from tables",
 		zap.Strings("tables", tables))
 
 	return nil

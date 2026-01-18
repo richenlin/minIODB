@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"minIODB/internal/storage"
+	"minIODB/pkg/logger"
 )
 
 func TestExtractPredicates(t *testing.T) {
@@ -40,7 +41,7 @@ func TestExtractPredicates(t *testing.T) {
 		},
 	}
 
-	fp := NewFilePruner()
+	fp := NewFilePruner(logger.GetLogger())
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,7 +75,7 @@ func TestFilePruning(t *testing.T) {
 		},
 	}
 
-	fp := NewFilePruner()
+	fp := NewFilePruner(logger.GetLogger())
 
 	predicates := []Predicate{
 		{Column: "timestamp", Operator: ">=", Value: int64(1706745600)},
@@ -93,7 +94,7 @@ func TestFilePruningNoPredicates(t *testing.T) {
 		{FilePath: "file2.parquet", RowCount: 100},
 	}
 
-	fp := NewFilePruner()
+	fp := NewFilePruner(logger.GetLogger())
 	result := fp.PruneFiles(files, nil)
 
 	if len(result) != len(files) {
@@ -117,7 +118,7 @@ func TestQueryOptimizer(t *testing.T) {
 		},
 	}
 
-	optimizer := NewQueryOptimizer()
+	optimizer := NewQueryOptimizer(logger.GetLogger())
 
 	sql := "SELECT * FROM sales WHERE year >= 2023"
 	result, err := optimizer.OptimizeQuery(sql, files)
@@ -136,7 +137,7 @@ func TestQueryOptimizer(t *testing.T) {
 }
 
 func TestCompareValues(t *testing.T) {
-	fp := NewFilePruner()
+	fp := NewFilePruner(logger.GetLogger())
 
 	tests := []struct {
 		name     string
@@ -163,7 +164,7 @@ func TestCompareValues(t *testing.T) {
 }
 
 func TestRowGroupPrunerHints(t *testing.T) {
-	rp := NewRowGroupPruner()
+	rp := NewRowGroupPruner(logger.GetLogger())
 
 	predicates := []Predicate{
 		{Column: "timestamp", Operator: ">=", Value: time.Now()},
@@ -237,7 +238,7 @@ func TestFilePruningWithRealMetadata(t *testing.T) {
 		},
 	}
 
-	optimizer := NewQueryOptimizer()
+	optimizer := NewQueryOptimizer(logger.GetLogger())
 
 	// 测试 1: 时间范围查询，应该只返回 2 个文件
 	sql := "SELECT * FROM users WHERE timestamp >= 1705363200000000000"

@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"runtime"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // RedisMode Redis运行模式
@@ -98,6 +98,7 @@ func DefaultRedisPoolConfig() *RedisPoolConfig {
 type RedisPool struct {
 	config *RedisPoolConfig
 	client redis.Cmdable // 统一接口，支持单机、哨兵、集群
+	logger *zap.Logger
 
 	// 具体客户端实例
 	standaloneClient *redis.Client
@@ -127,13 +128,17 @@ type RedisPoolStats struct {
 }
 
 // NewRedisPool 创建新的Redis连接池
-func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
+func NewRedisPool(config *RedisPoolConfig, logger *zap.Logger) (*RedisPool, error) {
 	if config == nil {
 		config = DefaultRedisPoolConfig()
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger is required")
 	}
 
 	pool := &RedisPool{
 		config: config,
+		logger: logger,
 		stats:  &RedisPoolStats{Mode: string(config.Mode)},
 	}
 
@@ -164,7 +169,7 @@ func NewRedisPool(config *RedisPoolConfig) (*RedisPool, error) {
 		return nil, fmt.Errorf("initial health check failed: %w", err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Redis pool initialized in %s mode", config.Mode)
+	logger.Sugar().Infof("Redis pool initialized in %s mode", config.Mode)
 	return pool, nil
 }
 
@@ -468,7 +473,7 @@ func (p *RedisPool) UpdatePoolSize(newSize int) error {
 
 	// 注意: go-redis不支持动态调整连接池大小
 	// 这里只更新配置，实际生效需要重新创建连接池
-	logger.GetLogger().Sugar().Infof("Pool size updated to %d (requires restart to take effect)", newSize)
+	p.logger.Sugar().Infof("Pool size updated to %d (requires restart to take effect)", newSize)
 	return nil
 }
 
@@ -513,7 +518,7 @@ func (p *RedisPool) Close() error {
 		return fmt.Errorf("failed to close Redis client: %w", err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Redis pool (%s mode) closed successfully", p.config.Mode)
+	p.logger.Sugar().Infof("Redis pool (%s mode) closed successfully", p.config.Mode)
 	return nil
 }
 
@@ -566,7 +571,7 @@ func (p *RedisPool) ExecuteWithRetry(ctx context.Context, operation func() error
 				backoff = p.config.MaxRetryBackoff
 			}
 
-			logger.GetLogger().Sugar().Infof("Redis operation failed (attempt %d/%d), retrying in %v: %v",
+			p.logger.Sugar().Infof("Redis operation failed (attempt %d/%d), retrying in %v: %v",
 				attempt+1, p.config.MaxRetries+1, backoff, err)
 
 			select {

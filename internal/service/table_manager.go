@@ -1,7 +1,6 @@
 package service
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 )
 
 // TableManager 表管理器
@@ -21,6 +21,7 @@ type TableManager struct {
 	primaryMinio *minio.Client
 	backupMinio  *minio.Client
 	cfg          *config.Config
+	logger       *zap.Logger
 }
 
 // TableManagerInfo 表管理器表信息
@@ -42,12 +43,14 @@ type TableManagerStats struct {
 }
 
 // NewTableManager 创建表管理器
-func NewTableManager(redisPool *pool.RedisPool, primaryMinio *minio.Client, backupMinio *minio.Client, cfg *config.Config) *TableManager {
+func NewTableManager(redisPool *pool.RedisPool, primaryMinio *minio.Client,
+	backupMinio *minio.Client, cfg *config.Config, logger *zap.Logger) *TableManager {
 	return &TableManager{
 		redisPool:    redisPool,
 		primaryMinio: primaryMinio,
 		backupMinio:  backupMinio,
 		cfg:          cfg,
+		logger:       logger,
 	}
 }
 
@@ -113,7 +116,7 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 
 	// 如果Redis连接池为空，跳过Redis操作
 	if tm.redisPool == nil {
-		logger.GetLogger().Sugar().Infof("Redis disabled, skipping Redis operations for table creation: %s", tableName)
+		tm.logger.Sugar().Infof("Redis disabled, skipping Redis operations for table creation: %s", tableName)
 		return nil
 	}
 
@@ -171,7 +174,7 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 		return fmt.Errorf("failed to initialize table stats: %w", err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Created table: %s", tableName)
+	tm.logger.Sugar().Infof("Created table: %s", tableName)
 	return nil
 }
 
@@ -203,7 +206,7 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 
 	// 如果Redis连接池为空，跳过Redis操作
 	if tm.redisPool == nil {
-		logger.GetLogger().Sugar().Infof("Redis disabled, skipping Redis operations for table deletion: %s", tableName)
+		tm.logger.Sugar().Infof("Redis disabled, skipping Redis operations for table deletion: %s", tableName)
 		return filesDeleted, nil
 	}
 
@@ -217,28 +220,28 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 	// 删除表配置
 	configKey := fmt.Sprintf("table:%s:config", tableName)
 	if err := redisClient.Del(ctx, configKey).Err(); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to delete table config: %v", err)
+		tm.logger.Sugar().Infof("WARN: failed to delete table config: %v", err)
 	}
 
 	// 删除创建时间
 	createdAtKey := fmt.Sprintf("table:%s:created_at", tableName)
 	if err := redisClient.Del(ctx, createdAtKey).Err(); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to delete table created_at: %v", err)
+		tm.logger.Sugar().Infof("WARN: failed to delete table created_at: %v", err)
 	}
 
 	// 删除最后写入时间
 	lastWriteKey := fmt.Sprintf("table:%s:last_write", tableName)
 	if err := redisClient.Del(ctx, lastWriteKey).Err(); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to delete table last_write: %v", err)
+		tm.logger.Sugar().Infof("WARN: failed to delete table last_write: %v", err)
 	}
 
 	// 删除表统计
 	statsKey := fmt.Sprintf("table:%s:stats", tableName)
 	if err := redisClient.Del(ctx, statsKey).Err(); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to delete table stats: %v", err)
+		tm.logger.Sugar().Infof("WARN: failed to delete table stats: %v", err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Dropped table: %s (files deleted: %d)", tableName, filesDeleted)
+	tm.logger.Sugar().Infof("Dropped table: %s (files deleted: %d)", tableName, filesDeleted)
 	return filesDeleted, nil
 }
 
@@ -246,7 +249,7 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*TableManagerInfo, error) {
 	// 如果Redis连接池为空，返回空列表
 	if tm.redisPool == nil {
-		logger.GetLogger().Sugar().Infof("Redis disabled, returning empty table list")
+		tm.logger.Sugar().Infof("Redis disabled, returning empty table list")
 		return []*TableManagerInfo{}, nil
 	}
 
@@ -267,7 +270,7 @@ func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*Tabl
 
 		tableInfo, err := tm.getTableInfo(ctx, tableName)
 		if err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to get info for table %s: %v", tableName, err)
+			tm.logger.Sugar().Infof("WARN: failed to get info for table %s: %v", tableName, err)
 			continue
 		}
 
@@ -515,14 +518,14 @@ func (tm *TableManager) deleteTableData(ctx context.Context, tableName string) (
 	for _, key := range keys {
 		files, err := redisClient.SMembers(ctx, key).Result()
 		if err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to get files for key %s: %v", key, err)
+			tm.logger.Sugar().Infof("WARN: failed to get files for key %s: %v", key, err)
 			continue
 		}
 
 		// 从MinIO删除文件
 		for _, file := range files {
 			if err := tm.primaryMinio.RemoveObject(ctx, tm.cfg.MinIO.Bucket, file, minio.RemoveObjectOptions{}); err != nil {
-				logger.GetLogger().Sugar().Infof("WARN: failed to delete file %s from primary MinIO: %v", file, err)
+				tm.logger.Sugar().Infof("WARN: failed to delete file %s from primary MinIO: %v", file, err)
 			} else {
 				totalDeleted++
 			}
@@ -530,14 +533,14 @@ func (tm *TableManager) deleteTableData(ctx context.Context, tableName string) (
 			// 从备份MinIO删除文件（如果存在）
 			if tm.backupMinio != nil && tm.cfg.Backup.Enabled {
 				if err := tm.backupMinio.RemoveObject(ctx, tm.cfg.Backup.MinIO.Bucket, file, minio.RemoveObjectOptions{}); err != nil {
-					logger.GetLogger().Sugar().Infof("WARN: failed to delete file %s from backup MinIO: %v", file, err)
+					tm.logger.Sugar().Infof("WARN: failed to delete file %s from backup MinIO: %v", file, err)
 				}
 			}
 		}
 
 		// 删除索引键
 		if err := redisClient.Del(ctx, key).Err(); err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to delete index key %s: %v", key, err)
+			tm.logger.Sugar().Infof("WARN: failed to delete index key %s: %v", key, err)
 		}
 	}
 

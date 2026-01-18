@@ -66,19 +66,33 @@ import (
 )
 
 func main() {
-	// 解析命令行参数
+	// 解析命令行参数，支持多个默认配置文件路径
 	configPath := ""
 	if len(os.Args) > 1 {
 		configPath = os.Args[1]
+	} else {
+		// 尝试默认配置文件路径
+		defaultPaths := []string{
+			"config/config.yaml",
+			"config.yaml",
+			"./config/config.yaml",
+		}
+		for _, path := range defaultPaths {
+			if _, err := os.Stat(path); err == nil {
+				configPath = path
+				break
+			}
+		}
 	}
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		logger.Logger.Error("Failed to load config", zap.Error(err))
+		// 配置加载失败时logger还未初始化，使用默认logger
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 初始化日志
+	// 初始化日志（必须在加载配置后，使用日志前）
 	logCfg := logger.LogConfig{
 		Level:      cfg.Log.Level,
 		Format:     cfg.Log.Format,
@@ -103,10 +117,9 @@ func main() {
 	defer recoveryHandler.Recover()
 
 	// 初始化存储层
-	storageInstance, err := storage.NewStorage(cfg)
+	storageInstance, err := storage.NewStorage(cfg, logger.Logger)
 	if err != nil {
-		logger.Logger.Error("Failed to create storage instance", zap.Error(err))
-		os.Exit(1)
+		logger.Logger.Fatal("Failed to create storage instance", zap.Error(err))
 	}
 	defer storageInstance.Close()
 
@@ -126,18 +139,16 @@ func main() {
 	// 包括: engine.go, index_system.go, memory.go, shard.go 等
 
 	// 初始化MinIO客户端
-	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO)
+	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO, logger.Logger)
 	if err != nil {
-		logger.Logger.Error("Failed to create primary MinIO client", zap.Error(err))
-		os.Exit(1)
+		logger.Logger.Fatal("Failed to create primary MinIO client", zap.Error(err))
 	}
 
 	var backupMinio storage.Uploader
 	if cfg.Backup.Enabled {
-		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.MinIO)
+		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.MinIO, logger.Logger)
 		if err != nil {
-			logger.Logger.Error("Failed to create backup MinIO client", zap.Error(err))
-			os.Exit(1)
+			logger.Logger.Fatal("Failed to create backup MinIO client", zap.Error(err))
 		}
 	}
 
@@ -148,6 +159,7 @@ func main() {
 		cfg.Backup.MinIO.Bucket,
 		cfg.Server.NodeID,
 		nil,
+		logger.Logger,
 	)
 
 	// 初始化ingester服务
@@ -156,22 +168,20 @@ func main() {
 	// 初始化查询服务
 	querierService, err := query.NewQuerier(redisPool, primaryMinio, cfg, concurrentBuffer, logger.Logger)
 	if err != nil {
-		logger.Logger.Error("Failed to create querier service", zap.Error(err))
-		os.Exit(1)
+		logger.Logger.Fatal("Failed to create querier service", zap.Error(err))
 	}
 
 	// 初始化服务注册与发现
-	serviceRegistry, err := discovery.NewServiceRegistry(*cfg, cfg.Server.NodeID, cfg.Server.GrpcPort)
+	serviceRegistry, err := discovery.NewServiceRegistry(*cfg, cfg.Server.NodeID, cfg.Server.GrpcPort, logger.Logger)
 	if err != nil {
-		logger.Logger.Error("Failed to create service registry", zap.Error(err))
-		os.Exit(1)
+		logger.Logger.Fatal("Failed to create service registry", zap.Error(err))
 	}
 
 	// 初始化服务
 	logger.Logger.Info("Initializing services...")
 
 	// 初始化协调器
-	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry, cfg)
+	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry, cfg, logger.Logger)
 
 	var localQuerier coordinator.LocalQuerier = querierService
 	queryCoord := coordinator.NewQueryCoordinator(
@@ -179,6 +189,7 @@ func main() {
 		serviceRegistry,
 		localQuerier,
 		cfg,
+		logger.Logger,
 	)
 
 	// 启动元数据备份管理器
@@ -196,7 +207,7 @@ func main() {
 			},
 		}
 
-		metadataManager = metadata.NewManager(storageInstance, storageInstance, &metadataConfig)
+		metadataManager = metadata.NewManager(storageInstance, storageInstance, &metadataConfig, logger.Logger)
 
 		if err := metadataManager.Start(); err != nil {
 			logger.Logger.Warn("Failed to start metadata manager", zap.Error(err))
@@ -231,7 +242,7 @@ func main() {
 			}
 
 			var err error
-			compactionManager, err = compaction.NewManager(minioPool.GetClient(), cfg.MinIO.Bucket, compactionConfig)
+			compactionManager, err = compaction.NewManager(minioPool.GetClient(), cfg.MinIO.Bucket, compactionConfig, logger.Logger)
 			if err != nil {
 				logger.Logger.Warn("Failed to create compaction manager", zap.Error(err))
 			} else {
@@ -248,11 +259,11 @@ func main() {
 	// 初始化数据订阅管理器
 	var subscriptionManager *subscription.Manager
 	if cfg.Subscription.Enabled {
-		subscriptionManager = subscription.NewManager()
+		subscriptionManager = subscription.NewManager(logger.Logger)
 
 		// 初始化 Redis 订阅者
 		if cfg.Subscription.Redis.Enabled && redisPool != nil {
-			redisSubscriber, err := subscription.NewRedisSubscriber(redisPool, &cfg.Subscription.Redis)
+			redisSubscriber, err := subscription.NewRedisSubscriber(redisPool, &cfg.Subscription.Redis, logger.Logger)
 			if err != nil {
 				logger.Logger.Warn("Failed to create Redis subscriber", zap.Error(err))
 			} else {
@@ -264,7 +275,7 @@ func main() {
 
 		// 初始化 Kafka 订阅者
 		if cfg.Subscription.Kafka.Enabled {
-			kafkaSubscriber, err := subscription.NewKafkaSubscriber(&cfg.Subscription.Kafka)
+			kafkaSubscriber, err := subscription.NewKafkaSubscriber(&cfg.Subscription.Kafka, logger.Logger)
 			if err != nil {
 				logger.Logger.Warn("Failed to create Kafka subscriber", zap.Error(err))
 			} else {
@@ -286,10 +297,9 @@ func main() {
 	}
 
 	// 创建MinIODB服务
-	miniodbService, err := service.NewMinIODBService(cfg, ingesterService, querierService, redisPool, metadataManager)
+	miniodbService, err := service.NewMinIODBService(cfg, logger.Logger, ingesterService, querierService, redisPool, metadataManager)
 	if err != nil {
-		logger.Logger.Error("Failed to create MinIODB service", zap.Error(err))
-		os.Exit(1)
+		logger.Logger.Fatal("Failed to create MinIODB service", zap.Error(err))
 	}
 
 	// 设置订阅管理器到服务（用于发布写入事件）
@@ -299,13 +309,12 @@ func main() {
 
 	// 启动服务注册
 	if err := serviceRegistry.Start(); err != nil {
-		logger.Logger.Error("Failed to start service registry", zap.Error(err))
-		os.Exit(1)
+		logger.Logger.Fatal("Failed to start service registry", zap.Error(err))
 	}
 	defer serviceRegistry.Stop()
 
 	// 启动gRPC服务器
-	grpcService, err := grpcTransport.NewServer(miniodbService, *cfg)
+	grpcService, err := grpcTransport.NewServer(miniodbService, *cfg, logger.Logger)
 	if err != nil {
 		logger.Logger.Fatal("Failed to create gRPC service", zap.Error(err))
 	}
@@ -321,7 +330,10 @@ func main() {
 	}()
 
 	// 启动REST服务器
-	restServer := restTransport.NewServer(miniodbService, cfg)
+	restServer, err := restTransport.NewServer(miniodbService, cfg, logger.Logger)
+	if err != nil {
+		logger.Logger.Fatal("Failed to create REST server", zap.Error(err))
+	}
 	restServer.SetCoordinators(writeCoord, queryCoord)
 
 	go func() {

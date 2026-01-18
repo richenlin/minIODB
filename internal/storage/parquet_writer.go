@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/pkg/logger"
-
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
@@ -51,6 +49,7 @@ type ParquetWriterImpl struct {
 	totalRows   int64
 	totalFiles  int
 	stats       *ParquetWriteStats
+	logger      *zap.Logger
 }
 
 type ParquetWriteStats struct {
@@ -62,7 +61,7 @@ type ParquetWriteStats struct {
 	CompressionType string
 }
 
-func NewParquetWriter(config *ParquetWriterConfig) (*ParquetWriterImpl, error) {
+func NewParquetWriter(config *ParquetWriterConfig, logger *zap.Logger) (*ParquetWriterImpl, error) {
 	if err := os.MkdirAll(config.OutputDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
@@ -72,6 +71,7 @@ func NewParquetWriter(config *ParquetWriterConfig) (*ParquetWriterImpl, error) {
 		stats: &ParquetWriteStats{
 			CompressionType: config.CompressionType,
 		},
+		logger: logger,
 	}, nil
 }
 
@@ -100,7 +100,7 @@ func (p *ParquetWriterImpl) openNewFile() error {
 	p.rowCount = 0
 	p.totalFiles++
 
-	logger.GetLogger().Debug("Opened new Parquet file",
+	p.logger.Debug("Opened new Parquet file",
 		zap.String("file", filepath),
 		zap.String("compression", p.config.CompressionType))
 
@@ -228,7 +228,7 @@ func (p *ParquetWriterImpl) closeCurrentFile() error {
 		p.stats.AvgRowsPerFile = float64(p.totalRows) / float64(p.totalFiles)
 	}
 
-	logger.GetLogger().Debug("Closed Parquet file",
+	p.logger.Debug("Closed Parquet file",
 		zap.String("file", p.currentFile),
 		zap.Int("rows", p.rowCount))
 

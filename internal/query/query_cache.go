@@ -1,7 +1,6 @@
 package query
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,23 +15,23 @@ import (
 
 // QueryCache 查询缓存管理器
 type QueryCache struct {
-	redisClient     *redis.Client
-	logger          *zap.Logger
-	defaultTTL      time.Duration
-	maxCacheSize    int64
-	enableMetrics   bool
-	cacheHits       int64
-	cacheMisses     int64
-	cacheKeyPrefix  string
+	redisClient    *redis.Client
+	logger         *zap.Logger
+	defaultTTL     time.Duration
+	maxCacheSize   int64
+	enableMetrics  bool
+	cacheHits      int64
+	cacheMisses    int64
+	cacheKeyPrefix string
 }
 
 // CacheConfig 缓存配置
 type CacheConfig struct {
-	DefaultTTL     time.Duration `yaml:"default_ttl"`      // 默认缓存时间
-	MaxCacheSize   int64         `yaml:"max_cache_size"`   // 最大缓存大小（字节）
-	EnableMetrics  bool          `yaml:"enable_metrics"`   // 启用指标收集
-	KeyPrefix      string        `yaml:"key_prefix"`       // 缓存键前缀
-	EvictionPolicy string        `yaml:"eviction_policy"`  // 淘汰策略
+	DefaultTTL     time.Duration `yaml:"default_ttl"`     // 默认缓存时间
+	MaxCacheSize   int64         `yaml:"max_cache_size"`  // 最大缓存大小（字节）
+	EnableMetrics  bool          `yaml:"enable_metrics"`  // 启用指标收集
+	KeyPrefix      string        `yaml:"key_prefix"`      // 缓存键前缀
+	EvictionPolicy string        `yaml:"eviction_policy"` // 淘汰策略
 }
 
 // CacheEntry 缓存条目
@@ -83,7 +82,7 @@ func NewQueryCache(redisClient *redis.Client, config *CacheConfig, logger *zap.L
 func (qc *QueryCache) Get(ctx context.Context, query string, tables []string) (*CacheEntry, bool) {
 	// 生成缓存键
 	cacheKey := qc.generateCacheKey(query, tables)
-	
+
 	// 从Redis获取缓存
 	cached, err := qc.redisClient.Get(ctx, cacheKey).Result()
 	if err != nil {
@@ -105,8 +104,8 @@ func (qc *QueryCache) Get(ctx context.Context, query string, tables []string) (*
 	// 更新访问统计
 	qc.updateAccessStats(ctx, cacheKey, &entry)
 	qc.recordCacheHit()
-	
-	logger.GetLogger().Sugar().Infof("Cache HIT for query hash: %s", entry.QueryHash[:8])
+
+	qc.logger.Sugar().Infof("Cache HIT for query hash: %s", entry.QueryHash[:8])
 	return &entry, true
 }
 
@@ -138,7 +137,7 @@ func (qc *QueryCache) Set(ctx context.Context, query string, result string, tabl
 
 	// 生成缓存键
 	cacheKey := qc.generateCacheKey(query, tables)
-	
+
 	// 存储到Redis
 	if err := qc.redisClient.Set(ctx, cacheKey, data, qc.defaultTTL).Err(); err != nil {
 		return fmt.Errorf("failed to set cache: %w", err)
@@ -146,38 +145,38 @@ func (qc *QueryCache) Set(ctx context.Context, query string, result string, tabl
 
 	// 更新表级索引（用于缓存失效）
 	qc.updateTableIndex(ctx, tables, cacheKey)
-	
-	logger.GetLogger().Sugar().Infof("Cache SET for query hash: %s, size: %d bytes", entry.QueryHash[:8], entry.Size)
+
+	qc.logger.Sugar().Infof("Cache SET for query hash: %s, size: %d bytes", entry.QueryHash[:8], entry.Size)
 	return nil
 }
 
 // InvalidateByTables 根据表名失效相关缓存
 func (qc *QueryCache) InvalidateByTables(ctx context.Context, tables []string) error {
 	var keysToDelete []string
-	
+
 	for _, table := range tables {
 		indexKey := qc.getTableIndexKey(table)
-		
+
 		// 获取该表相关的所有缓存键
 		cacheKeys, err := qc.redisClient.SMembers(ctx, indexKey).Result()
 		if err != nil {
 			continue
 		}
-		
+
 		keysToDelete = append(keysToDelete, cacheKeys...)
-		
+
 		// 删除表索引
 		qc.redisClient.Del(ctx, indexKey)
 	}
-	
+
 	// 批量删除缓存键
 	if len(keysToDelete) > 0 {
 		if err := qc.redisClient.Del(ctx, keysToDelete...).Err(); err != nil {
 			return fmt.Errorf("failed to delete cache keys: %w", err)
 		}
-		logger.GetLogger().Sugar().Infof("Invalidated %d cache entries for tables: %v", len(keysToDelete), tables)
+		qc.logger.Sugar().Infof("Invalidated %d cache entries for tables: %v", len(keysToDelete), tables)
 	}
-	
+
 	return nil
 }
 
@@ -185,11 +184,11 @@ func (qc *QueryCache) InvalidateByTables(ctx context.Context, tables []string) e
 func (qc *QueryCache) generateCacheKey(query string, tables []string) string {
 	// 标准化查询（移除多余空格，转换为小写）
 	normalizedQuery := qc.normalizeQuery(query)
-	
+
 	// 结合查询和表信息生成哈希
 	combined := normalizedQuery + "|" + strings.Join(tables, ",")
 	hash := qc.hashQuery(combined)
-	
+
 	return qc.cacheKeyPrefix + hash
 }
 
@@ -210,7 +209,7 @@ func (qc *QueryCache) hashQuery(query string) string {
 // extractMetadata 提取查询元数据
 func (qc *QueryCache) extractMetadata(query, result string) map[string]string {
 	metadata := make(map[string]string)
-	
+
 	// 提取查询类型
 	queryLower := strings.ToLower(strings.TrimSpace(query))
 	if strings.HasPrefix(queryLower, "select") {
@@ -220,12 +219,12 @@ func (qc *QueryCache) extractMetadata(query, result string) map[string]string {
 	} else {
 		metadata["type"] = "unknown"
 	}
-	
+
 	// 提取结果大小
 	metadata["result_size"] = fmt.Sprintf("%d", len(result))
-	
+
 	// 提取是否包含聚合函数
-	if strings.Contains(queryLower, "group by") || 
+	if strings.Contains(queryLower, "group by") ||
 		strings.Contains(queryLower, "count(") ||
 		strings.Contains(queryLower, "sum(") ||
 		strings.Contains(queryLower, "avg(") {
@@ -233,7 +232,7 @@ func (qc *QueryCache) extractMetadata(query, result string) map[string]string {
 	} else {
 		metadata["has_aggregation"] = "false"
 	}
-	
+
 	return metadata
 }
 
@@ -254,12 +253,12 @@ func (qc *QueryCache) getTableIndexKey(table string) string {
 // updateAccessStats 更新访问统计
 func (qc *QueryCache) updateAccessStats(ctx context.Context, cacheKey string, entry *CacheEntry) {
 	entry.AccessCount++
-	
+
 	// 异步更新Redis中的访问计数
 	go func() {
 		updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		
+
 		data, err := json.Marshal(entry)
 		if err == nil {
 			qc.redisClient.Set(updateCtx, cacheKey, data, qc.defaultTTL)
@@ -274,7 +273,7 @@ func (qc *QueryCache) checkCacheSizeLimit(ctx context.Context, newEntrySize int6
 	if err != nil {
 		return nil // 忽略错误，继续缓存
 	}
-	
+
 	// 检查是否超过限制
 	if currentSize+newEntrySize > qc.maxCacheSize {
 		// 执行LRU淘汰
@@ -282,7 +281,7 @@ func (qc *QueryCache) checkCacheSizeLimit(ctx context.Context, newEntrySize int6
 			return fmt.Errorf("failed to evict cache entries: %w", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -291,20 +290,20 @@ func (qc *QueryCache) getCurrentCacheSize(ctx context.Context) (int64, error) {
 	// 使用Redis SCAN遍历缓存键
 	var totalSize int64
 	iter := qc.redisClient.Scan(ctx, 0, qc.cacheKeyPrefix+"*", 100).Iterator()
-	
+
 	for iter.Next(ctx) {
 		key := iter.Val()
 		if strings.Contains(key, "table_index:") {
 			continue // 跳过索引键
 		}
-		
+
 		// 获取键的大小
 		size, err := qc.redisClient.StrLen(ctx, key).Result()
 		if err == nil {
 			totalSize += size
 		}
 	}
-	
+
 	return totalSize, iter.Err()
 }
 
@@ -313,40 +312,40 @@ func (qc *QueryCache) evictLRU(ctx context.Context, requiredSpace int64) error {
 	// 获取所有缓存条目及其访问时间
 	entries := make(map[string]*CacheEntry)
 	iter := qc.redisClient.Scan(ctx, 0, qc.cacheKeyPrefix+"*", 100).Iterator()
-	
+
 	for iter.Next(ctx) {
 		key := iter.Val()
 		if strings.Contains(key, "table_index:") {
 			continue
 		}
-		
+
 		data, err := qc.redisClient.Get(ctx, key).Result()
 		if err != nil {
 			continue
 		}
-		
+
 		var entry CacheEntry
 		if err := json.Unmarshal([]byte(data), &entry); err != nil {
 			continue
 		}
-		
+
 		entries[key] = &entry
 	}
-	
+
 	// 按访问计数和创建时间排序，删除最少使用的条目
 	var freedSpace int64
 	for key, entry := range entries {
 		if freedSpace >= requiredSpace {
 			break
 		}
-		
+
 		// 删除条目
 		qc.redisClient.Del(ctx, key)
 		freedSpace += entry.Size
-		
-		logger.GetLogger().Sugar().Infof("Evicted cache entry: %s, size: %d", entry.QueryHash[:8], entry.Size)
+
+		qc.logger.Sugar().Infof("Evicted cache entry: %s, size: %d", entry.QueryHash[:8], entry.Size)
 	}
-	
+
 	return nil
 }
 
@@ -370,17 +369,17 @@ func (qc *QueryCache) GetStats(ctx context.Context) *CacheStats {
 		Hits:   qc.cacheHits,
 		Misses: qc.cacheMisses,
 	}
-	
+
 	// 计算命中率
 	total := stats.Hits + stats.Misses
 	if total > 0 {
 		stats.HitRatio = float64(stats.Hits) / float64(total)
 	}
-	
+
 	// 获取缓存大小信息
 	totalSize, _ := qc.getCurrentCacheSize(ctx)
 	stats.TotalSize = totalSize
-	
+
 	// 计算条目数量
 	iter := qc.redisClient.Scan(ctx, 0, qc.cacheKeyPrefix+"*", 10).Iterator()
 	for iter.Next(ctx) {
@@ -388,7 +387,7 @@ func (qc *QueryCache) GetStats(ctx context.Context) *CacheStats {
 			stats.EntryCount++
 		}
 	}
-	
+
 	return stats
 }
 
@@ -396,21 +395,21 @@ func (qc *QueryCache) GetStats(ctx context.Context) *CacheStats {
 func (qc *QueryCache) Clear(ctx context.Context) error {
 	iter := qc.redisClient.Scan(ctx, 0, qc.cacheKeyPrefix+"*", 100).Iterator()
 	var keys []string
-	
+
 	for iter.Next(ctx) {
 		keys = append(keys, iter.Val())
 	}
-	
+
 	if len(keys) > 0 {
 		if err := qc.redisClient.Del(ctx, keys...).Err(); err != nil {
 			return fmt.Errorf("failed to clear cache: %w", err)
 		}
-		logger.GetLogger().Sugar().Infof("Cleared %d cache entries", len(keys))
+		qc.logger.Sugar().Infof("Cleared %d cache entries", len(keys))
 	}
-	
+
 	// 重置指标
 	qc.cacheHits = 0
 	qc.cacheMisses = 0
-	
+
 	return nil
-} 
+}

@@ -1,11 +1,11 @@
 package storage
 
 import (
-	"minIODB/pkg/logger"
 	"sync"
 	"time"
 
 	"github.com/xitongsys/parquet-go/parquet"
+	"go.uber.org/zap"
 )
 
 // Parquetet存储优化器
@@ -15,6 +15,7 @@ type Parquet struct {
 	metadataIndex         *ParquetMetadataIndex
 	stats                 *ParquetStats
 	mutex                 sync.RWMutex
+	logger                *zap.Logger
 }
 
 // CompressionStrategy 压缩策略
@@ -143,7 +144,7 @@ type ParquetStats struct {
 }
 
 // NewParquet 创建Parquet优化器
-func NewParquet() *Parquet {
+func NewParquet(logger *zap.Logger) *Parquet {
 	optimizer := &Parquet{
 		compressionStrategies: make(map[string]CompressionStrategy),
 		partitionStrategies:   make(map[string]PartitionStrategy),
@@ -157,6 +158,7 @@ func NewParquet() *Parquet {
 			HotColumns:  make([]string, 0),
 			ColdColumns: make([]string, 0),
 		},
+		logger: logger,
 	}
 
 	// 初始化压缩策略
@@ -337,7 +339,7 @@ func (po *Parquet) OptimizeWriteStrategy(dataSize int64, dataType string, useCas
 		compressionStrategy = &strategy
 	}
 
-	logger.GetLogger().Sugar().Infof("Selected strategies - Partition: %s, Compression: %s for use case: %s, size: %d bytes",
+	po.logger.Sugar().Infof("Selected strategies - Partition: %s, Compression: %s for use case: %s, size: %d bytes",
 		partitionStrategy.Name, compressionStrategy.Name, useCase, dataSize)
 
 	return partitionStrategy, compressionStrategy
@@ -352,8 +354,8 @@ type MockParquetWriter struct {
 }
 
 func (po *Parquet) CreateOptimizedWriter(filePath string, schema interface{}, partitionStrategy *PartitionStrategy, compressionStrategy *CompressionStrategy) (*MockParquetWriter, error) {
-	logger.GetLogger().Sugar().Infof("Creating optimized Parquet writer for file: %s", filePath)
-	logger.GetLogger().Sugar().Infof("Using compression: %s, row group size: %d", compressionStrategy.Name, partitionStrategy.RowGroupSize)
+	po.logger.Sugar().Infof("Creating optimized Parquet writer for file: %s", filePath)
+	po.logger.Sugar().Infof("Using compression: %s, row group size: %d", compressionStrategy.Name, partitionStrategy.RowGroupSize)
 
 	// 记录元数据
 	po.recordFileMetadata(filePath, partitionStrategy, compressionStrategy)
@@ -443,7 +445,7 @@ func (po *Parquet) GetOptimalCompressionStrategy(workloadType string, priorityFa
 		}
 	}
 
-	logger.GetLogger().Sugar().Infof("Selected optimal compression strategy: %s (score: %.2f) for workload: %s",
+	po.logger.Sugar().Infof("Selected optimal compression strategy: %s (score: %.2f) for workload: %s",
 		bestStrategy.Name, bestScore, workloadType)
 
 	return bestStrategy

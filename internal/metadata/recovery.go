@@ -101,7 +101,7 @@ type BackupInfo struct {
 }
 
 // NewRecoveryManager 创建恢复管理器（向后兼容）
-func NewRecoveryManager(storage storage.Storage, nodeID, bucket string) *RecoveryManager {
+func NewRecoveryManager(storage storage.Storage, nodeID, bucket string, logger *zap.Logger) *RecoveryManager {
 	return NewRecoveryManagerWithStorages(storage, nil, nil, nodeID, bucket)
 }
 

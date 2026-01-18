@@ -43,6 +43,7 @@ type WriteCoordinator struct {
 	circuitBreaker *retry.CircuitBreaker
 	cfg            *config.Config
 	mu             sync.RWMutex
+	logger         *zap.Logger
 }
 
 // QueryInfo 查询信息
@@ -119,6 +120,7 @@ type QueryCoordinator struct {
 	wg              sync.WaitGroup
 	queryAnalyzer   *QueryAnalyzer   // 查询分析器
 	strategyFactory *StrategyFactory // 聚合策略工厂
+	logger          *zap.Logger
 }
 
 // LocalQuerier 本地查询接口
@@ -127,8 +129,8 @@ type LocalQuerier interface {
 }
 
 // NewWriteCoordinator 创建写入协调器
-func NewWriteCoordinator(registry *discovery.ServiceRegistry, cfg *config.Config) *WriteCoordinator {
-	cb := retry.NewCircuitBreaker("write_coordinator", retry.DefaultCircuitBreakerConfig)
+func NewWriteCoordinator(registry *discovery.ServiceRegistry, cfg *config.Config, logger *zap.Logger) *WriteCoordinator {
+	cb := retry.NewCircuitBreaker("write_coordinator", retry.DefaultCircuitBreakerConfig, logger)
 
 	// 从配置获取哈希环虚拟节点数，默认 150
 	hashRingReplicas := 150
@@ -141,13 +143,14 @@ func NewWriteCoordinator(registry *discovery.ServiceRegistry, cfg *config.Config
 		hashRing:       consistenthash.New(hashRingReplicas),
 		circuitBreaker: cb,
 		cfg:            cfg,
+		logger:         logger,
 	}
 }
 
 // NewQueryCoordinator 创建查询协调器
-func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceRegistry, localQuerier LocalQuerier, cfg *config.Config) *QueryCoordinator {
+func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceRegistry, localQuerier LocalQuerier, cfg *config.Config, logger *zap.Logger) *QueryCoordinator {
 	ctx, cancel := context.WithCancel(context.Background())
-	cb := retry.NewCircuitBreaker("query_coordinator", retry.DefaultCircuitBreakerConfig)
+	cb := retry.NewCircuitBreaker("query_coordinator", retry.DefaultCircuitBreakerConfig, logger)
 
 	qc := &QueryCoordinator{
 		redisPool:       redisPool,
@@ -164,6 +167,7 @@ func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceR
 		cancel:          cancel,
 		queryAnalyzer:   NewQueryAnalyzer(),   // 初始化查询分析器
 		strategyFactory: NewStrategyFactory(), // 初始化聚合策略工厂
+		logger:          logger,
 	}
 
 	// 启动监控goroutine
@@ -224,7 +228,7 @@ func (wc *WriteCoordinator) RouteWrite(req *pb.WriteDataRequest) (string, error)
 	}
 
 	// 发送到远程节点（使用重试机制）
-	err = retry.Do(ctx, retry.DefaultConfig, "remote_write", func(ctx context.Context) error {
+	err = retry.Do(ctx, retry.DefaultConfig, wc.logger, "remote_write", func(ctx context.Context) error {
 		return wc.sendWriteToNode(ctx, targetNode, req)
 	})
 
@@ -360,7 +364,7 @@ func (qc *QueryCoordinator) executeDistributedPlan(ctx context.Context, plan *Qu
 		for _, nodeAddr := range plan.TargetNodes {
 			go func(addr string) {
 				// 使用重试机制查询节点
-				retryErr := retry.Do(ctx, retry.DefaultConfig, "remote_query", func(ctx context.Context) error {
+				retryErr := retry.Do(ctx, retry.DefaultConfig, qc.logger, "remote_query", func(ctx context.Context) error {
 					result, queryErr := qc.executeRemoteQuery(addr, plan.SQL)
 					if queryErr != nil {
 						resultChan <- QueryResult{

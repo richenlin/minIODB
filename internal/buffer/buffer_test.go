@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"minIODB/config"
+	"minIODB/pkg/logger"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,7 +45,7 @@ func TestConcurrentBuffer_BasicOperations(t *testing.T) {
 	}
 
 	// 创建ConcurrentBuffer (传入nil poolManager，测试模式)
-	cb := NewConcurrentBuffer(nil, cfg, "backup-bucket", "test-node", bufferConfig)
+	cb := NewConcurrentBuffer(nil, cfg, "backup-bucket", "test-node", bufferConfig, logger.GetLogger())
 
 	// 测试基本功能
 	row := DataRow{
@@ -105,7 +106,7 @@ func TestConcurrentBuffer_Stats(t *testing.T) {
 	}
 
 	// 创建ConcurrentBuffer
-	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", nil)
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", nil, logger.GetLogger())
 	defer cb.Stop()
 
 	// 获取统计信息
@@ -125,7 +126,7 @@ func TestConcurrentBuffer_InvalidateTableConfig(t *testing.T) {
 	}
 
 	// 创建ConcurrentBuffer
-	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", nil)
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", nil, logger.GetLogger())
 	defer cb.Stop()
 
 	// 测试InvalidateTableConfig（这是兼容性方法，应该不会出错）
@@ -159,7 +160,7 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 		RetryDelay:     100 * time.Millisecond,
 	}
 
-	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig)
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
 	defer cb.Stop()
 
 	// 添加一条数据
@@ -239,7 +240,7 @@ func TestConcurrentBuffer_WALIntegration(t *testing.T) {
 	}
 
 	// 第一阶段：创建 ConcurrentBuffer 并写入数据
-	cb1 := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig)
+	cb1 := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
 
 	// 添加多条数据
 	testRows := []DataRow{
@@ -265,7 +266,7 @@ func TestConcurrentBuffer_WALIntegration(t *testing.T) {
 	cb1.workerWg.Wait()
 
 	// 第二阶段：创建新的 ConcurrentBuffer，应该从 WAL 恢复数据
-	cb2 := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig)
+	cb2 := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
 	defer cb2.Stop()
 
 	// 验证数据从 WAL 恢复
@@ -310,7 +311,7 @@ func TestConcurrentBuffer_WALDisabled(t *testing.T) {
 		WALEnabled:     false, // 禁用 WAL
 	}
 
-	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig)
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
 	defer cb.Stop()
 
 	// 添加数据

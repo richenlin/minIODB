@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"minIODB/pkg/logger"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -14,7 +15,7 @@ import (
 
 func TestDefaultMinIOPoolConfig(t *testing.T) {
 	config := DefaultMinIOPoolConfig()
-	
+
 	assert.NotNil(t, config)
 	assert.Equal(t, "localhost:9000", config.Endpoint)
 	assert.Equal(t, "minioadmin", config.AccessKeyID)
@@ -58,28 +59,28 @@ func TestNewMinIOPool_Success(t *testing.T) {
 	defer server.Close()
 
 	config := &MinIOPoolConfig{
-		Endpoint:               server.URL[7:], // 去掉 "http://" 前缀
-		AccessKeyID:            "testkey",
-		SecretAccessKey:        "testsecret",
-		UseSSL:                 false,
-		Region:                 "us-east-1",
-		MaxIdleConns:           100,
-		MaxIdleConnsPerHost:    50,
-		MaxConnsPerHost:        100,
-		IdleConnTimeout:        90 * time.Second,
-		DialTimeout:            30 * time.Second,
-		TLSHandshakeTimeout:    10 * time.Second,
-		ResponseHeaderTimeout:  30 * time.Second,
-		ExpectContinueTimeout:  1 * time.Second,
-		MaxRetries:             3,
-		RetryDelay:             100 * time.Millisecond,
-		RequestTimeout:         120 * time.Second,
-		KeepAlive:              30 * time.Second,
-		DisableKeepAlive:       false,
-		DisableCompression:     false,
+		Endpoint:              server.URL[7:], // 去掉 "http://" 前缀
+		AccessKeyID:           "testkey",
+		SecretAccessKey:       "testsecret",
+		UseSSL:                false,
+		Region:                "us-east-1",
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       90 * time.Second,
+		DialTimeout:           30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		MaxRetries:            3,
+		RetryDelay:            100 * time.Millisecond,
+		RequestTimeout:        120 * time.Second,
+		KeepAlive:             30 * time.Second,
+		DisableKeepAlive:      false,
+		DisableCompression:    false,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, pool)
 	defer pool.Close()
@@ -116,7 +117,7 @@ func TestNewMinIOPool_InvalidConfig(t *testing.T) {
 		Region:          "us-east-1",
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	assert.Error(t, err)
 	assert.Nil(t, pool)
 }
@@ -152,14 +153,14 @@ func TestMinIOPool_HealthCheck(t *testing.T) {
 		RequestTimeout:  time.Second,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	defer pool.Close()
 
 	// 测试健康检查
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	err = pool.HealthCheck(ctx)
 	assert.NoError(t, err)
 }
@@ -175,7 +176,7 @@ func TestMinIOPool_HealthCheckFail(t *testing.T) {
 		RequestTimeout:  200 * time.Millisecond,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	if err != nil {
 		// 如果连接创建失败，这是预期的
 		assert.Error(t, err)
@@ -184,10 +185,10 @@ func TestMinIOPool_HealthCheckFail(t *testing.T) {
 
 	if pool != nil {
 		defer pool.Close()
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		
+
 		err = pool.HealthCheck(ctx)
 		assert.Error(t, err)
 	}
@@ -224,7 +225,7 @@ func TestMinIOPool_UpdateStats(t *testing.T) {
 		RequestTimeout:  time.Second,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	defer pool.Close()
 
@@ -270,7 +271,7 @@ func TestMinIOPool_Close(t *testing.T) {
 		RequestTimeout:  time.Second,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(t, err)
 
 	// 测试关闭
@@ -311,7 +312,7 @@ func TestMinIOPool_ConcurrentAccess(t *testing.T) {
 		RequestTimeout:  time.Second,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	defer pool.Close()
 
@@ -323,11 +324,11 @@ func TestMinIOPool_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			
+
 			// 获取统计信息
 			stats := pool.GetStats()
 			assert.NotNil(t, stats)
-			
+
 			// 获取客户端
 			client := pool.GetClient()
 			assert.NotNil(t, client)
@@ -391,7 +392,7 @@ func TestMinIOPool_ConfigValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pool, err := NewMinIOPool(tt.config)
+			pool, err := NewMinIOPool(tt.config, logger.GetLogger())
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Nil(t, pool)
@@ -403,7 +404,7 @@ func TestMinIOPool_ConfigValidation(t *testing.T) {
 					t.Logf("Connection failed (expected): %v", err)
 				}
 			}
-			
+
 			if pool != nil {
 				pool.Close()
 			}
@@ -443,7 +444,7 @@ func BenchmarkMinIOPool_GetClient(b *testing.B) {
 		MaxConnsPerHost:     100,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(b, err)
 	require.NotNil(b, pool)
 	defer pool.Close()
@@ -488,7 +489,7 @@ func BenchmarkMinIOPool_GetStats(b *testing.B) {
 		Region:          "us-east-1",
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(b, err)
 	require.NotNil(b, pool)
 	defer pool.Close()
@@ -535,7 +536,7 @@ func TestMinIOPool_GetStats(t *testing.T) {
 		RequestTimeout:  time.Second,
 	}
 
-	pool, err := NewMinIOPool(config)
+	pool, err := NewMinIOPool(config, logger.GetLogger())
 	require.NoError(t, err)
 	defer pool.Close()
 
@@ -545,4 +546,4 @@ func TestMinIOPool_GetStats(t *testing.T) {
 	assert.Equal(t, int64(0), stats.TotalRequests)
 	assert.Equal(t, int64(0), stats.SuccessRequests)
 	assert.Equal(t, int64(0), stats.FailedRequests)
-} 
+}

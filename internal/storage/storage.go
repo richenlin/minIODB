@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"io"
@@ -11,57 +10,32 @@ import (
 	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 )
 
 // StorageImpl 存储实现
 type StorageImpl struct {
 	poolManager *pool.PoolManager
 	config      *config.Config
+	logger      *zap.Logger
 }
 
 // NewStorage 创建新的存储实例
-func NewStorage(cfg *config.Config) (Storage, error) {
-	logger.GetLogger().Info("Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
-	return NewUnifiedStorage(cfg)
+func NewStorage(cfg *config.Config, logger *zap.Logger) (Storage, error) {
+	logger.Info("Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
+	return NewUnifiedStorage(cfg, logger)
 }
-
-// Redis operations
-
-// Set 设置键值对
 func (s *StorageImpl) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return fmt.Errorf("Redis连接池不可用")
+		return fmt.Errorf("Redis pool not available")
 	}
-
-	// 根据Redis模式执行操作
-	switch redisPool.GetMode() {
-	case pool.RedisModeCluster:
-		client := redisPool.GetClusterClient()
-		if client == nil {
-			return fmt.Errorf("Redis集群客户端不可用")
-		}
-		return client.Set(ctx, key, value, expiration).Err()
-	case pool.RedisModeSentinel:
-		client := redisPool.GetSentinelClient()
-		if client == nil {
-			return fmt.Errorf("Redis哨兵客户端不可用")
-		}
-		return client.Set(ctx, key, value, expiration).Err()
-	default: // standalone
-		client := redisPool.GetClient()
-		if client == nil {
-			return fmt.Errorf("Redis客户端不可用")
-		}
-		return client.Set(ctx, key, value, expiration).Err()
-	}
+	return redisPool.GetClient().Set(ctx, key, value, expiration).Err()
 }
-
-// Get 获取键值
 func (s *StorageImpl) Get(ctx context.Context, key string) (string, error) {
 	redisPool := s.poolManager.GetRedisPool()
 	if redisPool == nil {
-		return "", fmt.Errorf("Redis连接池不可用")
+		return "", fmt.Errorf("Redis pool not available")
 	}
 
 	// 根据Redis模式执行操作
@@ -71,7 +45,7 @@ func (s *StorageImpl) Get(ctx context.Context, key string) (string, error) {
 		if client == nil {
 			return "", fmt.Errorf("Redis集群客户端不可用")
 		}
-		return client.Get(ctx, key).Result()
+		return redisPool.GetClient().Get(ctx, key).Result()
 	case pool.RedisModeSentinel:
 		client := redisPool.GetSentinelClient()
 		if client == nil {
@@ -304,7 +278,7 @@ func (s *StorageImpl) HealthCheck(ctx context.Context) error {
 	// 检查备份MinIO连接池健康状态（如果存在）
 	if backupPool := s.poolManager.GetBackupMinIOPool(); backupPool != nil {
 		if err := backupPool.HealthCheck(ctx); err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: Backup MinIO health check failed: %v", err)
+			s.logger.Warn("Backup MinIO health check failed", zap.Error(err))
 		}
 	}
 

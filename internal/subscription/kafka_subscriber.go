@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"minIODB/config"
-	"minIODB/pkg/logger"
 
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl"
@@ -43,12 +42,16 @@ type KafkaSubscriber struct {
 	publishedCount int64
 	consumedCount  int64
 	failedCount    int64
+	logger         *zap.Logger
 }
 
 // NewKafkaSubscriber 创建 Kafka 订阅者
-func NewKafkaSubscriber(cfg *config.KafkaSubscriptionConfig) (*KafkaSubscriber, error) {
+func NewKafkaSubscriber(cfg *config.KafkaSubscriptionConfig, logger *zap.Logger) (*KafkaSubscriber, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger is required")
 	}
 	if len(cfg.Brokers) == 0 {
 		return nil, fmt.Errorf("at least one broker is required")
@@ -60,6 +63,7 @@ func NewKafkaSubscriber(cfg *config.KafkaSubscriptionConfig) (*KafkaSubscriber, 
 		writers:        make(map[string]*kafka.Writer),
 		readers:        make(map[string]*kafka.Reader),
 		handlers:       make(map[string]EventHandler),
+		logger:         logger,
 	}
 
 	// 配置 TLS
@@ -158,7 +162,7 @@ func (s *KafkaSubscriber) Start(ctx context.Context) error {
 	conn.Close()
 
 	s.SetStatus(StatusRunning)
-	logger.GetLogger().Info("Kafka subscriber started",
+	s.logger.Info("Kafka subscriber started",
 		zap.Strings("brokers", s.cfg.Brokers),
 		zap.String("consumer_group", s.cfg.ConsumerGroup))
 
@@ -199,7 +203,7 @@ func (s *KafkaSubscriber) Stop(ctx context.Context) error {
 	s.writerMu.Lock()
 	for topic, writer := range s.writers {
 		if err := writer.Close(); err != nil {
-			logger.GetLogger().Warn("Failed to close Kafka writer",
+			s.logger.Warn("Failed to close Kafka writer",
 				zap.String("topic", topic),
 				zap.Error(err))
 		}
@@ -211,7 +215,7 @@ func (s *KafkaSubscriber) Stop(ctx context.Context) error {
 	s.readerMu.Lock()
 	for topic, reader := range s.readers {
 		if err := reader.Close(); err != nil {
-			logger.GetLogger().Warn("Failed to close Kafka reader",
+			s.logger.Warn("Failed to close Kafka reader",
 				zap.String("topic", topic),
 				zap.Error(err))
 		}
@@ -229,11 +233,11 @@ func (s *KafkaSubscriber) Stop(ctx context.Context) error {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		logger.GetLogger().Warn("Kafka subscriber stop timeout")
+		s.logger.Warn("Kafka subscriber stop timeout")
 	}
 
 	s.SetStatus(StatusStopped)
-	logger.GetLogger().Info("Kafka subscriber stopped")
+	s.logger.Info("Kafka subscriber stopped")
 	return nil
 }
 
@@ -334,7 +338,7 @@ func (s *KafkaSubscriber) Publish(ctx context.Context, event *DataEvent) error {
 	atomic.AddInt64(&s.publishedCount, 1)
 	s.IncrPublished(1)
 
-	logger.GetLogger().Debug("Published event to Kafka",
+	s.logger.Debug("Published event to Kafka",
 		zap.String("topic", topic),
 		zap.String("event_id", event.EventID))
 
@@ -356,7 +360,7 @@ func (s *KafkaSubscriber) PublishBatch(ctx context.Context, events []*DataEvent)
 
 	for _, event := range events {
 		if err := event.Validate(); err != nil {
-			logger.GetLogger().Warn("Skip invalid event",
+			s.logger.Warn("Skip invalid event",
 				zap.String("event_id", event.EventID),
 				zap.Error(err))
 			continue
@@ -364,7 +368,7 @@ func (s *KafkaSubscriber) PublishBatch(ctx context.Context, events []*DataEvent)
 
 		eventJSON, err := event.ToJSON()
 		if err != nil {
-			logger.GetLogger().Warn("Failed to serialize event",
+			s.logger.Warn("Failed to serialize event",
 				zap.String("event_id", event.EventID),
 				zap.Error(err))
 			continue
@@ -392,7 +396,7 @@ func (s *KafkaSubscriber) PublishBatch(ctx context.Context, events []*DataEvent)
 		if err := writer.WriteMessages(ctx, messages...); err != nil {
 			atomic.AddInt64(&s.failedCount, int64(len(messages)))
 			s.IncrFailed(int64(len(messages)))
-			logger.GetLogger().Error("Failed to write batch to Kafka",
+			s.logger.Error("Failed to write batch to Kafka",
 				zap.String("topic", topic),
 				zap.Error(err))
 			continue
@@ -403,7 +407,7 @@ func (s *KafkaSubscriber) PublishBatch(ctx context.Context, events []*DataEvent)
 	atomic.AddInt64(&s.publishedCount, totalSent)
 	s.IncrPublished(totalSent)
 
-	logger.GetLogger().Debug("Published batch events to Kafka",
+	s.logger.Debug("Published batch events to Kafka",
 		zap.Int64("count", totalSent))
 
 	return nil
@@ -428,7 +432,7 @@ func (s *KafkaSubscriber) Subscribe(ctx context.Context, tables []string, handle
 		topic := fmt.Sprintf("%s%s", s.cfg.TopicPrefix, table)
 
 		if err := s.createReader(topic, table); err != nil {
-			logger.GetLogger().Error("Failed to create reader",
+			s.logger.Error("Failed to create reader",
 				zap.String("topic", topic),
 				zap.Error(err))
 			continue
@@ -439,7 +443,7 @@ func (s *KafkaSubscriber) Subscribe(ctx context.Context, tables []string, handle
 		go s.consumeLoop(topic, table)
 	}
 
-	logger.GetLogger().Info("Subscribed to tables",
+	s.logger.Info("Subscribed to tables",
 		zap.Strings("tables", tables),
 		zap.String("consumer_group", s.cfg.ConsumerGroup))
 
@@ -492,7 +496,7 @@ func (s *KafkaSubscriber) consumeLoop(topic, table string) {
 	s.readerMu.RUnlock()
 
 	if reader == nil {
-		logger.GetLogger().Error("Reader not found",
+		s.logger.Error("Reader not found",
 			zap.String("topic", topic))
 		return
 	}
@@ -510,7 +514,7 @@ func (s *KafkaSubscriber) consumeLoop(topic, table string) {
 			if s.ctx.Err() != nil {
 				return
 			}
-			logger.GetLogger().Error("Failed to fetch message",
+			s.logger.Error("Failed to fetch message",
 				zap.String("topic", topic),
 				zap.Error(err))
 			time.Sleep(time.Second)
@@ -523,7 +527,7 @@ func (s *KafkaSubscriber) consumeLoop(topic, table string) {
 		s.handlerMu.RUnlock()
 
 		if handler == nil {
-			logger.GetLogger().Warn("No handler for table",
+			s.logger.Warn("No handler for table",
 				zap.String("table", table))
 			// 提交 offset 以跳过消息
 			if s.cfg.AutoCommit {
@@ -534,7 +538,7 @@ func (s *KafkaSubscriber) consumeLoop(topic, table string) {
 
 		// 处理消息
 		if err := s.processMessage(s.ctx, reader, msg, handler); err != nil {
-			logger.GetLogger().Error("Failed to process message",
+			s.logger.Error("Failed to process message",
 				zap.String("topic", topic),
 				zap.Int64("offset", msg.Offset),
 				zap.Error(err))
@@ -560,7 +564,7 @@ func (s *KafkaSubscriber) processMessage(ctx context.Context, reader *kafka.Read
 
 		if err := handler(ctx, event); err != nil {
 			lastErr = err
-			logger.GetLogger().Warn("Handler failed, retrying",
+			s.logger.Warn("Handler failed, retrying",
 				zap.String("event_id", event.EventID),
 				zap.Int("attempt", i+1),
 				zap.Error(err))
@@ -574,7 +578,7 @@ func (s *KafkaSubscriber) processMessage(ctx context.Context, reader *kafka.Read
 		// 提交 offset
 		if s.cfg.AutoCommit {
 			if err := reader.CommitMessages(ctx, msg); err != nil {
-				logger.GetLogger().Warn("Failed to commit offset",
+				s.logger.Warn("Failed to commit offset",
 					zap.Int64("offset", msg.Offset),
 					zap.Error(err))
 			}
@@ -616,7 +620,7 @@ func (s *KafkaSubscriber) Unsubscribe(ctx context.Context, tables []string) erro
 	}
 	s.readerMu.Unlock()
 
-	logger.GetLogger().Info("Unsubscribed from tables",
+	s.logger.Info("Unsubscribed from tables",
 		zap.Strings("tables", tables))
 
 	return nil

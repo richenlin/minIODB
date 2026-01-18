@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"minIODB/internal/buffer"
+	"minIODB/pkg/logger"
 
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
@@ -331,7 +332,7 @@ func createTestBuffer(t *testing.T) *buffer.ConcurrentBuffer {
 		RetryDelay:     100 * time.Millisecond,
 	}
 
-	buf := buffer.NewConcurrentBuffer(nil, nil, "test-bucket", "test-node", bufferConfig)
+	buf := buffer.NewConcurrentBuffer(nil, nil, "test-bucket", "test-node", bufferConfig, logger.GetLogger())
 
 	return buf
 }

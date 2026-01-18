@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"minIODB/pkg/logger"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
 
@@ -731,7 +729,7 @@ func (c *Config) IsValidTableName(tableName string) bool {
 		// 编译正则表达式
 		regex, err := regexp.Compile(c.TableManagement.TableNamePattern)
 		if err != nil {
-			logger.Logger.Error("WARN: invalid table name pattern", zap.Error(err))
+			// 使用默认的表名验证模式
 			regex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
 		}
 		c.TableManagement.tableNameRegex = regex
@@ -1458,7 +1456,7 @@ func (c *Config) validate() error {
 
 	// 如果有旧的buffer配置，将其映射到默认表配置
 	if c.Buffer.BufferSize > 0 || c.Buffer.FlushInterval > 0 {
-		logger.Logger.Info("migrating legacy buffer config to default table config")
+		// 迁移配置（静默处理，不需要日志）
 		if c.Buffer.BufferSize > 0 {
 			c.Tables.DefaultConfig.BufferSize = c.Buffer.BufferSize
 		}

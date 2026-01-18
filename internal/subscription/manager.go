@@ -7,8 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/pkg/logger"
-
 	"go.uber.org/zap"
 )
 
@@ -21,13 +19,15 @@ type Manager struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+	logger      *zap.Logger
 }
 
 // NewManager 创建订阅管理器
-func NewManager() *Manager {
+func NewManager(logger *zap.Logger) *Manager {
 	return &Manager{
 		subscribers: make(map[SubscriberType]Subscriber),
 		handlers:    make(map[string]EventHandler),
+		logger:      logger,
 	}
 }
 
@@ -42,7 +42,7 @@ func (m *Manager) RegisterSubscriber(subscriber Subscriber) error {
 	}
 
 	m.subscribers[subType] = subscriber
-	logger.GetLogger().Info("Registered subscriber",
+	m.logger.Info("Registered subscriber",
 		zap.String("type", string(subType)))
 	return nil
 }
@@ -60,14 +60,14 @@ func (m *Manager) UnregisterSubscriber(subType SubscriberType) error {
 	// 停止订阅者
 	if subscriber.Status() == StatusRunning {
 		if err := subscriber.Stop(context.Background()); err != nil {
-			logger.GetLogger().Warn("Failed to stop subscriber before unregistering",
+			m.logger.Warn("Failed to stop subscriber before unregistering",
 				zap.String("type", string(subType)),
 				zap.Error(err))
 		}
 	}
 
 	delete(m.subscribers, subType)
-	logger.GetLogger().Info("Unregistered subscriber",
+	m.logger.Info("Unregistered subscriber",
 		zap.String("type", string(subType)))
 	return nil
 }
@@ -99,11 +99,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	for subType, subscriber := range m.subscribers {
 		if err := subscriber.Start(m.ctx); err != nil {
 			errs = append(errs, fmt.Errorf("failed to start %s subscriber: %w", subType, err))
-			logger.GetLogger().Error("Failed to start subscriber",
+			m.logger.Error("Failed to start subscriber",
 				zap.String("type", string(subType)),
 				zap.Error(err))
 		} else {
-			logger.GetLogger().Info("Started subscriber",
+			m.logger.Info("Started subscriber",
 				zap.String("type", string(subType)))
 		}
 	}
@@ -112,7 +112,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start some subscribers: %v", errs)
 	}
 
-	logger.GetLogger().Info("Subscription manager started",
+	m.logger.Info("Subscription manager started",
 		zap.Int("subscriber_count", len(m.subscribers)))
 	return nil
 }
@@ -134,11 +134,11 @@ func (m *Manager) Stop(ctx context.Context) error {
 	for subType, subscriber := range m.subscribers {
 		if err := subscriber.Stop(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop %s subscriber: %w", subType, err))
-			logger.GetLogger().Error("Failed to stop subscriber",
+			m.logger.Error("Failed to stop subscriber",
 				zap.String("type", string(subType)),
 				zap.Error(err))
 		} else {
-			logger.GetLogger().Info("Stopped subscriber",
+			m.logger.Info("Stopped subscriber",
 				zap.String("type", string(subType)))
 		}
 	}
@@ -149,7 +149,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 		return fmt.Errorf("failed to stop some subscribers: %v", errs)
 	}
 
-	logger.GetLogger().Info("Subscription manager stopped")
+	m.logger.Info("Subscription manager stopped")
 	return nil
 }
 
@@ -268,6 +268,7 @@ func (m *Manager) SubscriberCount() int {
 // DefaultEventHandler 默认事件处理器（转发到缓冲区）
 type DefaultEventHandler struct {
 	bufferWriter BufferWriter
+	logger       *zap.Logger
 }
 
 // BufferWriter 缓冲区写入接口
@@ -276,9 +277,10 @@ type BufferWriter interface {
 }
 
 // NewDefaultEventHandler 创建默认事件处理器
-func NewDefaultEventHandler(writer BufferWriter) *DefaultEventHandler {
+func NewDefaultEventHandler(writer BufferWriter, logger *zap.Logger) *DefaultEventHandler {
 	return &DefaultEventHandler{
 		bufferWriter: writer,
+		logger:       logger,
 	}
 }
 
@@ -292,7 +294,7 @@ func (h *DefaultEventHandler) Handle(ctx context.Context, event *DataEvent) erro
 		// 将 payload 转换为 JSON 字符串
 		payloadJSON, err := jsonMarshal(record.Payload)
 		if err != nil {
-			logger.GetLogger().Error("Failed to marshal payload",
+			h.logger.Error("Failed to marshal payload",
 				zap.String("event_id", event.EventID),
 				zap.String("record_id", record.ID),
 				zap.Error(err))
@@ -300,7 +302,7 @@ func (h *DefaultEventHandler) Handle(ctx context.Context, event *DataEvent) erro
 		}
 
 		if err := h.bufferWriter.Add(event.Table, record.ID, record.Timestamp, string(payloadJSON)); err != nil {
-			logger.GetLogger().Error("Failed to add record to buffer",
+			h.logger.Error("Failed to add record to buffer",
 				zap.String("event_id", event.EventID),
 				zap.String("record_id", record.ID),
 				zap.Error(err))
@@ -308,7 +310,7 @@ func (h *DefaultEventHandler) Handle(ctx context.Context, event *DataEvent) erro
 		}
 	}
 
-	logger.GetLogger().Debug("Processed event",
+	h.logger.Debug("Processed event",
 		zap.String("event_id", event.EventID),
 		zap.String("table", event.Table),
 		zap.Int("record_count", len(event.Records)))

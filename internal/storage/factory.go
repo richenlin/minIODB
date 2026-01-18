@@ -1,13 +1,14 @@
 package storage
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"time"
 
 	"minIODB/config"
 	"minIODB/pkg/pool"
+
+	"go.uber.org/zap"
 )
 
 // StorageFactoryImpl 存储工厂实现
@@ -17,7 +18,11 @@ type StorageFactoryImpl struct {
 }
 
 // NewStorageFactory 创建新的存储工厂
-func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
+func NewStorageFactory(cfg *config.Config, logger *zap.Logger) (StorageFactory, error) {
+	if logger == nil {
+		return nil, fmt.Errorf("logger is required")
+	}
+
 	// 创建连接池管理器配置
 	poolConfig := &pool.PoolManagerConfig{
 		MinIO:               getEnhancedMinIOPoolConfig(cfg),
@@ -63,7 +68,7 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 	}
 
 	// 创建连接池管理器
-	poolManager, err := pool.NewPoolManager(poolConfig)
+	poolManager, err := pool.NewPoolManager(poolConfig, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pool manager: %w", err)
 	}
@@ -74,9 +79,9 @@ func NewStorageFactory(cfg *config.Config) (StorageFactory, error) {
 	}
 
 	if cfg.Redis.Enabled {
-		logger.GetLogger().Info("Storage factory initialized with Redis and MinIO connection pools")
+		logger.Info("Storage factory initialized with Redis and MinIO connection pools")
 	} else {
-		logger.GetLogger().Info("Storage factory initialized with MinIO connection pool only (Redis disabled)")
+		logger.Info("Storage factory initialized with MinIO connection pool only (Redis disabled)")
 	}
 	return factory, nil
 }
@@ -131,11 +136,12 @@ type UnifiedStorageImpl struct {
 	CacheStorage
 	ObjectStorage
 	poolManager *pool.PoolManager
+	logger      *zap.Logger
 }
 
 // NewUnifiedStorage 创建统一存储实例（向后兼容）
-func NewUnifiedStorage(cfg *config.Config) (Storage, error) {
-	factory, err := NewStorageFactory(cfg)
+func NewUnifiedStorage(cfg *config.Config, logger *zap.Logger) (Storage, error) {
+	factory, err := NewStorageFactory(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +162,7 @@ func NewUnifiedStorage(cfg *config.Config) (Storage, error) {
 		CacheStorage:  cacheStorage,
 		ObjectStorage: objectStorage,
 		poolManager:   factory.GetPoolManager(),
+		logger:        logger,
 	}, nil
 }
 

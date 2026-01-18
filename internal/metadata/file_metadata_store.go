@@ -12,7 +12,6 @@ import (
 
 	"minIODB/config"
 	"minIODB/internal/storage"
-	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 
 	"github.com/go-redis/redis/v8"
@@ -42,10 +41,11 @@ type RedisMetadataStore struct {
 	redisPool *pool.RedisPool
 	keyPrefix string
 	ttl       time.Duration
+	logger    *zap.Logger
 }
 
 // NewRedisMetadataStore 创建 Redis 元数据存储
-func NewRedisMetadataStore(redisPool *pool.RedisPool, cfg *config.Config) *RedisMetadataStore {
+func NewRedisMetadataStore(redisPool *pool.RedisPool, cfg *config.Config, logger *zap.Logger) *RedisMetadataStore {
 	// 使用配置的 key 前缀和 TTL，或使用默认值
 	keyPrefix := "file_meta:"
 	ttl := 30 * 24 * time.Hour
@@ -63,6 +63,7 @@ func NewRedisMetadataStore(redisPool *pool.RedisPool, cfg *config.Config) *Redis
 		redisPool: redisPool,
 		keyPrefix: keyPrefix,
 		ttl:       ttl,
+		logger:    logger,
 	}
 }
 
@@ -98,7 +99,7 @@ func (s *RedisMetadataStore) Store(ctx context.Context, objectName string, metad
 
 	client.Expire(ctx, metadataKey, s.ttl)
 
-	logger.GetLogger().Debug("Stored file metadata to Redis",
+	s.logger.Debug("Stored file metadata to Redis",
 		zap.String("object", objectName),
 		zap.Int64("row_count", metadata.RowCount))
 
@@ -131,7 +132,7 @@ func (s *RedisMetadataStore) LoadBatch(ctx context.Context, objectNames []string
 	for _, objectName := range objectNames {
 		metadata, err := s.Load(ctx, objectName)
 		if err != nil {
-			logger.GetLogger().Warn("Failed to load metadata",
+			s.logger.Warn("Failed to load metadata",
 				zap.String("object", objectName),
 				zap.Error(err))
 			// 返回基础元数据
@@ -171,13 +172,15 @@ func (s *RedisMetadataStore) Delete(ctx context.Context, objectName string) erro
 type MinIOMetadataStore struct {
 	minioClient *minio.Client
 	bucket      string
+	logger      *zap.Logger
 }
 
 // NewMinIOMetadataStore 创建 MinIO 元数据存储
-func NewMinIOMetadataStore(minioClient *minio.Client, bucket string) *MinIOMetadataStore {
+func NewMinIOMetadataStore(minioClient *minio.Client, bucket string, logger *zap.Logger) *MinIOMetadataStore {
 	return &MinIOMetadataStore{
 		minioClient: minioClient,
 		bucket:      bucket,
+		logger:      logger,
 	}
 }
 
@@ -208,7 +211,7 @@ func (s *MinIOMetadataStore) Store(ctx context.Context, objectName string, metad
 		return fmt.Errorf("failed to upload metadata to MinIO: %w", err)
 	}
 
-	logger.GetLogger().Debug("Stored file metadata to MinIO sidecar",
+	s.logger.Debug("Stored file metadata to MinIO sidecar",
 		zap.String("object", objectName),
 		zap.String("meta_object", metaObjectName),
 		zap.Int64("row_count", metadata.RowCount))
@@ -261,7 +264,7 @@ func (s *MinIOMetadataStore) LoadBatch(ctx context.Context, objectNames []string
 	for _, objectName := range objectNames {
 		metadata, err := s.Load(ctx, objectName)
 		if err != nil {
-			logger.GetLogger().Debug("Failed to load metadata from sidecar",
+			s.logger.Debug("Failed to load metadata from sidecar",
 				zap.String("object", objectName),
 				zap.Error(err))
 		}
@@ -296,23 +299,29 @@ func (s *MinIOMetadataStore) Delete(ctx context.Context, objectName string) erro
 type CompositeMetadataStore struct {
 	redisStore *RedisMetadataStore
 	minioStore *MinIOMetadataStore
+	logger     *zap.Logger
 }
 
 // NewCompositeMetadataStore 创建组合元数据存储
-func NewCompositeMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string, cfg *config.Config) *CompositeMetadataStore {
+func NewCompositeMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string, cfg *config.Config, logger *zap.Logger) *CompositeMetadataStore {
+	if logger == nil {
+		return nil
+	}
+
 	var redisStore *RedisMetadataStore
 	var minioStore *MinIOMetadataStore
 
 	if redisPool != nil {
-		redisStore = NewRedisMetadataStore(redisPool, cfg)
+		redisStore = NewRedisMetadataStore(redisPool, cfg, logger)
 	}
 	if minioClient != nil {
-		minioStore = NewMinIOMetadataStore(minioClient, bucket)
+		minioStore = NewMinIOMetadataStore(minioClient, bucket, logger)
 	}
 
 	return &CompositeMetadataStore{
 		redisStore: redisStore,
 		minioStore: minioStore,
+		logger:     logger,
 	}
 }
 
@@ -322,7 +331,7 @@ func (s *CompositeMetadataStore) Store(ctx context.Context, objectName string, m
 	// 存储到 Redis（如果可用）
 	if s.redisStore != nil {
 		if err := s.redisStore.Store(ctx, objectName, metadata); err != nil {
-			logger.GetLogger().Warn("Failed to store metadata to Redis",
+			s.logger.Warn("Failed to store metadata to Redis",
 				zap.String("object", objectName),
 				zap.Error(err))
 			lastErr = err
@@ -332,7 +341,7 @@ func (s *CompositeMetadataStore) Store(ctx context.Context, objectName string, m
 	// 同时存储到 MinIO sidecar（如果可用）
 	if s.minioStore != nil {
 		if err := s.minioStore.Store(ctx, objectName, metadata); err != nil {
-			logger.GetLogger().Warn("Failed to store metadata to MinIO sidecar",
+			s.logger.Warn("Failed to store metadata to MinIO sidecar",
 				zap.String("object", objectName),
 				zap.Error(err))
 			lastErr = err
@@ -503,10 +512,10 @@ func convertMetadataValues(values map[string]interface{}) map[string]interface{}
 // redisPool 可以为 nil（单节点模式）
 // minioClient 和 bucket 用于 MinIO sidecar 存储
 // cfg 可以为 nil，将使用默认配置
-func GetMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string, cfg *config.Config) FileMetadataStore {
+func GetMetadataStore(redisPool *pool.RedisPool, minioClient *minio.Client, bucket string, cfg *config.Config, logger *zap.Logger) FileMetadataStore {
 	// 如果 Redis 可用，使用组合存储（Redis + MinIO sidecar）
 	// 如果 Redis 不可用，只使用 MinIO sidecar
-	return NewCompositeMetadataStore(redisPool, minioClient, bucket, cfg)
+	return NewCompositeMetadataStore(redisPool, minioClient, bucket, cfg, logger)
 }
 
 // IsRedisAvailable 检查 Redis 是否可用

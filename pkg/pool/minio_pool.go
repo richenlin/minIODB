@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.uber.org/zap"
 )
 
 // MinIOPoolConfig MinIO连接池配置
@@ -85,6 +85,7 @@ type MinIOPool struct {
 	client    *minio.Client
 	config    *MinIOPoolConfig
 	transport *http.Transport
+	logger    *zap.Logger
 	mutex     sync.RWMutex
 	stats     *MinIOPoolStats
 }
@@ -104,9 +105,12 @@ type MinIOPoolStats struct {
 }
 
 // NewMinIOPool 创建新的MinIO连接池
-func NewMinIOPool(config *MinIOPoolConfig) (*MinIOPool, error) {
+func NewMinIOPool(config *MinIOPoolConfig, logger *zap.Logger) (*MinIOPool, error) {
 	if config == nil {
 		config = DefaultMinIOPoolConfig()
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger is required")
 	}
 	
 	// 创建优化的HTTP传输层
@@ -146,7 +150,7 @@ func NewMinIOPool(config *MinIOPoolConfig) (*MinIOPool, error) {
 		Transport: transport,
 	}
 	
-	logger.GetLogger().Sugar().Infof("Creating MinIO client for endpoint: %s", config.Endpoint)
+	logger.Sugar().Infof("Creating MinIO client for endpoint: %s", config.Endpoint)
 	client, err := minio.New(config.Endpoint, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MinIO client: %w", err)
@@ -156,6 +160,7 @@ func NewMinIOPool(config *MinIOPoolConfig) (*MinIOPool, error) {
 		client:    client,
 		config:    config,
 		transport: transport,
+		logger:    logger,
 		stats:     &MinIOPoolStats{},
 	}
 	
@@ -163,7 +168,7 @@ func NewMinIOPool(config *MinIOPoolConfig) (*MinIOPool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), config.RequestTimeout)
 	defer cancel()
 	
-	logger.GetLogger().Sugar().Infof("Testing MinIO connection to %s with timeout %v", config.Endpoint, config.RequestTimeout)
+	logger.Sugar().Infof("Testing MinIO connection to %s with timeout %v", config.Endpoint, config.RequestTimeout)
 	if err := pool.healthCheck(ctx); err != nil {
 		return nil, fmt.Errorf("MinIO connection test failed: %w", err)
 	}
@@ -181,10 +186,10 @@ func (p *MinIOPool) healthCheck(ctx context.Context) error {
 	// 尝试列出存储桶来测试连接
 	buckets, err := p.client.ListBuckets(ctx)
 	if err != nil {
-		logger.GetLogger().Sugar().Infof("MinIO health check failed: %v (endpoint: %s)", err, p.config.Endpoint)
+		p.logger.Sugar().Infof("MinIO health check failed: %v (endpoint: %s)", err, p.config.Endpoint)
 		return err
 	}
-	logger.GetLogger().Sugar().Infof("MinIO health check successful, found %d buckets (endpoint: %s)", len(buckets), p.config.Endpoint)
+	p.logger.Sugar().Infof("MinIO health check successful, found %d buckets (endpoint: %s)", len(buckets), p.config.Endpoint)
 	return nil
 }
 
@@ -316,7 +321,7 @@ func (p *MinIOPool) UpdateConfig(newConfig *MinIOPoolConfig) error {
 	p.Close()
 	
 	// 创建新的连接池
-	newPool, err := NewMinIOPool(newConfig)
+	newPool, err := NewMinIOPool(newConfig, p.logger)
 	if err != nil {
 		return err
 	}

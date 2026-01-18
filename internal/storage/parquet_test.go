@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"minIODB/pkg/logger"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ func TestParquetWriterBasic(t *testing.T) {
 	config := DefaultParquetWriterConfig(dir)
 	config.MaxRowsPerFile = 10
 
-	pw, err := NewParquetWriter(config)
+	pw, err := NewParquetWriter(config, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create writer: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestParquetWriterRotation(t *testing.T) {
 	config := DefaultParquetWriterConfig(dir)
 	config.MaxRowsPerFile = 5
 
-	pw, err := NewParquetWriter(config)
+	pw, err := NewParquetWriter(config, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create writer: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestParquetReadWrite(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	config := DefaultParquetWriterConfig(dir)
-	pw, err := NewParquetWriter(config)
+	pw, err := NewParquetWriter(config, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create writer: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestParquetReadWrite(t *testing.T) {
 		t.Fatalf("Failed to close: %v", err)
 	}
 
-	pr := NewParquetReader(DefaultParquetReaderConfig())
+	pr := NewParquetReader(DefaultParquetReaderConfig(), logger.GetLogger())
 
 	readRecords, err := pr.ReadDirectory(dir)
 	if err != nil {
@@ -137,7 +138,7 @@ func TestParquetMetadata(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	config := DefaultParquetWriterConfig(dir)
-	pw, err := NewParquetWriter(config)
+	pw, err := NewParquetWriter(config, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create writer: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestParquetMetadata(t *testing.T) {
 	}
 	pw.Close()
 
-	pr := NewParquetReader(DefaultParquetReaderConfig())
+	pr := NewParquetReader(DefaultParquetReaderConfig(), logger.GetLogger())
 	files, _ := pr.ListParquetFiles(dir)
 
 	if len(files) == 0 {
@@ -181,7 +182,7 @@ func TestCompressionTypes(t *testing.T) {
 			config := DefaultParquetWriterConfig(dir)
 			config.CompressionType = ct
 
-			pw, err := NewParquetWriter(config)
+			pw, err := NewParquetWriter(config, logger.GetLogger())
 			if err != nil {
 				t.Fatalf("Failed to create writer with %s: %v", ct, err)
 			}
@@ -198,7 +199,7 @@ func TestCompressionTypes(t *testing.T) {
 				t.Fatalf("Failed to close with %s: %v", ct, err)
 			}
 
-			pr := NewParquetReader(DefaultParquetReaderConfig())
+			pr := NewParquetReader(DefaultParquetReaderConfig(), logger.GetLogger())
 			readRecords, err := pr.ReadDirectory(dir)
 			if err != nil {
 				t.Fatalf("Failed to read with %s: %v", ct, err)
@@ -219,7 +220,7 @@ func BenchmarkParquetWrite(b *testing.B) {
 	config := DefaultParquetWriterConfig(dir)
 	config.MaxRowsPerFile = 100000
 
-	pw, err := NewParquetWriter(config)
+	pw, err := NewParquetWriter(config, logger.GetLogger())
 	if err != nil {
 		b.Fatalf("Failed to create writer: %v", err)
 	}

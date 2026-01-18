@@ -7,6 +7,7 @@ import (
 
 	"minIODB/config"
 	"minIODB/internal/discovery"
+	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
 
 	"github.com/go-redis/redis/v8"
@@ -70,10 +71,10 @@ func setupTestEnvironment(t *testing.T) (*pool.RedisPool, *discovery.ServiceRegi
 	redisPoolConfig.RouteByLatency = defaultConfig.RouteByLatency
 	redisPoolConfig.RouteRandomly = defaultConfig.RouteRandomly
 
-	redisPool, _ := pool.NewRedisPool(redisPoolConfig)
+	redisPool, _ := pool.NewRedisPool(redisPoolConfig, logger.GetLogger())
 
 	// 创建服务注册表
-	registry, _ := discovery.NewServiceRegistry(cfg, "test-node-1", "8080")
+	registry, _ := discovery.NewServiceRegistry(cfg, "test-node-1", "8080", logger.GetLogger())
 
 	cleanup := func() {
 		redisClient.FlushDB(context.Background())
@@ -88,7 +89,7 @@ func TestNewWriteCoordinator(t *testing.T) {
 	_, registry, cleanup := setupTestEnvironment(t)
 	defer cleanup()
 
-	wc := NewWriteCoordinator(registry, nil)
+	wc := NewWriteCoordinator(registry, nil, logger.GetLogger())
 	assert.NotNil(t, wc)
 	assert.NotNil(t, wc.registry)
 	assert.NotNil(t, wc.hashRing)
@@ -113,7 +114,7 @@ func TestNewQueryCoordinator(t *testing.T) {
 		},
 	}
 
-	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg, logger.GetLogger())
 
 	assert.NotNil(t, qc)
 	assert.Equal(t, redisPool, qc.redisPool)
@@ -133,7 +134,7 @@ func TestQueryCoordinator_ExecuteDistributedQuery(t *testing.T) {
 			Mode:    "standalone",
 		},
 	}
-	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg, logger.GetLogger())
 
 	// 这个测试主要验证方法存在且可以调用
 	// 由于没有真实的分布式环境，可能会失败，但这是预期的
@@ -157,7 +158,7 @@ func TestQueryCoordinator_aggregateQueryResults_basic(t *testing.T) {
 		},
 	}
 
-	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, localQuerier, cfg, logger.GetLogger())
 
 	// 测试结果聚合
 	results := []QueryResult{
@@ -181,7 +182,7 @@ func TestQueryCoordinator_GetQueryStats(t *testing.T) {
 			Mode:    "standalone",
 		},
 	}
-	qc := NewQueryCoordinator(redisPool, registry, &testLocalQuerier{}, cfg)
+	qc := NewQueryCoordinator(redisPool, registry, &testLocalQuerier{}, cfg, logger.GetLogger())
 
 	stats := qc.GetQueryStats()
 	assert.NotNil(t, stats)

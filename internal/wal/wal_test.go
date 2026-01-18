@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"minIODB/pkg/logger"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,7 @@ func TestWALBasic(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	cfg := DefaultConfig(dir)
-	w, err := New(cfg)
+	w, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestWALReplay(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	cfg := DefaultConfig(dir)
-	w, err := New(cfg)
+	w, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestWALReplay(t *testing.T) {
 
 	w.Close()
 
-	w2, err := New(cfg)
+	w2, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to reopen WAL: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestWALTruncate(t *testing.T) {
 
 	cfg := DefaultConfig(dir)
 	cfg.MaxFileSize = 1024
-	w, err := New(cfg)
+	w, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestWALTruncate(t *testing.T) {
 		t.Log("Expected multiple WAL files due to rotation")
 	}
 
-	w2, err := New(cfg)
+	w2, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to reopen WAL: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestWALCRCValidation(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	cfg := DefaultConfig(dir)
-	w, err := New(cfg)
+	w, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestWALCRCValidation(t *testing.T) {
 
 	w.Close()
 
-	w2, err := New(cfg)
+	w2, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to reopen WAL: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestWALSequenceContinuity(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	cfg := DefaultConfig(dir)
-	w, err := New(cfg)
+	w, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestWALSequenceContinuity(t *testing.T) {
 	lastSeq := w.LastSeqNum()
 	w.Close()
 
-	w2, err := New(cfg)
+	w2, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		t.Fatalf("Failed to reopen WAL: %v", err)
 	}
@@ -217,7 +218,7 @@ func BenchmarkWALAppend(b *testing.B) {
 
 	cfg := DefaultConfig(dir)
 	cfg.SyncOnWrite = false
-	w, err := New(cfg)
+	w, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		b.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -238,7 +239,7 @@ func BenchmarkWALAppendSync(b *testing.B) {
 
 	cfg := DefaultConfig(dir)
 	cfg.SyncOnWrite = true
-	w, err := New(cfg)
+	w, err := New(cfg, logger.GetLogger())
 	if err != nil {
 		b.Fatalf("Failed to create WAL: %v", err)
 	}

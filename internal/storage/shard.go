@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"crypto/md5"
 	"fmt"
@@ -9,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // ShardOptimizer 智能分片优化器
@@ -20,6 +21,7 @@ type ShardOptimizer struct {
 	rebalancer          *ShardRebalancer
 	stats               *ShardStats
 	mutex               sync.RWMutex
+	logger              *zap.Logger
 }
 
 // ShardStrategy 分片策略
@@ -55,6 +57,7 @@ type ConsistentHashRing struct {
 	nodes        map[string]*ShardNode // 节点信息
 	virtualNodes int                   // 虚拟节点数
 	mutex        sync.RWMutex
+	logger       *zap.Logger
 }
 
 // ShardNode 分片节点
@@ -84,6 +87,7 @@ type DataLocalityManager struct {
 	migrationWorkers int                       // 迁移工作线程数
 	stats            *LocalityStats            // 局部性统计
 	mutex            sync.RWMutex
+	logger           *zap.Logger
 }
 
 // AccessPattern 访问模式
@@ -109,6 +113,7 @@ type LocalityCache struct {
 	ColdDataRatio  float64                `json:"cold_data_ratio"`
 	CacheEntries   map[string]*CacheEntry `json:"cache_entries"`
 	mutex          sync.RWMutex
+	logger         *zap.Logger
 }
 
 // CacheEntry 缓存条目
@@ -132,6 +137,7 @@ type HotColdSeparator struct {
 	migrationStats  *MigrationStats             `json:"migration_stats"`  // 迁移统计
 	analyzer        *TemperatureAnalyzer        `json:"analyzer"`         // 温度分析器
 	mutex           sync.RWMutex
+	logger          *zap.Logger
 }
 
 // DataTemperature 数据温度
@@ -185,6 +191,7 @@ type ShardRebalancer struct {
 	rebalanceTasks    chan *RebalanceTask `json:"-"`                  // 重平衡任务
 	taskHistory       []*RebalanceHistory `json:"task_history"`       // 任务历史
 	mutex             sync.RWMutex
+	logger            *zap.Logger
 }
 
 // RebalanceTask 重平衡任务
@@ -237,6 +244,7 @@ type TemperatureAnalyzer struct {
 	modelAccuracy      float64                        `json:"model_accuracy"`
 	lastAnalysis       time.Time                      `json:"last_analysis"`
 	mutex              sync.RWMutex
+	logger             *zap.Logger
 }
 
 // TemperatureRecord 温度记录
@@ -263,6 +271,7 @@ type ShardStats struct {
 	OptimizationCount int64                 `json:"optimization_count"`
 	NodeStats         map[string]*NodeStats `json:"node_stats"`
 	mutex             sync.RWMutex
+	logger            *zap.Logger
 }
 
 // NodeStats 节点统计
@@ -288,6 +297,7 @@ type LocalityStats struct {
 	MigrationSuccess int64         `json:"migration_success"`
 	MigrationFailure int64         `json:"migration_failure"`
 	LastOptimization time.Time     `json:"last_optimization"`
+	logger           *zap.Logger
 }
 
 // MigrationStats 迁移统计
@@ -304,16 +314,17 @@ type MigrationStats struct {
 }
 
 // NewShardOptimizer 创建分片优化器
-func NewShardOptimizer() *ShardOptimizer {
+func NewShardOptimizer(logger *zap.Logger) *ShardOptimizer {
 	optimizer := &ShardOptimizer{
 		shardStrategies:     make(map[string]*ShardStrategy),
-		consistentHashRing:  NewConsistentHashRing(1000), // 1000个虚拟节点
-		dataLocalityManager: NewDataLocalityManager(),
-		hotColdSeparator:    NewHotColdSeparator(),
-		rebalancer:          NewShardRebalancer(),
+		consistentHashRing:  NewConsistentHashRing(1000, logger), // 1000个虚拟节点
+		dataLocalityManager: NewDataLocalityManager(logger),
+		hotColdSeparator:    NewHotColdSeparator(logger),
+		rebalancer:          NewShardRebalancer(logger),
 		stats: &ShardStats{
 			NodeStats: make(map[string]*NodeStats),
 		},
+		logger: logger,
 	}
 
 	// 初始化分片策略
@@ -323,30 +334,32 @@ func NewShardOptimizer() *ShardOptimizer {
 }
 
 // NewConsistentHashRing 创建一致性哈希环
-func NewConsistentHashRing(virtualNodes int) *ConsistentHashRing {
+func NewConsistentHashRing(virtualNodes int, logger *zap.Logger) *ConsistentHashRing {
 	return &ConsistentHashRing{
 		ring:         make(map[uint32]string),
 		sortedHashes: make([]uint32, 0),
 		nodes:        make(map[string]*ShardNode),
 		virtualNodes: virtualNodes,
+		logger:       logger,
 	}
 }
 
 // NewDataLocalityManager 创建数据局部性管理器
-func NewDataLocalityManager() *DataLocalityManager {
+func NewDataLocalityManager(logger *zap.Logger) *DataLocalityManager {
 	return &DataLocalityManager{
 		affinityMap:      make(map[string][]string),
 		localityScores:   make(map[string]float64),
 		accessPatterns:   make(map[string]*AccessPattern),
-		cacheStrategy:    NewLocalityCache(),
+		cacheStrategy:    NewLocalityCache(logger),
 		migrationQueue:   make(chan *MigrationTask, 1000),
 		migrationWorkers: 10,
 		stats:            &LocalityStats{},
+		logger:           logger,
 	}
 }
 
 // NewLocalityCache 创建局部性缓存
-func NewLocalityCache() *LocalityCache {
+func NewLocalityCache(logger *zap.Logger) *LocalityCache {
 	return &LocalityCache{
 		CacheSize:      10000,
 		TTL:            time.Hour,
@@ -355,11 +368,12 @@ func NewLocalityCache() *LocalityCache {
 		WarmDataRatio:  0.3,
 		ColdDataRatio:  0.5,
 		CacheEntries:   make(map[string]*CacheEntry),
+		logger:         logger,
 	}
 }
 
 // NewHotColdSeparator 创建冷热数据分离器
-func NewHotColdSeparator() *HotColdSeparator {
+func NewHotColdSeparator(logger *zap.Logger) *HotColdSeparator {
 	return &HotColdSeparator{
 		hotThreshold:    0.8,
 		coldThreshold:   0.2,
@@ -367,29 +381,32 @@ func NewHotColdSeparator() *HotColdSeparator {
 		storageStrategy: make(map[string]*StorageClass),
 		migrationRules:  make([]MigrationRule, 0),
 		migrationStats:  &MigrationStats{},
-		analyzer:        NewTemperatureAnalyzer(),
+		analyzer:        NewTemperatureAnalyzer(logger),
+		logger:          logger,
 	}
 }
 
 // NewTemperatureAnalyzer 创建温度分析器
-func NewTemperatureAnalyzer() *TemperatureAnalyzer {
+func NewTemperatureAnalyzer(logger *zap.Logger) *TemperatureAnalyzer {
 	return &TemperatureAnalyzer{
 		analysisWindow:     24 * time.Hour,
 		predictionModel:    "exponential",
 		temperatureHistory: make(map[string][]TemperatureRecord),
 		modelAccuracy:      0.85,
 		lastAnalysis:       time.Now(),
+		logger:             logger,
 	}
 }
 
 // NewShardRebalancer 创建分片重平衡器
-func NewShardRebalancer() *ShardRebalancer {
+func NewShardRebalancer(logger *zap.Logger) *ShardRebalancer {
 	return &ShardRebalancer{
 		rebalanceStrategy: "automatic",
 		triggerThreshold:  0.8,
 		migrationLimit:    5,
 		rebalanceTasks:    make(chan *RebalanceTask, 100),
 		taskHistory:       make([]*RebalanceHistory, 0),
+		logger:            logger,
 	}
 }
 
@@ -467,7 +484,7 @@ func (chr *ConsistentHashRing) AddNode(node *ShardNode) {
 		return chr.sortedHashes[i] < chr.sortedHashes[j]
 	})
 
-	logger.GetLogger().Sugar().Infof("Added node %s to consistent hash ring with %d virtual nodes", node.NodeID, chr.virtualNodes)
+	chr.logger.Sugar().Infof("Added node %s to consistent hash ring with %d virtual nodes", node.NodeID, chr.virtualNodes)
 }
 
 // RemoveNode 从哈希环移除节点
@@ -488,7 +505,7 @@ func (chr *ConsistentHashRing) RemoveNode(nodeID string) {
 	}
 	chr.sortedHashes = newSortedHashes
 
-	logger.GetLogger().Sugar().Infof("Removed node %s from consistent hash ring", nodeID)
+	chr.logger.Sugar().Infof("Removed node %s from consistent hash ring", nodeID)
 }
 
 // GetNode 获取数据对应的节点
@@ -553,7 +570,7 @@ func (so *ShardOptimizer) OptimizeDataPlacement(ctx context.Context, dataKey str
 	// 更新局部性信息
 	so.dataLocalityManager.UpdateAffinityMap(dataKey, optimalNode, accessPattern)
 
-	logger.GetLogger().Sugar().Infof("Optimized data placement for key %s: node=%s, storage_class=%s, temperature=%.2f",
+	so.logger.Sugar().Infof("Optimized data placement for key %s: node=%s, storage_class=%s, temperature=%.2f",
 		dataKey, optimalNode, storageClass, temperature.Temperature)
 
 	return optimalNode, nil
@@ -862,9 +879,9 @@ func (sr *ShardRebalancer) TriggerRebalance(reason string) {
 
 	select {
 	case sr.rebalanceTasks <- task:
-		logger.GetLogger().Sugar().Infof("Rebalance task %s queued: %s", taskID, reason)
+		sr.logger.Sugar().Infof("Rebalance task %s queued: %s", taskID, reason)
 	default:
-		logger.GetLogger().Sugar().Infof("Rebalance task queue full, dropping task: %s", reason)
+		sr.logger.Sugar().Infof("Rebalance task queue full, dropping task: %s", reason)
 	}
 }
 

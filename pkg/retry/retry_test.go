@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"minIODB/pkg/logger"
 	"minIODB/pkg/retry"
 
 	"github.com/stretchr/testify/assert"
@@ -21,7 +22,7 @@ func TestRetry_Success(t *testing.T) {
 		Multiplier:      2.0,
 	}
 
-	err := retry.Do(context.Background(), config, "test_operation", func(ctx context.Context) error {
+	err := retry.Do(context.Background(), config, logger.GetLogger(), "test_operation", func(ctx context.Context) error {
 		attempts++
 		if attempts < 2 {
 			return retry.NewRetryableError(errors.New("temporary error"))
@@ -40,7 +41,7 @@ func TestRetry_NonRetryableError(t *testing.T) {
 		InitialInterval: 10 * time.Millisecond,
 	}
 
-	err := retry.Do(context.Background(), config, "test_operation", func(ctx context.Context) error {
+	err := retry.Do(context.Background(), config, logger.GetLogger(), "test_operation", func(ctx context.Context) error {
 		attempts++
 		return errors.New("non-retryable error")
 	})
@@ -56,7 +57,7 @@ func TestRetry_MaxAttemptsExceeded(t *testing.T) {
 		InitialInterval: 10 * time.Millisecond,
 	}
 
-	err := retry.Do(context.Background(), config, "test_operation", func(ctx context.Context) error {
+	err := retry.Do(context.Background(), config, logger.GetLogger(), "test_operation", func(ctx context.Context) error {
 		attempts++
 		return retry.NewRetryableError(errors.New("persistent error"))
 	})
@@ -80,7 +81,7 @@ func TestRetry_ContextCancellation(t *testing.T) {
 		cancel()
 	}()
 
-	err := retry.Do(ctx, config, "test_operation", func(ctx context.Context) error {
+	err := retry.Do(ctx, config, logger.GetLogger(), "test_operation", func(ctx context.Context) error {
 		attempts++
 		return retry.NewRetryableError(errors.New("error"))
 	})
@@ -112,6 +113,7 @@ func TestDoWithMetrics(t *testing.T) {
 	err := retry.DoWithMetrics(
 		context.Background(),
 		config,
+		logger.GetLogger(),
 		"test_operation",
 		func(ctx context.Context) error {
 			attempts++
@@ -132,7 +134,7 @@ func TestDoWithMetrics(t *testing.T) {
 }
 
 func TestCircuitBreaker_NormalOperation(t *testing.T) {
-	cb := retry.NewCircuitBreaker("test", retry.DefaultCircuitBreakerConfig)
+	cb := retry.NewCircuitBreaker("test", retry.DefaultCircuitBreakerConfig, logger.GetLogger())
 	ctx := context.Background()
 
 	// 正常操作应该成功
@@ -151,7 +153,7 @@ func TestCircuitBreaker_Opening(t *testing.T) {
 		SuccessThreshold:       2,
 		RequestVolumeThreshold: 3,
 	}
-	cb := retry.NewCircuitBreaker("test", config)
+	cb := retry.NewCircuitBreaker("test", config, logger.GetLogger())
 	ctx := context.Background()
 
 	// 执行足够的请求以达到阈值并触发熔断
@@ -171,7 +173,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
 		SuccessThreshold:       2,
 		RequestVolumeThreshold: 2,
 	}
-	cb := retry.NewCircuitBreaker("test", config)
+	cb := retry.NewCircuitBreaker("test", config, logger.GetLogger())
 	ctx := context.Background()
 
 	// 触发熔断
@@ -199,7 +201,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
 }
 
 func TestCircuitBreaker_Stats(t *testing.T) {
-	cb := retry.NewCircuitBreaker("test", retry.DefaultCircuitBreakerConfig)
+	cb := retry.NewCircuitBreaker("test", retry.DefaultCircuitBreakerConfig, logger.GetLogger())
 	ctx := context.Background()
 
 	// 执行一些操作
@@ -223,7 +225,7 @@ func TestCircuitBreaker_Reset(t *testing.T) {
 		SuccessThreshold:       2,
 		RequestVolumeThreshold: 2,
 	}
-	cb := retry.NewCircuitBreaker("test", config)
+	cb := retry.NewCircuitBreaker("test", config, logger.GetLogger())
 	ctx := context.Background()
 
 	// 触发熔断

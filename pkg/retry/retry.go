@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"minIODB/pkg/logger"
-
 	"go.uber.org/zap"
 )
 
@@ -58,7 +56,7 @@ type Func func(ctx context.Context) error
 
 // Do 执行重试逻辑
 // operation 参数用于日志记录和监控
-func Do(ctx context.Context, config Config, operation string, fn Func) error {
+func Do(ctx context.Context, config Config, logger *zap.Logger, operation string, fn Func) error {
 	var lastErr error
 	interval := config.InitialInterval
 
@@ -66,7 +64,7 @@ func Do(ctx context.Context, config Config, operation string, fn Func) error {
 		err := fn(ctx)
 		if err == nil {
 			if attempt > 1 {
-				logger.LogInfo(ctx, "Operation succeeded after retry",
+				logger.Info("Operation succeeded after retry",
 					zap.String("operation", operation),
 					zap.Int("attempts", attempt))
 			}
@@ -77,7 +75,7 @@ func Do(ctx context.Context, config Config, operation string, fn Func) error {
 
 		// 检查是否可重试
 		if !IsRetryable(err) {
-			logger.GetLogger().Sugar().Infof("Non-retryable error in %s (attempt %d/%d): %v", operation, attempt, config.MaxAttempts, err)
+			logger.Info("Non-retryable error in operation", zap.String("operation", operation), zap.Int("attempt", attempt), zap.Int("max_attempts", config.MaxAttempts), zap.Error(err))
 			return err
 		}
 
@@ -88,7 +86,7 @@ func Do(ctx context.Context, config Config, operation string, fn Func) error {
 
 		// 如果不是最后一次尝试，则等待重试
 		if attempt < config.MaxAttempts {
-			logger.GetLogger().Sugar().Infof("Retrying %s (attempt %d/%d) after %v: %v", operation, attempt, config.MaxAttempts, interval, err)
+			logger.Info("Retrying operation", zap.String("operation", operation), zap.Int("attempt", attempt), zap.Int("max_attempts", config.MaxAttempts), zap.Duration("interval", interval), zap.Error(err))
 
 			select {
 			case <-time.After(interval):
@@ -108,7 +106,7 @@ func Do(ctx context.Context, config Config, operation string, fn Func) error {
 		}
 	}
 
-	logger.GetLogger().Sugar().Infof("Max retry attempts exceeded for %s: %v", operation, lastErr)
+	logger.Info("Max retry attempts exceeded for operation", zap.String("operation", operation), zap.Error(lastErr))
 	return fmt.Errorf("max retry attempts (%d) exceeded for %s: %w", config.MaxAttempts, operation, lastErr)
 }
 
@@ -117,7 +115,8 @@ func Do(ctx context.Context, config Config, operation string, fn Func) error {
 type MetricsFunc func(attempt int, err error, duration time.Duration)
 
 // DoWithMetrics 执行带指标记录的重试逻辑
-func DoWithMetrics(ctx context.Context, config Config, operation string, fn Func, metrics MetricsFunc) error {
+func DoWithMetrics(ctx context.Context, config Config,
+	logger *zap.Logger, operation string, fn Func, metrics MetricsFunc) error {
 	var lastErr error
 	interval := config.InitialInterval
 
@@ -133,7 +132,7 @@ func DoWithMetrics(ctx context.Context, config Config, operation string, fn Func
 
 		if err == nil {
 			if attempt > 1 {
-				logger.GetLogger().Sugar().Infof("Operation %s succeeded after %d attempts in %v", operation, attempt, duration)
+				logger.Info("Operation succeeded after attempts", zap.String("operation", operation), zap.Int("attempt", attempt), zap.Duration("duration", duration))
 			}
 			return nil
 		}
@@ -142,7 +141,7 @@ func DoWithMetrics(ctx context.Context, config Config, operation string, fn Func
 
 		// 检查是否可重试
 		if !IsRetryable(err) {
-			logger.GetLogger().Sugar().Infof("Non-retryable error in %s (attempt %d/%d): %v", operation, attempt, config.MaxAttempts, err)
+			logger.Info("Non-retryable error in operation", zap.String("operation", operation), zap.Int("attempt", attempt), zap.Int("max_attempts", config.MaxAttempts), zap.Error(err))
 			return err
 		}
 
@@ -153,7 +152,7 @@ func DoWithMetrics(ctx context.Context, config Config, operation string, fn Func
 
 		// 如果不是最后一次尝试，则等待重试
 		if attempt < config.MaxAttempts {
-			logger.GetLogger().Sugar().Infof("Retrying %s (attempt %d/%d) after %v: %v", operation, attempt, config.MaxAttempts, interval, err)
+			logger.Info("Retrying operation", zap.String("operation", operation), zap.Int("attempt", attempt), zap.Int("max_attempts", config.MaxAttempts), zap.Duration("interval", interval), zap.Error(err))
 
 			select {
 			case <-time.After(interval):
@@ -173,6 +172,6 @@ func DoWithMetrics(ctx context.Context, config Config, operation string, fn Func
 		}
 	}
 
-	logger.GetLogger().Sugar().Infof("Max retry attempts exceeded for %s: %v", operation, lastErr)
+	logger.Info("Max retry attempts exceeded for operation", zap.String("operation", operation), zap.Error(lastErr))
 	return fmt.Errorf("max retry attempts (%d) exceeded for %s: %w", config.MaxAttempts, operation, lastErr)
 }

@@ -7,6 +7,7 @@ import (
 
 	"minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
+	"minIODB/pkg/logger"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestIDGeneration_Integration(t *testing.T) {
 	}
 
 	// 创建服务
-	service, err := NewMinIODBService(cfg, nil, nil, nil, nil)
+	service, err := NewMinIODBService(cfg, logger.GetLogger(), nil, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, service)
 

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"minIODB/pkg/logger"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -153,7 +152,7 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		tableExtractor: NewTableExtractor(),
 		preparedStmts:  make(map[string]*sql.Stmt),
 		queryStats:     queryStats,
-		queryOptimizer: NewQueryOptimizer(),                                           // 查询优化器（文件剪枝、谓词下推）
+		queryOptimizer: NewQueryOptimizer(logger),                                     // 查询优化器（文件剪枝、谓词下推）
 		columnPruner:   NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy), // 列剪枝优化器
 	}
 
@@ -165,7 +164,7 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 	startTime := time.Now()
 
-	logger.GetLogger().Sugar().Infof("Executing enhanced query: %s", sqlQuery)
+	q.logger.Sugar().Infof("Executing enhanced query: %s", sqlQuery)
 
 	// 0. 验证SQL查询的安全性（在提取表名之前执行，以防止恶意SQL）
 	if err := security.DefaultSanitizer.ValidateSelectQuery(sqlQuery); err != nil {
@@ -186,14 +185,14 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 		return "", fmt.Errorf("no valid table names found after validation")
 	}
 
-	logger.GetLogger().Sugar().Infof("Extracted tables: %v", validTables)
+	q.logger.Sugar().Infof("Extracted tables: %v", validTables)
 
 	// 2. 检查查询缓存（只有在Redis连接池可用时）
 	ctx := context.Background()
 	if q.queryCache != nil && q.redisPool != nil {
 		if cacheEntry, found := q.queryCache.Get(ctx, sqlQuery, validTables); found {
 			q.updateCacheHitStats(validTables, time.Since(startTime))
-			logger.GetLogger().Sugar().Infof("Query cache HIT - returning cached result")
+			q.logger.Sugar().Infof("Query cache HIT - returning cached result")
 			return cacheEntry.Result, nil
 		}
 	}
@@ -235,7 +234,7 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 	queryTime := time.Since(startTime)
 	q.updateQueryStats(validTables, queryTime, q.tableExtractor.GetQueryType(sqlQuery))
 
-	logger.GetLogger().Sugar().Infof("Query executed successfully in %v", queryTime)
+	q.logger.Sugar().Infof("Query executed successfully in %v", queryTime)
 	return result, nil
 }
 
@@ -254,7 +253,7 @@ func (q *Querier) prepareTableData(tableName string) error {
 	// 3. 创建或更新DuckDB视图
 	allFiles := append(bufferFiles, storageFiles...)
 	if len(allFiles) == 0 {
-		logger.GetLogger().Sugar().Infof("No data files found for table: %s", tableName)
+		q.logger.Sugar().Infof("No data files found for table: %s", tableName)
 		return nil
 	}
 
@@ -278,7 +277,7 @@ func (q *Querier) getBufferFilesForTable(tableName string) []string {
 			// 创建临时Parquet文件
 			tempFile := q.createTempFilePath(bufferKey)
 			if err := q.writeBufferToParquet(tempFile, rows); err != nil {
-				logger.GetLogger().Sugar().Infof("WARN: failed to write buffer to parquet file %s: %v", tempFile, err)
+				q.logger.Sugar().Infof("WARN: failed to write buffer to parquet file %s: %v", tempFile, err)
 				continue
 			}
 			files = append(files, tempFile)
@@ -302,7 +301,7 @@ func (q *Querier) getStorageFilesForTable(ctx context.Context, tableName string)
 		// 获取集合中的所有文件名（使用SMembers读取集合）
 		objectNames, err := q.redisClient.SMembers(ctx, key).Result()
 		if err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to get object names for key %s: %v", key, err)
+			q.logger.Sugar().Infof("WARN: failed to get object names for key %s: %v", key, err)
 			continue
 		}
 
@@ -310,7 +309,7 @@ func (q *Querier) getStorageFilesForTable(ctx context.Context, tableName string)
 		for _, objectName := range objectNames {
 			localPath, err := q.downloadToTemp(ctx, objectName)
 			if err != nil {
-				logger.GetLogger().Sugar().Infof("WARN: failed to download file %s: %v", objectName, err)
+				q.logger.Sugar().Infof("WARN: failed to download file %s: %v", objectName, err)
 				continue
 			}
 			files = append(files, localPath)
@@ -336,11 +335,11 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 	if err != nil {
 		return fmt.Errorf("invalid table name for drop view: %w", err)
 	}
-	logger.GetLogger().Sugar().Infof("Executing DROP VIEW SQL: %s", dropViewSQL)
+	q.logger.Sugar().Infof("Executing DROP VIEW SQL: %s", dropViewSQL)
 	if _, err := db.Exec(dropViewSQL); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to drop existing view for table %s: %v", tableName, err)
+		q.logger.Sugar().Infof("WARN: failed to drop existing view for table %s: %v", tableName, err)
 	} else {
-		logger.GetLogger().Sugar().Infof("Successfully dropped existing view (if any) for table %s", tableName)
+		q.logger.Sugar().Infof("Successfully dropped existing view (if any) for table %s", tableName)
 	}
 
 	// 使用安全的 SQL 构建器创建视图
@@ -349,17 +348,17 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 		return fmt.Errorf("invalid parameters for create view: %w", err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Creating view for table %s with %d files using provided DB connection", tableName, len(files))
-	logger.GetLogger().Sugar().Infof("Executing CREATE VIEW SQL: %s", createViewSQL)
+	q.logger.Sugar().Infof("Creating view for table %s with %d files using provided DB connection", tableName, len(files))
+	q.logger.Sugar().Infof("Executing CREATE VIEW SQL: %s", createViewSQL)
 
 	if _, err := db.Exec(createViewSQL); err != nil {
-		logger.GetLogger().Sugar().Infof("ERROR: Failed to create view for table %s with SQL: %s", tableName, createViewSQL)
-		logger.GetLogger().Sugar().Infof("ERROR: SQL execution error: %v", err)
-		logger.GetLogger().Sugar().Infof("ERROR: File paths involved: %v", files)
+		q.logger.Sugar().Infof("ERROR: Failed to create view for table %s with SQL: %s", tableName, createViewSQL)
+		q.logger.Sugar().Infof("ERROR: SQL execution error: %v", err)
+		q.logger.Sugar().Infof("ERROR: File paths involved: %v", files)
 		return fmt.Errorf("failed to create view for table %s: %w", tableName, err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Successfully created view for table %s", tableName)
+	q.logger.Sugar().Infof("Successfully created view for table %s", tableName)
 
 	// 使用安全的方式验证视图
 	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, nil, "")
@@ -367,13 +366,13 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 		return fmt.Errorf("invalid table name for verification: %w", err)
 	}
 	testSQL = testSQL + " LIMIT 0"
-	logger.GetLogger().Sugar().Infof("Testing view existence with SQL: %s", testSQL)
+	q.logger.Sugar().Infof("Testing view existence with SQL: %s", testSQL)
 	if _, err := db.Query(testSQL); err != nil {
-		logger.GetLogger().Sugar().Infof("ERROR: View verification failed for table %s: %v", tableName, err)
+		q.logger.Sugar().Infof("ERROR: View verification failed for table %s: %v", tableName, err)
 		return fmt.Errorf("view creation verification failed for table %s: %w", tableName, err)
 	}
 
-	logger.GetLogger().Sugar().Infof("View verification successful for table %s", tableName)
+	q.logger.Sugar().Infof("View verification successful for table %s", tableName)
 	return nil
 }
 
@@ -394,22 +393,22 @@ func (q *Querier) createTableViewWithDBWithColumnPruning(db *sql.DB, tableName s
 	if err != nil {
 		return fmt.Errorf("invalid table name for drop view: %w", err)
 	}
-	logger.GetLogger().Sugar().Infof("Executing DROP VIEW SQL: %s", dropViewSQL)
+	q.logger.Sugar().Infof("Executing DROP VIEW SQL: %s", dropViewSQL)
 	if _, err := db.Exec(dropViewSQL); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to drop existing view for table %s: %v", tableName, err)
+		q.logger.Sugar().Infof("WARN: failed to drop existing view for table %s: %v", tableName, err)
 	}
 
 	// 执行优化的创建视图
-	logger.GetLogger().Sugar().Infof("Creating optimized view for table %s with %d files, columns: %v", tableName, len(files), requiredColumns)
-	logger.GetLogger().Sugar().Infof("Executing CREATE VIEW SQL: %s", createViewSQL)
+	q.logger.Sugar().Infof("Creating optimized view for table %s with %d files, columns: %v", tableName, len(files), requiredColumns)
+	q.logger.Sugar().Infof("Executing CREATE VIEW SQL: %s", createViewSQL)
 
 	if _, err := db.Exec(createViewSQL); err != nil {
-		logger.GetLogger().Sugar().Infof("ERROR: Failed to create optimized view for table %s: %w", tableName, err)
-		logger.GetLogger().Sugar().Infof("ERROR: SQL execution error: %v", err)
+		q.logger.Sugar().Infof("ERROR: Failed to create optimized view for table %s: %w", tableName, err)
+		q.logger.Sugar().Infof("ERROR: SQL execution error: %v", err)
 		return fmt.Errorf("failed to create optimized view for table %s: %w", tableName, err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Successfully created optimized view for table %s with column pruning", tableName)
+	q.logger.Sugar().Infof("Successfully created optimized view for table %s with column pruning", tableName)
 
 	// 验证视图
 	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, requiredColumns, "LIMIT 0")
@@ -418,11 +417,11 @@ func (q *Querier) createTableViewWithDBWithColumnPruning(db *sql.DB, tableName s
 	}
 
 	if _, err := db.Query(testSQL); err != nil {
-		logger.GetLogger().Sugar().Infof("ERROR: Optimized view verification failed for table %s: %v", tableName, err)
+		q.logger.Sugar().Infof("ERROR: Optimized view verification failed for table %s: %v", tableName, err)
 		return fmt.Errorf("optimized view creation verification failed for table %s: %w", tableName, err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Optimized view verification successful for table %s", tableName)
+	q.logger.Sugar().Infof("Optimized view verification successful for table %s", tableName)
 	return nil
 }
 
@@ -569,7 +568,7 @@ func (q *Querier) Close() {
 // =============================================================================
 
 // NewDuckDBPool 创建DuckDB连接池
-func NewDuckDBPool(maxConns int) (*DuckDBPool, error) {
+func NewDuckDBPool(maxConns int, logger *zap.Logger) (*DuckDBPool, error) {
 	pool := &DuckDBPool{
 		connections: make(chan *sql.DB, maxConns),
 		maxConns:    maxConns,
@@ -592,7 +591,7 @@ func NewDuckDBPool(maxConns int) (*DuckDBPool, error) {
 
 	for _, opt := range optimizations {
 		if _, err := db.Exec(opt); err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to apply DuckDB optimization '%s': %v", opt, err)
+			logger.Sugar().Infof("WARN: failed to apply DuckDB optimization '%s': %v", opt, err)
 		}
 	}
 
@@ -666,7 +665,7 @@ func (q *Querier) prepareTableDataWithCache(tableName string) error {
 	// 3. 创建或更新DuckDB视图
 	allFiles := append(bufferFiles, storageFiles...)
 	if len(allFiles) == 0 {
-		logger.GetLogger().Sugar().Infof("No data files found for table: %s", tableName)
+		q.logger.Sugar().Infof("No data files found for table: %s", tableName)
 		return nil
 	}
 
@@ -693,14 +692,14 @@ func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string
 	for _, key := range keys {
 		objectNames, err := redisClient.SMembers(ctx, key).Result()
 		if err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to get object names for key %s: %v", key, err)
+			q.logger.Sugar().Infof("WARN: failed to get object names for key %s: %v", key, err)
 			continue
 		}
 
 		for _, objectName := range objectNames {
 			localPath, err := q.getFileWithCache(ctx, objectName)
 			if err != nil {
-				logger.GetLogger().Sugar().Infof("WARN: failed to get cached file %s: %v", objectName, err)
+				q.logger.Sugar().Infof("WARN: failed to get cached file %s: %v", objectName, err)
 				continue
 			}
 			files = append(files, localPath)
@@ -719,7 +718,7 @@ func (q *Querier) getStorageFilesFromMinIO(ctx context.Context, tableName string
 	prefix := tableName + "/"
 	bucket := q.config.MinIO.Bucket
 
-	logger.GetLogger().Sugar().Debugf("Listing MinIO objects with prefix: %s/%s", bucket, prefix)
+	q.logger.Sugar().Debugf("Listing MinIO objects with prefix: %s/%s", bucket, prefix)
 
 	var files []string
 	opts := minio.ListObjectsOptions{
@@ -730,7 +729,7 @@ func (q *Querier) getStorageFilesFromMinIO(ctx context.Context, tableName string
 
 	for object := range objectCh {
 		if object.Err != nil {
-			logger.GetLogger().Sugar().Warnf("Error listing object: %v", object.Err)
+			q.logger.Sugar().Warnf("Error listing object: %v", object.Err)
 			continue
 		}
 
@@ -740,14 +739,14 @@ func (q *Querier) getStorageFilesFromMinIO(ctx context.Context, tableName string
 
 		localPath, err := q.getFileWithCache(ctx, object.Key)
 		if err != nil {
-			logger.GetLogger().Sugar().Warnf("Failed to download %s: %v", object.Key, err)
+			q.logger.Sugar().Warnf("Failed to download %s: %v", object.Key, err)
 			continue
 		}
 
 		files = append(files, localPath)
 	}
 
-	logger.GetLogger().Sugar().Debugf("Found %d parquet files for table %s", len(files), tableName)
+	q.logger.Sugar().Debugf("Found %d parquet files for table %s", len(files), tableName)
 	return files, nil
 }
 
@@ -996,7 +995,7 @@ func (q *Querier) prepareTableDataWithCacheAndDB(ctx context.Context, db *sql.DB
 	// 3. 创建或更新DuckDB视图（使用传入的数据库连接）
 	allFiles := append(bufferFiles, storageFiles...)
 	if len(allFiles) == 0 {
-		logger.GetLogger().Sugar().Infof("No data files found for table: %s", tableName)
+		q.logger.Sugar().Infof("No data files found for table: %s", tableName)
 		return nil
 	}
 
@@ -1062,7 +1061,7 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 	// 4. 创建或更新DuckDB视图（带列剪枝优化）
 	allFiles := append(bufferFiles, storageFiles...)
 	if len(allFiles) == 0 {
-		logger.GetLogger().Sugar().Infof("No data files found for table: %s", tableName)
+		q.logger.Sugar().Infof("No data files found for table: %s", tableName)
 		return nil
 	}
 

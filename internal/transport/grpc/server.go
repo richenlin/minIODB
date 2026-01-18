@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"minIODB/internal/security"
 	"minIODB/internal/service"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -41,10 +41,11 @@ type Server struct {
 	// 智能限流相关
 	smartRateLimiter     *security.SmartRateLimiter
 	grpcSmartRateLimiter *security.GRPCSmartRateLimiter
+	logger               *zap.Logger
 }
 
 // NewServer 创建新的gRPC服务器
-func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Server, error) {
+func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger *zap.Logger) (*Server, error) {
 	// 初始化认证管理器
 	authConfig := &security.AuthConfig{
 		Mode:            cfg.Security.Mode,
@@ -97,15 +98,14 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Serv
 
 		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
 		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
-		logger.GetLogger().Sugar().Info("gRPC smart rate limiter initialized with %d tiers and %d path rules",
-			len(smartRateLimitConfig.Tiers), len(smartRateLimitConfig.PathLimits))
+		logger.Info("gRPC smart rate limiter initialized with %d tiers and %d path rules", zap.Int("tiers", len(smartRateLimitConfig.Tiers)), zap.Int("path_limits", len(smartRateLimitConfig.PathLimits)))
 	} else {
 		// 使用默认配置但禁用
 		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
 		defaultConfig.Enabled = false
 		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
 		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
-		logger.GetLogger().Sugar().Info("gRPC smart rate limiter disabled")
+		logger.Info("gRPC smart rate limiter disabled")
 	}
 
 	// 创建JWT管理器
@@ -129,6 +129,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Serv
 		grpcSmartRateLimiter: grpcSmartRateLimiter,
 		tokenManager:         tokenManager,
 		jwtManager:           jwtManager,
+		logger:               logger,
 	}
 
 	// 构建拦截器链
@@ -139,24 +140,24 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Serv
 	if cfg.Security.SmartRateLimit.Enabled && grpcSmartRateLimiter != nil {
 		unaryInterceptors = append(unaryInterceptors, grpcSmartRateLimiter.UnaryServerInterceptor())
 		streamInterceptors = append(streamInterceptors, grpcSmartRateLimiter.StreamServerInterceptor())
-		logger.GetLogger().Sugar().Info("Smart rate limiter middleware enabled for gRPC API")
+		logger.Info("Smart rate limiter middleware enabled for gRPC API")
 	} else if cfg.Security.RateLimit.Enabled {
 		// 传统限流拦截器（向后兼容）
 		grpcInterceptor.EnableRateLimit(cfg.Security.RateLimit.RequestsPerMinute)
 		unaryInterceptors = append(unaryInterceptors, grpcInterceptor.RateLimitInterceptor())
 		streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamRateLimitInterceptor())
-		logger.GetLogger().Sugar().Info("Traditional rate limiter middleware enabled for gRPC API (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
+		logger.Sugar().Infof("Traditional rate limiter middleware enabled for gRPC API (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
 	} else {
-		logger.GetLogger().Sugar().Info("Rate limiting disabled for gRPC API")
+		logger.Info("Rate limiting disabled for gRPC API")
 	}
 
 	// 添加JWT认证拦截器（根据配置决定是否启用）
 	if authManager.IsEnabled() {
 		unaryInterceptors = append(unaryInterceptors, grpcInterceptor.UnaryServerInterceptor())
 		streamInterceptors = append(streamInterceptors, grpcInterceptor.StreamServerInterceptor())
-		logger.GetLogger().Sugar().Info("JWT authentication enabled for gRPC API")
+		logger.Info("JWT authentication enabled for gRPC API")
 	} else {
-		logger.GetLogger().Sugar().Info("JWT authentication disabled for gRPC API")
+		logger.Info("JWT authentication disabled for gRPC API")
 	}
 
 	// 准备gRPC服务器选项 - 集成网络配置优化
@@ -207,7 +208,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config) (*Serv
 		rateLimitStatus = fmt.Sprintf("traditional limiter enabled (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
 	}
 
-	logger.GetLogger().Sugar().Info("gRPC server initialized with authentication mode: %s, rate limit: %s", cfg.Security.Mode, rateLimitStatus)
+	logger.Info("gRPC server initialized with authentication mode: %s, rate limit: %s", zap.String("mode", cfg.Security.Mode), zap.String("rate_limit", rateLimitStatus))
 
 	return server, nil
 }
@@ -230,7 +231,7 @@ func (s *Server) Start(port string) error {
 		return fmt.Errorf("failed to listen on port %s: %w", port, err)
 	}
 
-	logger.GetLogger().Sugar().Info("gRPC server starting on port %s", port)
+	s.logger.Info("gRPC server starting on port %s", zap.String("port", port))
 	if err := s.grpcServer.Serve(lis); err != nil {
 		return fmt.Errorf("failed to serve gRPC server: %w", err)
 	}
@@ -241,7 +242,7 @@ func (s *Server) Start(port string) error {
 // Stop 停止gRPC服务器
 func (s *Server) Stop() {
 	if s.grpcServer != nil {
-		logger.GetLogger().Sugar().Info("Stopping gRPC server...")
+		s.logger.Info("Stopping gRPC server...", zap.String("port", s.cfg.Server.GrpcPort))
 		s.grpcServer.GracefulStop()
 	}
 }
@@ -259,10 +260,10 @@ func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
-			logger.GetLogger().Sugar().Info("WriteData request from user: %s (ID: %s) for data ID: %s", user.Username, user.ID, req.Data.Id)
+			s.logger.Info("WriteData request from user: %s (ID: %s) for data ID: %s", zap.String("username", user.Username), zap.String("id", user.ID), zap.String("data_id", req.Data.Id))
 		}
 	} else {
-		logger.GetLogger().Sugar().Info("Received WriteData request for ID: %s", req.Data.Id)
+		s.logger.Info("Received WriteData request for ID: %s", zap.String("data_id", req.Data.Id))
 	}
 
 	// ID自动生成逻辑（与REST API保持一致）
@@ -280,7 +281,7 @@ func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (
 		if tableConfig.AutoGenerateID {
 			generatedID, err := s.miniodbService.GenerateID(ctx, tableName, tableConfig)
 			if err != nil {
-				logger.GetLogger().Sugar().Info("ERROR: Failed to generate ID: %v", err)
+				s.logger.Info("ERROR: Failed to generate ID: %v", zap.Error(err))
 				return &miniodb.WriteDataResponse{
 					Success: false,
 					Message: fmt.Sprintf("Failed to generate ID: %v", err),
@@ -288,14 +289,14 @@ func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (
 				}, nil
 			}
 			req.Data.Id = generatedID
-			logger.GetLogger().Sugar().Info("Auto-generated ID for table %s: %s", tableName, req.Data.Id)
+			s.logger.Info("Auto-generated ID for table %s: %s", zap.String("table", tableName), zap.String("id", req.Data.Id))
 		}
 	}
 
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.WriteData(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: WriteData failed: %v", err)
+		s.logger.Info("ERROR: WriteData failed: %v", zap.Error(err))
 		return nil, err
 	}
 
@@ -313,16 +314,16 @@ func (s *Server) QueryData(ctx context.Context, req *miniodb.QueryDataRequest) (
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
-			logger.GetLogger().Sugar().Info("QueryData request from user: %s (ID: %s)", user.Username, user.ID)
+			s.logger.Info("QueryData request from user: %s (ID: %s)", zap.String("username", user.Username), zap.String("id", user.ID))
 		}
 	} else {
-		logger.GetLogger().Sugar().Info("Received QueryData request: %s", req.Sql)
+		s.logger.Info("Received QueryData request: %s", zap.String("sql", req.Sql))
 	}
 
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.QueryData(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: QueryData failed: %v", err)
+		s.logger.Info("ERROR: QueryData failed: %v", zap.Error(err))
 		return nil, err
 	}
 
@@ -340,7 +341,7 @@ func (s *Server) UpdateData(ctx context.Context, req *miniodb.UpdateDataRequest)
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.UpdateData(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: UpdateData failed: %v", err)
+		s.logger.Info("ERROR: UpdateData failed: %v", zap.Error(err))
 		return nil, err
 	}
 
@@ -358,7 +359,7 @@ func (s *Server) DeleteData(ctx context.Context, req *miniodb.DeleteDataRequest)
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.DeleteData(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: DeleteData failed: %v", err)
+		s.logger.Error("ERROR: DeleteData failed: %v", zap.Error(err))
 		return nil, err
 	}
 
@@ -383,7 +384,7 @@ func (s *Server) StreamWrite(stream miniodb.MinIODBService_StreamWriteServer) er
 		req, err := stream.Recv()
 		if err == io.EOF {
 			// 处理完所有数据
-			logger.GetLogger().Sugar().Info("StreamWrite completed, processed %d records for table %s", totalRecords, table)
+			s.logger.Sugar().Infof("StreamWrite completed, processed %d records for table %s", totalRecords, table)
 			return stream.SendAndClose(&miniodb.StreamWriteResponse{
 				Success:      len(errors) == 0,
 				RecordsCount: totalRecords,
@@ -392,7 +393,7 @@ func (s *Server) StreamWrite(stream miniodb.MinIODBService_StreamWriteServer) er
 		}
 
 		if err != nil {
-			logger.GetLogger().Sugar().Info("ERROR: StreamWrite receive error: %v", err)
+			s.logger.Sugar().Infof("ERROR: StreamWrite receive error: %v", err)
 			return err
 		}
 
@@ -412,7 +413,7 @@ func (s *Server) StreamWrite(stream miniodb.MinIODBService_StreamWriteServer) er
 			if err != nil {
 				errMsg := fmt.Sprintf("Error writing record ID %s: %v", record.Id, err)
 				errors = append(errors, errMsg)
-				logger.GetLogger().Sugar().Info("ERROR: %s", errMsg)
+				s.logger.Sugar().Infof("ERROR: %s", errMsg)
 			} else {
 				totalRecords++
 			}
@@ -433,7 +434,7 @@ func (s *Server) StreamQuery(req *miniodb.StreamQueryRequest, stream miniodb.Min
 		grpcMetrics.Finish("success")
 	}()
 
-	logger.GetLogger().Sugar().Info("Received StreamQuery request: %s", req.Sql)
+	s.logger.Sugar().Infof("Received StreamQuery request: %s", req.Sql)
 
 	// 设置默认批次大小，如果未指定
 	batchSize := int32(100)
@@ -456,14 +457,14 @@ func (s *Server) StreamQuery(req *miniodb.StreamQueryRequest, stream miniodb.Min
 		// 执行查询
 		queryResp, err := s.miniodbService.QueryData(stream.Context(), queryReq)
 		if err != nil {
-			logger.GetLogger().Sugar().Info("ERROR: StreamQuery batch failed: %v", err)
+			s.logger.Sugar().Infof("ERROR: StreamQuery batch failed: %v", err)
 			return err
 		}
 
 		// 转换结果为记录列表（这里需要服务实现将结果JSON转换为DataRecord对象列表）
 		records, err := s.miniodbService.ConvertResultToRecords(queryResp.ResultJson)
 		if err != nil {
-			logger.GetLogger().Sugar().Info("ERROR: Failed to convert query result to records: %v", err)
+			s.logger.Sugar().Infof("ERROR: Failed to convert query result to records: %v", err)
 			return err
 		}
 
@@ -474,7 +475,7 @@ func (s *Server) StreamQuery(req *miniodb.StreamQueryRequest, stream miniodb.Min
 			Cursor:  queryResp.NextCursor,
 		})
 		if err != nil {
-			logger.GetLogger().Sugar().Info("ERROR: Failed to send stream batch: %v", err)
+			s.logger.Sugar().Infof("ERROR: Failed to send stream batch: %v", err)
 			return err
 		}
 
@@ -490,7 +491,7 @@ func (s *Server) StreamQuery(req *miniodb.StreamQueryRequest, stream miniodb.Min
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	logger.GetLogger().Sugar().Info("StreamQuery completed successfully")
+	s.logger.Sugar().Infof("StreamQuery completed successfully")
 	return nil
 }
 
@@ -501,7 +502,7 @@ func (s *Server) CreateTable(ctx context.Context, req *miniodb.CreateTableReques
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.CreateTable(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: CreateTable failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: CreateTable failed: %v", err)
 		return nil, err
 	}
 
@@ -513,7 +514,7 @@ func (s *Server) ListTables(ctx context.Context, req *miniodb.ListTablesRequest)
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.ListTables(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: ListTables failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: ListTables failed: %v", err)
 		return nil, err
 	}
 
@@ -525,7 +526,7 @@ func (s *Server) GetTable(ctx context.Context, req *miniodb.GetTableRequest) (*m
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.GetTable(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: GetTable failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: GetTable failed: %v", err)
 		return nil, err
 	}
 
@@ -537,7 +538,7 @@ func (s *Server) DeleteTable(ctx context.Context, req *miniodb.DeleteTableReques
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.DeleteTable(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: DeleteTable failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: DeleteTable failed: %v", err)
 		return nil, err
 	}
 
@@ -551,7 +552,7 @@ func (s *Server) BackupMetadata(ctx context.Context, req *miniodb.BackupMetadata
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.BackupMetadata(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: BackupMetadata failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: BackupMetadata failed: %v", err)
 		return nil, err
 	}
 
@@ -563,7 +564,7 @@ func (s *Server) RestoreMetadata(ctx context.Context, req *miniodb.RestoreMetada
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.RestoreMetadata(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: RestoreMetadata failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: RestoreMetadata failed: %v", err)
 		return nil, err
 	}
 
@@ -575,7 +576,7 @@ func (s *Server) ListBackups(ctx context.Context, req *miniodb.ListBackupsReques
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.ListBackups(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: ListBackups failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: ListBackups failed: %v", err)
 		return nil, err
 	}
 
@@ -587,7 +588,7 @@ func (s *Server) GetMetadataStatus(ctx context.Context, req *miniodb.GetMetadata
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.GetMetadataStatus(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: GetMetadataStatus failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: GetMetadataStatus failed: %v", err)
 		return nil, err
 	}
 
@@ -601,7 +602,7 @@ func (s *Server) HealthCheck(ctx context.Context, req *miniodb.HealthCheckReques
 	// 调用服务方法处理请求
 	err := s.miniodbService.HealthCheck(ctx)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: HealthCheck failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: HealthCheck failed: %v", err)
 		return &miniodb.HealthCheckResponse{
 			Status:    "unhealthy",
 			Timestamp: timestamppb.Now(),
@@ -627,7 +628,7 @@ func (s *Server) GetStatus(ctx context.Context, req *miniodb.GetStatusRequest) (
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.GetStatus(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: GetStatus failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: GetStatus failed: %v", err)
 		return nil, err
 	}
 
@@ -639,7 +640,7 @@ func (s *Server) GetMetrics(ctx context.Context, req *miniodb.GetMetricsRequest)
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.GetMetrics(ctx, req)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: GetMetrics failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: GetMetrics failed: %v", err)
 		return nil, err
 	}
 
@@ -658,7 +659,7 @@ func (s *Server) GetToken(ctx context.Context, req *miniodb.GetTokenRequest) (*m
 	// 生成JWT token
 	accessToken, err := s.authManager.GenerateToken(req.ApiKey, req.ApiKey)
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: Token generation failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: Token generation failed: %v", err)
 		return nil, fmt.Errorf("invalid credentials: %w", err)
 	}
 
@@ -691,7 +692,7 @@ func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequ
 	// 这里应该验证refresh token，简单实现直接生成新的
 	accessToken, err := s.authManager.GenerateToken("refresh_user", "refresh_user")
 	if err != nil {
-		logger.GetLogger().Sugar().Info("ERROR: Token refresh failed: %v", err)
+		s.logger.Sugar().Infof("ERROR: Token refresh failed: %v", err)
 		return nil, fmt.Errorf("invalid refresh token: %w", err)
 	}
 
@@ -716,7 +717,7 @@ func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequ
 	// 撤销旧的刷新令牌
 	if err := s.tokenManager.RevokeRefreshToken(ctx, req.RefreshToken); err != nil {
 		// 记录错误但不阻止流程
-		logger.GetLogger().Sugar().Info("WARN: Failed to revoke old refresh token: %v", err)
+		s.logger.Sugar().Infof("WARN: Failed to revoke old refresh token: %v", err)
 	}
 
 	// 存储新的刷新令牌
@@ -739,7 +740,7 @@ func (s *Server) RevokeToken(ctx context.Context, req *miniodb.RevokeTokenReques
 		return nil, fmt.Errorf("token is required")
 	}
 
-	logger.GetLogger().Sugar().Info("INFO: Token revoked: %s", req.Token[:10]+"...")
+	s.logger.Sugar().Infof("INFO: Token revoked: %s", req.Token[:10]+"...")
 
 	return &miniodb.RevokeTokenResponse{
 		Success: true,

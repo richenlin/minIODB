@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,10 +9,11 @@ import (
 	"time"
 
 	"minIODB/config"
-	"minIODB/pkg/pool"
 	"minIODB/pkg/consistenthash"
+	"minIODB/pkg/pool"
 
 	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 const (
@@ -71,7 +71,7 @@ func (hc *HealthChecker) Start() {
 			// 执行健康检查逻辑
 			if hc.registry.redisEnabled {
 				if err := hc.registry.sendHeartbeat(); err != nil {
-					logger.GetLogger().Sugar().Infof("Health check failed: %v", err)
+					hc.registry.logger.Info("Health check failed: %v", zap.Error(err))
 				}
 			}
 		case <-hc.registry.stopChan:
@@ -106,10 +106,13 @@ type ServiceRegistry struct {
 
 	// 节点信息
 	nodeInfo *NodeInfo
+
+	// 日志器
+	logger *zap.Logger
 }
 
 // NewServiceRegistry 创建服务注册器
-func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string) (*ServiceRegistry, error) {
+func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string, logger *zap.Logger) (*ServiceRegistry, error) {
 	// 检查Redis是否启用 - 优先使用Network.Pools.Redis配置
 	redisEnabled := cfg.Network.Pools.Redis.Enabled
 	if !redisEnabled {
@@ -170,7 +173,7 @@ func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string) (*ServiceReg
 		}
 
 		var err error
-		redisPool, err = pool.NewRedisPool(poolConfig)
+		redisPool, err = pool.NewRedisPool(poolConfig, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Redis pool: %w", err)
 		}
@@ -192,15 +195,16 @@ func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string) (*ServiceReg
 			Status:   "healthy",
 			LastSeen: time.Now(),
 		},
+		logger: logger,
 	}
 
 	// 创建健康检查器
 	registry.healthChecker = NewHealthChecker(registry)
 
 	if redisEnabled {
-		logger.GetLogger().Sugar().Infof("Service registry initialized with Redis enabled (mode: %s)", redisConfig.Mode)
+		registry.logger.Info("Service registry initialized with Redis enabled (mode: %s)", zap.String("mode", string(redisConfig.Mode)))
 	} else {
-		logger.GetLogger().Info("Service registry initialized with Redis disabled (single-node mode)")
+		registry.logger.Info("Service registry initialized with Redis disabled (single-node mode)")
 	}
 
 	return registry, nil
@@ -216,7 +220,7 @@ func (sr *ServiceRegistry) Start() error {
 	}
 
 	if !sr.redisEnabled {
-		logger.GetLogger().Info("Redis disabled, skipping service registration - running in single-node mode")
+		sr.logger.Info("Redis disabled, skipping service registration - running in single-node mode")
 		sr.isRunning = true
 		return nil
 	}
@@ -233,7 +237,7 @@ func (sr *ServiceRegistry) Start() error {
 	go sr.startServiceDiscovery()
 
 	sr.isRunning = true
-	logger.GetLogger().Sugar().Infof("Service registry started for node: %s", sr.nodeID)
+	sr.logger.Info("Service registry started for node: %s", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
@@ -252,16 +256,16 @@ func (sr *ServiceRegistry) Stop() error {
 	if sr.redisEnabled && sr.redisPool != nil {
 		// 注销服务
 		if err := sr.unregisterService(); err != nil {
-			logger.GetLogger().Sugar().Infof("Failed to unregister service: %v", err)
+			sr.logger.Info("Failed to unregister service: %v", zap.Error(err))
 		}
 
 		// 关闭Redis连接池
 		if err := sr.redisPool.Close(); err != nil {
-			logger.GetLogger().Sugar().Infof("Failed to close Redis pool: %v", err)
+			sr.logger.Info("Failed to close Redis pool: %v", zap.Error(err))
 		}
 	}
 
-	logger.GetLogger().Sugar().Infof("Service registry stopped for node: %s", sr.nodeID)
+	sr.logger.Info("Service registry stopped for node: %s", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
@@ -327,7 +331,7 @@ func (sr *ServiceRegistry) registerService() error {
 		return fmt.Errorf("failed to set service health: %w", err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Service registered: %s at %s:%s", sr.nodeID, address, sr.grpcPort)
+	sr.logger.Info("Service registered: %s at %s:%s", zap.String("node_id", sr.nodeID), zap.String("address", address), zap.String("port", sr.grpcPort))
 	return nil
 }
 
@@ -342,16 +346,16 @@ func (sr *ServiceRegistry) unregisterService() error {
 
 	// 从服务列表移除
 	if err := client.HDel(ctx, ServiceRegistryKey, sr.nodeID).Err(); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to remove service from registry: %v", err)
+		sr.logger.Warn("WARN: failed to remove service from registry: %v", zap.Error(err))
 	}
 
 	// 删除健康状态
 	healthKey := fmt.Sprintf(NodeHealthKey, sr.nodeID)
 	if err := client.Del(ctx, healthKey).Err(); err != nil {
-		logger.GetLogger().Sugar().Infof("WARN: failed to remove service health: %v", err)
+		sr.logger.Sugar().Infof("WARN: failed to remove service health: %v", err)
 	}
 
-	logger.GetLogger().Sugar().Infof("Service unregistered: %s", sr.nodeID)
+	sr.logger.Sugar().Infof("Service unregistered: %s", sr.nodeID)
 	return nil
 }
 
@@ -375,7 +379,7 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 	for serviceID, serviceData := range serviceMap {
 		var service ServiceInfo
 		if err := json.Unmarshal([]byte(serviceData), &service); err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to unmarshal service data for %s: %v", serviceID, err)
+			sr.logger.Sugar().Infof("WARN: failed to unmarshal service data for %s: %v", serviceID, err)
 			continue
 		}
 
@@ -385,10 +389,10 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 		if err == redis.Nil {
 			// 服务不健康，从注册表移除
 			client.HDel(ctx, ServiceRegistryKey, serviceID)
-			logger.GetLogger().Sugar().Infof("Removed unhealthy service %s from registry", serviceID)
+			sr.logger.Sugar().Infof("Removed unhealthy service %s from registry", serviceID)
 			continue
 		} else if err != nil {
-			logger.GetLogger().Sugar().Infof("WARN: failed to check health for service %s: %v", serviceID, err)
+			sr.logger.Sugar().Infof("WARN: failed to check health for service %s: %v", serviceID, err)
 			continue
 		}
 
@@ -412,12 +416,12 @@ func (sr *ServiceRegistry) startServiceDiscovery() {
 		case <-ticker.C:
 			// 发送心跳
 			if err := sr.sendHeartbeat(); err != nil {
-				logger.GetLogger().Sugar().Infof("ERROR: heartbeat failed: %v", err)
+				sr.logger.Sugar().Infof("ERROR: heartbeat failed: %v", err)
 			}
 
 			// 更新服务列表
 			if err := sr.updateServiceList(); err != nil {
-				logger.GetLogger().Sugar().Infof("ERROR: failed to update service list: %v", err)
+				sr.logger.Sugar().Infof("ERROR: failed to update service list: %v", err)
 			}
 		case <-sr.stopChan:
 			return

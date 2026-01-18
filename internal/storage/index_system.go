@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"math"
@@ -13,6 +12,7 @@ import (
 	"minIODB/pkg/pool"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"go.uber.org/zap"
 )
 
 // IndexSystem 索引系统
@@ -27,6 +27,7 @@ type IndexSystem struct {
 	stats       *IndexStats
 	redisPool   *pool.RedisPool
 	mutex       sync.RWMutex
+	logger      *zap.Logger
 }
 
 // IndexConfig 索引配置
@@ -306,7 +307,7 @@ type QueryResult struct {
 }
 
 // NewIndexSystem 创建索引系统
-func NewIndexSystem(redisPool *pool.RedisPool) *IndexSystem {
+func NewIndexSystem(redisPool *pool.RedisPool, logger *zap.Logger) *IndexSystem {
 	return &IndexSystem{
 		bloomFilters:     make(map[string]*BloomFilterIndex),
 		minMaxIndexes:    make(map[string]*MinMaxIndex),
@@ -320,6 +321,7 @@ func NewIndexSystem(redisPool *pool.RedisPool) *IndexSystem {
 			IndexEfficiency: make(map[string]float64),
 		},
 		redisPool: redisPool,
+		logger:    logger,
 	}
 }
 
@@ -389,7 +391,7 @@ func (is *IndexSystem) CreateBloomFilter(name, columnName string) error {
 	is.bloomFilters[name] = index
 	is.updateIndexStats("bloom_filter", 1)
 
-	logger.GetLogger().Sugar().Infof("Created BloomFilter index: %s for column: %s", name, columnName)
+	is.logger.Sugar().Infof("Created BloomFilter index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -413,7 +415,7 @@ func (is *IndexSystem) CreateMinMaxIndex(name, columnName, dataType string) erro
 	is.minMaxIndexes[name] = index
 	is.updateIndexStats("minmax", 1)
 
-	logger.GetLogger().Sugar().Infof("Created MinMax index: %s for column: %s", name, columnName)
+	is.logger.Sugar().Infof("Created MinMax index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -440,7 +442,7 @@ func (is *IndexSystem) CreateInvertedIndex(name, columnName string) error {
 	is.invertedIndexes[name] = index
 	is.updateIndexStats("inverted", 1)
 
-	logger.GetLogger().Sugar().Infof("Created Inverted index: %s for column: %s", name, columnName)
+	is.logger.Sugar().Infof("Created Inverted index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -461,7 +463,7 @@ func (is *IndexSystem) CreateBitmapIndex(name, columnName string) error {
 	is.bitmapIndexes[name] = index
 	is.updateIndexStats("bitmap", 1)
 
-	logger.GetLogger().Sugar().Infof("Created Bitmap index: %s for column: %s", name, columnName)
+	is.logger.Sugar().Infof("Created Bitmap index: %s for column: %s", name, columnName)
 	return nil
 }
 
@@ -490,7 +492,7 @@ func (is *IndexSystem) CreateCompositeIndex(name string, columns []string) error
 	is.compositeIndexes[name] = index
 	is.updateIndexStats("composite", 1)
 
-	logger.GetLogger().Sugar().Infof("Created Composite index: %s for columns: %v", name, columns)
+	is.logger.Sugar().Infof("Created Composite index: %s for columns: %v", name, columns)
 	return nil
 }
 
@@ -906,23 +908,23 @@ func (is *IndexSystem) GetStats() *IndexStats {
 
 // OptimizeIndexes 优化索引
 func (is *IndexSystem) OptimizeIndexes(ctx context.Context) error {
-	logger.GetLogger().Info("Starting index optimization...")
+	is.logger.Info("Starting index optimization...")
 
 	startTime := time.Now()
 
 	// 优化BloomFilter索引
 	if err := is.optimizeBloomFilters(); err != nil {
-		logger.GetLogger().Sugar().Infof("Failed to optimize bloom filters: %v", err)
+		is.logger.Sugar().Infof("Failed to optimize bloom filters: %v", err)
 	}
 
 	// 优化MinMax索引
 	if err := is.optimizeMinMaxIndexes(); err != nil {
-		logger.GetLogger().Sugar().Infof("Failed to optimize minmax indexes: %v", err)
+		is.logger.Sugar().Infof("Failed to optimize minmax indexes: %v", err)
 	}
 
 	// 优化倒排索引
 	if err := is.optimizeInvertedIndexes(); err != nil {
-		logger.GetLogger().Sugar().Infof("Failed to optimize inverted indexes: %v", err)
+		is.logger.Sugar().Infof("Failed to optimize inverted indexes: %v", err)
 	}
 
 	// 更新统计信息
@@ -931,7 +933,7 @@ func (is *IndexSystem) OptimizeIndexes(ctx context.Context) error {
 	is.stats.LastMaintenance = time.Now()
 	is.stats.mutex.Unlock()
 
-	logger.GetLogger().Sugar().Infof("Index optimization completed in %v", time.Since(startTime))
+	is.logger.Sugar().Infof("Index optimization completed in %v", time.Since(startTime))
 	return nil
 }
 
@@ -949,7 +951,7 @@ func (is *IndexSystem) optimizeBloomFilters() error {
 
 		// 检查是否需要重建（false positive rate过高）
 		if filter.stats.ActualFPRate > filter.config.FalsePositiveRate*2 {
-			logger.GetLogger().Sugar().Infof("Rebuilding bloom filter %s due to high FP rate: %.4f",
+			is.logger.Sugar().Infof("Rebuilding bloom filter %s due to high FP rate: %.4f",
 				filter.name, filter.stats.ActualFPRate)
 
 			// 重建过程（这里简化处理）

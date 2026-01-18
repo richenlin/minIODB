@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"minIODB/pkg/logger"
-
 	"go.uber.org/zap"
 )
 
@@ -49,6 +47,7 @@ type WAL struct {
 	lastSyncTime time.Time
 	syncInterval time.Duration
 	closed       bool
+	logger       *zap.Logger
 }
 
 type Config struct {
@@ -67,7 +66,7 @@ func DefaultConfig(dir string) *Config {
 	}
 }
 
-func New(cfg *Config) (*WAL, error) {
+func New(cfg *Config, logger *zap.Logger) (*WAL, error) {
 	if err := os.MkdirAll(cfg.Dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create WAL directory: %w", err)
 	}
@@ -78,6 +77,7 @@ func New(cfg *Config) (*WAL, error) {
 		maxFileSize:  cfg.MaxFileSize,
 		syncInterval: cfg.SyncInterval,
 		lastSyncTime: time.Now(),
+		logger:       logger,
 	}
 
 	lastSeq, err := w.findLastSequence()
@@ -110,7 +110,7 @@ func (w *WAL) openNewFile() error {
 	w.currentSize = 0
 	w.rotateCount++
 
-	logger.GetLogger().Info("Opened new WAL file", zap.String("file", filename))
+	w.logger.Info("Opened new WAL file", zap.String("file", filename))
 	return nil
 }
 
@@ -149,7 +149,7 @@ func (w *WAL) Append(recordType byte, data []byte) (uint64, error) {
 
 	if w.currentSize >= w.maxFileSize {
 		if err := w.openNewFile(); err != nil {
-			logger.GetLogger().Error("Failed to rotate WAL file", zap.Error(err))
+			w.logger.Error("Failed to rotate WAL file", zap.Error(err))
 		}
 	}
 
@@ -206,7 +206,7 @@ func (w *WAL) Replay(handler func(record *Record) error) error {
 
 	for _, filename := range files {
 		if err := w.replayFile(filename, handler); err != nil {
-			logger.GetLogger().Warn("Error replaying WAL file",
+			w.logger.Warn("Error replaying WAL file",
 				zap.String("file", filename),
 				zap.Error(err))
 		}
@@ -231,7 +231,7 @@ func (w *WAL) replayFile(filename string, handler func(record *Record) error) er
 			break
 		}
 		if err != nil {
-			logger.GetLogger().Warn("Error reading WAL record",
+			w.logger.Warn("Error reading WAL record",
 				zap.String("file", filename),
 				zap.Int("record", recordCount),
 				zap.Error(err))
@@ -245,7 +245,7 @@ func (w *WAL) replayFile(filename string, handler func(record *Record) error) er
 		recordCount++
 	}
 
-	logger.GetLogger().Info("Replayed WAL file",
+	w.logger.Info("Replayed WAL file",
 		zap.String("file", filename),
 		zap.Int("records", recordCount))
 
@@ -309,11 +309,11 @@ func (w *WAL) Truncate(beforeSeqNum uint64) error {
 
 		if maxSeq < beforeSeqNum {
 			if err := os.Remove(filename); err != nil {
-				logger.GetLogger().Warn("Failed to remove old WAL file",
+				w.logger.Warn("Failed to remove old WAL file",
 					zap.String("file", filename),
 					zap.Error(err))
 			} else {
-				logger.GetLogger().Info("Removed old WAL file",
+				w.logger.Info("Removed old WAL file",
 					zap.String("file", filename),
 					zap.Uint64("maxSeq", maxSeq))
 			}
@@ -402,7 +402,7 @@ func (w *WAL) Close() error {
 		w.file.Close()
 	}
 
-	logger.GetLogger().Info("WAL closed", zap.Uint64("lastSeqNum", w.seqNum))
+	w.logger.Info("WAL closed", zap.Uint64("lastSeqNum", w.seqNum))
 	return nil
 }
 

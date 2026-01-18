@@ -1,13 +1,14 @@
 package storage
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // MemoryOptimizer 内存优化器
@@ -19,6 +20,7 @@ type MemoryOptimizer struct {
 	stats           *MemoryStats
 	config          *MemoryConfig
 	mutex           sync.RWMutex
+	logger          *zap.Logger
 }
 
 // MemoryConfig 内存配置
@@ -110,6 +112,7 @@ type ZeroCopyManager struct {
 	copyStats     *CopyStats
 	enabled       bool
 	mutex         sync.RWMutex
+	logger        *zap.Logger
 }
 
 // MappedRegion 内存映射区域
@@ -140,6 +143,7 @@ type GCManager struct {
 	stopChan       chan struct{}
 	running        bool
 	mutex          sync.RWMutex
+	logger         *zap.Logger
 }
 
 // GCStats 垃圾回收统计
@@ -164,14 +168,15 @@ type MemoryStats struct {
 }
 
 // NewMemoryOptimizer 创建内存优化器
-func NewMemoryOptimizer(config *MemoryConfig) *MemoryOptimizer {
+func NewMemoryOptimizer(config *MemoryConfig, logger *zap.Logger) *MemoryOptimizer {
 	mo := &MemoryOptimizer{
 		memoryPools:     make(map[string]*MemoryPool),
 		bufferOptimizer: NewBufferOptimizer(),
-		zeroCopyManager: NewZeroCopyManager(),
-		gcManager:       NewGCManager(config.GCInterval),
+		zeroCopyManager: NewZeroCopyManager(logger),
+		gcManager:       NewGCManager(config.GCInterval, logger),
 		stats:           &MemoryStats{},
 		config:          config,
+		logger:          logger,
 	}
 
 	// 初始化内存池
@@ -201,21 +206,23 @@ func NewBufferOptimizer() *BufferOptimizer {
 }
 
 // NewZeroCopyManager 创建零拷贝管理器
-func NewZeroCopyManager() *ZeroCopyManager {
+func NewZeroCopyManager(logger *zap.Logger) *ZeroCopyManager {
 	return &ZeroCopyManager{
 		mappedRegions: make(map[string]*MappedRegion),
 		copyStats:     &CopyStats{},
 		enabled:       true,
+		logger:        logger,
 	}
 }
 
 // NewGCManager 创建GC管理器
-func NewGCManager(interval time.Duration) *GCManager {
+func NewGCManager(interval time.Duration, logger *zap.Logger) *GCManager {
 	return &GCManager{
 		gcInterval:     interval,
 		gcStats:        &GCStats{},
 		forceGCTrigger: make(chan struct{}, 1),
 		stopChan:       make(chan struct{}),
+		logger:         logger,
 	}
 }
 
@@ -252,7 +259,7 @@ func (mo *MemoryOptimizer) initMemoryPools() {
 		}
 
 		mo.memoryPools[name] = pool
-		logger.GetLogger().Sugar().Infof("Initialized memory pool: %s (bufferSize: %d, maxBuffers: %d)",
+		mo.logger.Sugar().Infof("Initialized memory pool: %s (bufferSize: %d, maxBuffers: %d)",
 			name, config.bufferSize, config.maxBuffers)
 	}
 }
@@ -264,7 +271,7 @@ func (mo *MemoryOptimizer) GetBuffer(size int) []byte {
 
 	if pool == nil {
 		if !mo.checkMemoryLimit(int64(size)) {
-			logger.GetLogger().Sugar().Infof("WARN: memory limit exceeded, returning nil buffer")
+			mo.logger.Sugar().Infof("WARN: memory limit exceeded, returning nil buffer")
 			return nil
 		}
 		atomic.AddInt64(&mo.stats.TotalAllocated, int64(size))
@@ -278,7 +285,7 @@ func (mo *MemoryOptimizer) GetBuffer(size int) []byte {
 		return buffer[:size]
 	default:
 		if !mo.checkMemoryLimit(int64(pool.bufferSize)) {
-			logger.GetLogger().Sugar().Infof("WARN: memory limit exceeded, returning nil buffer")
+			mo.logger.Sugar().Infof("WARN: memory limit exceeded, returning nil buffer")
 			return nil
 		}
 		atomic.AddInt64(&pool.stats.PoolMisses, 1)
@@ -350,7 +357,7 @@ func (mo *MemoryOptimizer) CreateReadBuffer(name string, size int) *ReadBuffer {
 	}
 
 	mo.bufferOptimizer.readBuffers[name] = buffer
-	logger.GetLogger().Sugar().Infof("Created read buffer: %s (size: %d)", name, size)
+	mo.logger.Sugar().Infof("Created read buffer: %s (size: %d)", name, size)
 
 	return buffer
 }
@@ -370,7 +377,7 @@ func (mo *MemoryOptimizer) CreateWriteBuffer(name string, size int) *WriteBuffer
 	}
 
 	mo.bufferOptimizer.writeBuffers[name] = buffer
-	logger.GetLogger().Sugar().Infof("Created write buffer: %s (size: %d)", name, size)
+	mo.logger.Sugar().Infof("Created write buffer: %s (size: %d)", name, size)
 
 	return buffer
 }
@@ -453,7 +460,7 @@ func (zcm *ZeroCopyManager) CreateMappedRegion(name string, size int64, readonly
 	}
 
 	zcm.mappedRegions[name] = region
-	logger.GetLogger().Sugar().Infof("Created mapped region: %s (size: %d, readonly: %v)", name, size, readonly)
+	zcm.logger.Sugar().Infof("Created mapped region: %s (size: %d, readonly: %v)", name, size, readonly)
 
 	return region, nil
 }
@@ -494,7 +501,7 @@ func (zcm *ZeroCopyManager) ReleaseMappedRegion(regionName string) error {
 
 	if atomic.AddInt32(&region.refCount, -1) <= 0 {
 		delete(zcm.mappedRegions, regionName)
-		logger.GetLogger().Sugar().Infof("Released mapped region: %s", regionName)
+		zcm.logger.Sugar().Infof("Released mapped region: %s", regionName)
 	}
 
 	return nil
@@ -511,7 +518,7 @@ func (gcm *GCManager) Start() {
 	gcm.mutex.Unlock()
 
 	go gcm.gcLoop()
-	logger.GetLogger().Sugar().Infof("GC manager started with interval: %v", gcm.gcInterval)
+	gcm.logger.Sugar().Infof("GC manager started with interval: %v", gcm.gcInterval)
 }
 
 // Stop 停止GC管理器
@@ -525,7 +532,7 @@ func (gcm *GCManager) Stop() {
 
 	close(gcm.stopChan)
 	gcm.running = false
-	logger.GetLogger().Info("GC manager stopped")
+	gcm.logger.Info("GC manager stopped")
 }
 
 // gcLoop GC循环
@@ -569,7 +576,7 @@ func (gcm *GCManager) performGC() {
 	gcm.lastGC = time.Now()
 	gcm.mutex.Unlock()
 
-	logger.GetLogger().Sugar().Infof("GC completed: freed %d bytes in %v", memoryFreed, gcTime)
+	gcm.logger.Sugar().Infof("GC completed: freed %d bytes in %v", memoryFreed, gcTime)
 }
 
 // ForceGC 强制垃圾回收
@@ -583,7 +590,7 @@ func (gcm *GCManager) ForceGC() {
 
 // OptimizeMemory 优化内存使用
 func (mo *MemoryOptimizer) OptimizeMemory(ctx context.Context) error {
-	logger.GetLogger().Info("Starting memory optimization...")
+	mo.logger.Info("Starting memory optimization...")
 
 	startTime := time.Now()
 
@@ -607,7 +614,7 @@ func (mo *MemoryOptimizer) OptimizeMemory(ctx context.Context) error {
 	mo.stats.LastOptimization = time.Now()
 	mo.stats.mutex.Unlock()
 
-	logger.GetLogger().Sugar().Infof("Memory optimization completed in %v", optimizationTime)
+	mo.logger.Sugar().Infof("Memory optimization completed in %v", optimizationTime)
 	return nil
 }
 
@@ -620,7 +627,7 @@ func (mo *MemoryOptimizer) optimizeMemoryPools() {
 		totalOps := pool.stats.PoolHits + pool.stats.PoolMisses
 		if totalOps > 0 {
 			hitRate := float64(pool.stats.PoolHits) / float64(totalOps)
-			logger.GetLogger().Sugar().Infof("Pool %s hit rate: %.2f%%", name, hitRate*100)
+			mo.logger.Sugar().Infof("Pool %s hit rate: %.2f%%", name, hitRate*100)
 
 			// 如果命中率过低，考虑调整池大小
 			if hitRate < 0.5 && len(pool.buffers) < pool.maxBuffers {
@@ -652,7 +659,7 @@ func (mo *MemoryOptimizer) optimizeBuffers() {
 	for name, buffer := range mo.bufferOptimizer.readBuffers {
 		if now.Sub(buffer.lastAccess) > time.Hour {
 			delete(mo.bufferOptimizer.readBuffers, name)
-			logger.GetLogger().Sugar().Infof("Removed unused read buffer: %s", name)
+			mo.logger.Sugar().Infof("Removed unused read buffer: %s", name)
 		}
 	}
 
@@ -660,7 +667,7 @@ func (mo *MemoryOptimizer) optimizeBuffers() {
 	for name, buffer := range mo.bufferOptimizer.writeBuffers {
 		if buffer.dirty && now.Sub(buffer.lastFlush) > 5*time.Minute {
 			buffer.Flush()
-			logger.GetLogger().Sugar().Infof("Flushed write buffer: %s", name)
+			mo.logger.Sugar().Infof("Flushed write buffer: %s", name)
 		}
 	}
 }
@@ -675,7 +682,7 @@ func (mo *MemoryOptimizer) cleanupZeroCopyRegions() {
 	for name, region := range mo.zeroCopyManager.mappedRegions {
 		if atomic.LoadInt32(&region.refCount) <= 0 && now.Sub(region.lastUsed) > time.Hour {
 			delete(mo.zeroCopyManager.mappedRegions, name)
-			logger.GetLogger().Sugar().Infof("Cleaned up unused mapped region: %s", name)
+			mo.logger.Sugar().Infof("Cleaned up unused mapped region: %s", name)
 		}
 	}
 }

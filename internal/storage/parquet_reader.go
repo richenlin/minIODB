@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"minIODB/pkg/logger"
-
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/reader"
 	"go.uber.org/zap"
@@ -27,6 +25,7 @@ func DefaultParquetReaderConfig() *ParquetReaderConfig {
 type ParquetReaderImpl struct {
 	config *ParquetReaderConfig
 	mu     sync.Mutex
+	logger *zap.Logger
 }
 
 type ParquetReadStats struct {
@@ -35,12 +34,13 @@ type ParquetReadStats struct {
 	ReadErrors int
 }
 
-func NewParquetReader(config *ParquetReaderConfig) *ParquetReaderImpl {
+func NewParquetReader(config *ParquetReaderConfig, logger *zap.Logger) *ParquetReaderImpl {
 	if config == nil {
 		config = DefaultParquetReaderConfig()
 	}
 	return &ParquetReaderImpl{
 		config: config,
+		logger: logger,
 	}
 }
 
@@ -88,7 +88,7 @@ func (p *ParquetReaderImpl) ReadFile(filePath string) ([]map[string]interface{},
 		result = append(result, m)
 	}
 
-	logger.GetLogger().Debug("Read Parquet file",
+	p.logger.Debug("Read Parquet file",
 		zap.String("file", filePath),
 		zap.Int("rows", len(result)))
 
@@ -115,7 +115,7 @@ func (p *ParquetReaderImpl) ReadDirectory(dirPath string) ([]map[string]interfac
 		filePath := filepath.Join(dirPath, entry.Name())
 		records, err := p.ReadFile(filePath)
 		if err != nil {
-			logger.GetLogger().Warn("Failed to read Parquet file",
+			p.logger.Warn("Failed to read Parquet file",
 				zap.String("file", filePath),
 				zap.Error(err))
 			continue
