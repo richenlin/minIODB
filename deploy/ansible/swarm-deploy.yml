@@ -1,0 +1,202 @@
+---
+# MinIODB Docker Swarm 集群部署 Playbook
+# 3节点集群：miniodb+redis、minio、minio-backup
+
+- name: 准备 Swarm 集群环境
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: 确保 Docker 服务运行
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: 初始化 Swarm 集群 (仅 manager 节点)
+      when: swarm_role == "manager"
+      shell: |
+        docker swarm init --advertise-addr {{ ansible_default_ipv4.address }} || true
+      register: swarm_init
+      changed_when: false
+
+    - name: 获取 Swarm Join Token (仅 manager 节点)
+      when: swarm_role == "manager"
+      shell: docker swarm join-token -q worker
+      register: worker_token
+      changed_when: false
+
+    - name: 加入 Swarm 集群 (worker 节点)
+      when: swarm_role == "worker" and hostvars[groups['managers'][0]]['worker_token']['stdout'] is defined
+      shell: |
+        docker swarm join \
+          --token {{ hostvars[groups['managers'][0]]['worker_token']['stdout'] }} \
+          {{ hostvars[groups['managers'][0]]['ansible_default_ipv4']['address'] }}:2377 || true
+      register: swarm_join
+      changed_when: false
+      ignore_errors: true
+
+- name: 创建 Docker Stack 配置文件
+  hosts: managers
+  gather_facts: false
+  become: false
+  tasks:
+    - name: 创建临时目录
+      file:
+        path: /tmp/miniodb-swarm
+        state: directory
+        mode: '0755'
+
+    - name: 生成 docker-compose.yml
+      copy:
+        content: |
+          version: '3.8'
+
+          services:
+            # Redis - 元数据中心 (在 miniodb 节点)
+            redis:
+              image: redis:7-alpine
+              deploy:
+                mode: replicated
+                replicas: 1
+                placement:
+                  constraints:
+                    - node.labels.miniodb_role == miniodb_redis
+              ports:
+                - "6379:6379"
+              environment:
+                - REDIS_PASSWORD={{ redis_password | default('redis123') }}
+              command: >
+                redis-server
+                --requirepass {{ redis_password | default('redis123') }}
+                --appendonly yes
+                --maxmemory 1gb
+                --maxmemory-policy allkeys-lru
+              networks:
+                - miniodb-network
+              volumes:
+                - redis_data:/data
+
+            # MinIO - 主存储 (在 minio 节点)
+            minio:
+              image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+              deploy:
+                mode: replicated
+                replicas: 1
+                placement:
+                  constraints:
+                    - node.labels.miniodb_role == minio
+              ports:
+                - "9000:9000"
+                - "9001:9001"
+              environment:
+                - MINIO_ROOT_USER={{ minio_root_user | default('minioadmin') }}
+                - MINIO_ROOT_PASSWORD={{ minio_root_password | default('minioadmin123') }}
+              command: server /data --console-address ":9001"
+              networks:
+                - miniodb-network
+              volumes:
+                - minio_data:/data
+
+            # MinIO Backup - 备份存储 (在 backup 节点)
+            minio-backup:
+              image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+              deploy:
+                mode: replicated
+                replicas: 1
+                placement:
+                  constraints:
+                    - node.labels.miniodb_role == minio_backup
+              ports:
+                - "9002:9000"
+                - "9003:9001"
+              environment:
+                - MINIO_ROOT_USER={{ minio_backup_user | default('minioadmin') }}
+                - MINIO_ROOT_PASSWORD={{ minio_backup_password | default('minioadmin123') }}
+              command: server /data --console-address ":9001"
+              networks:
+                - miniodb-network
+              volumes:
+                - minio_backup_data:/data
+
+            # MinIODB - 应用 (在 miniodb 节点)
+            miniodb:
+              image: miniodb:latest
+              deploy:
+                mode: replicated
+                replicas: {{ miniodb_replicas | default(1) }}
+                placement:
+                  constraints:
+                    - node.labels.miniodb_role == miniodb_redis
+                restart_policy:
+                  condition: on-failure
+                  delay: 5s
+                  max_attempts: 3
+              ports:
+                - "8080:8080"
+                - "8081:8081"
+                - "9090:9090"
+              environment:
+                - MINIODB_ENV=production
+                - MINIODB_CONFIG_PATH=/app/config/config.yaml
+                - REDIS_HOST=redis
+                - REDIS_PORT=6379
+                - REDIS_PASSWORD={{ redis_password | default('redis123') }}
+                - MINIO_ENDPOINT=minio:9000
+                - MINIO_ACCESS_KEY={{ minio_root_user | default('minioadmin') }}
+                - MINIO_SECRET_KEY={{ minio_root_password | default('minioadmin123') }}
+                - MINIO_BUCKET={{ minio_bucket | default('miniodb-data') }}
+                - MINIO_USE_SSL=false
+                - MINIO_BACKUP_ENDPOINT=minio-backup:9000
+                - MINIO_BACKUP_ACCESS_KEY={{ minio_backup_user | default('minioadmin') }}
+                - MINIO_BACKUP_SECRET_KEY={{ minio_backup_password | default('minioadmin123') }}
+                - MINIO_BACKUP_BUCKET={{ minio_backup_bucket | default('miniodb-backup') }}
+                - MINIO_BACKUP_USE_SSL=false
+              networks:
+                - miniodb-network
+              depends_on:
+                - redis
+                - minio
+                - minio-backup
+
+          networks:
+            miniodb-network:
+              driver: overlay
+              attachable: true
+
+          volumes:
+            redis_data:
+              driver: local
+            minio_data:
+              driver: local
+            minio_backup_data:
+              driver: local
+        dest: /tmp/miniodb-swarm/docker-compose.yml
+        mode: '0644'
+
+    - name: 部署 Docker Stack
+      shell: docker stack deploy -c /tmp/miniodb-swarm/docker-compose.yml miniodb-swarm
+      register: stack_deploy
+      changed_when: true
+
+    - name: 等待服务启动
+      pause:
+        seconds: 30
+
+    - name: 显示服务状态
+      shell: docker service ls --filter label=com.docker.stack.namespace=miniodb-swarm
+      register: services
+
+    - name: 显示部署信息
+      debug:
+        msg: |
+          Swarm 集群部署完成!
+          服务状态:
+          {{ services.stdout }}
+
+          访问地址:
+          - MinIODB REST API:  http://{{ ansible_default_ipv4.address }}:8081
+          - MinIODB gRPC API:  {{ ansible_default_ipv4.address }}:8080
+          - MinIO Console:     http://{{ ansible_default_ipv4.address }}:9001
+          - MinIO Backup:      http://{{ ansible_default_ipv4.address }}:9003
+          - Prometheus:       http://{{ ansible_default_ipv4.address }}:9090/metrics

@@ -1,0 +1,160 @@
+# MinIODB 开发模式 Docker Compose 配置
+# 只启动基础设施服务：redis、minio、minio-backup
+# MinIODB 应用需要手动启动（使用 go run 或调试工具）
+
+version: '3.8'
+
+services:
+  # Redis - 元数据中心和服务发现
+  redis:
+    image: redis:7-alpine
+    container_name: miniodb-dev-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+    command: >
+      redis-server 
+      --requirepass ${REDIS_PASSWORD:-redis123}
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - miniodb-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis123}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIO - 主存储服务
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: miniodb-dev-minio
+    restart: unless-stopped
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BROWSER_REDIRECT_URL=http://localhost:${MINIO_CONSOLE_PORT:-9001}
+      - MINIO_SERVER_URL=http://localhost:${MINIO_API_PORT:-9000}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - miniodb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIO Backup - 备份存储服务
+  minio-backup:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: miniodb-dev-minio-backup
+    restart: unless-stopped
+    ports:
+      - "${MINIO_BACKUP_API_PORT:-9002}:9000"
+      - "${MINIO_BACKUP_CONSOLE_PORT:-9003}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_BACKUP_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_BACKUP_PASSWORD:-minioadmin123}
+      - MINIO_BROWSER_REDIRECT_URL=http://localhost:${MINIO_BACKUP_CONSOLE_PORT:-9003}
+      - MINIO_SERVER_URL=http://localhost:${MINIO_BACKUP_API_PORT:-9002}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_backup_data:/data
+    networks:
+      - miniodb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MinIO Client - 用于初始化存储桶
+  minio-init:
+    image: minio/mc:latest
+    container_name: miniodb-dev-minio-init
+    restart: "no"
+    networks:
+      - miniodb-network
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-backup:
+        condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BACKUP_USER=${MINIO_BACKUP_USER:-minioadmin}
+      - MINIO_BACKUP_PASSWORD=${MINIO_BACKUP_PASSWORD:-minioadmin123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-miniodb-data}
+      - MINIO_BACKUP_BUCKET=${MINIO_BACKUP_BUCKET:-miniodb-backup}
+    volumes:
+      - ./scripts/init-minio.sh:/usr/local/bin/init-minio.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/init-minio.sh"]
+    healthcheck:
+      test: ["CMD", "echo", "Minio init completed"]
+      interval: 30s
+      timeout: 10s
+      retries: 1
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# 数据卷定义
+volumes:
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/redis
+
+  minio_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/minio
+
+  minio_backup_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}/minio-backup
+
+# 网络定义
+networks:
+  miniodb-network:
+    driver: bridge

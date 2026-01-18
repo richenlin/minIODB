@@ -1,36 +1,142 @@
 # MinIODB 部署指南
 
-MinIODB 提供多种部署方式，适应不同的环境和需求。
+MinIODB 提供 4 种部署模式，适应不同的场景和需求。
 
-## 🚀 快速开始
+## 目录
+
+- [快速开始](#快速开始)
+- [部署模式对比](#部署模式对比)
+- [1. 单机开发模式 (dev)](#1-单机开发模式-dev)
+- [2. 单机集成测试模式 (test)](#2-单机集成测试模式-test)
+- [3. 小型集群模式 (swarm)](#3-小型集群模式-swarm)
+- [4. Kubernetes 集群模式 (k8s)](#4-kubernetes-集群模式-k8s)
+- [配置说明](#配置说明)
+- [故障排除](#故障排除)
+- [安全建议](#安全建议)
+- [监控和运维](#监控和运维)
+
+## 快速开始
 
 ### 统一部署脚本
 
-我们提供了统一的部署脚本，支持三种部署方式：
+我们提供了统一的部署脚本，支持 4 种部署模式：
 
 ```bash
 # 查看帮助
-./deploy.sh --help
+./deploy/deploy.sh --help
 
-# Docker Compose 开发环境部署
-./deploy.sh docker -e development
+# 单机开发模式
+./deploy/deploy.sh dev
 
-# Kubernetes 生产环境部署
-./deploy.sh k8s -e production -r 3
+# 单机集成测试模式
+./deploy/deploy.sh test
 
-# Ansible 批量部署
-./deploy.sh ansible -e production -c inventory/simple.yml
+# 小型集群模式
+./deploy/deploy.sh swarm
+
+# Kubernetes 集群模式
+./deploy/deploy.sh k8s
+
+# 清理部署
+./deploy/deploy.sh dev --cleanup
 ```
 
-## 📦 部署方式对比
+## 部署模式对比
 
-| 部署方式 | 适用场景 | 优点 | 缺点 |
-|---------|---------|------|------|
-| **Docker Compose** | 开发、测试、单机部署 | 简单快速、资源占用少 | 不支持高可用 |
-| **Kubernetes** | 生产环境、云原生 | 高可用、自动扩缩容 | 复杂度高、资源要求高 |
-| **Ansible** | 批量部署、传统环境 | 灵活配置、批量管理 | 需要 Ansible 知识 |
+| 部署模式 | 适用场景 | 节点数 | 优点 | 缺点 |
+|---------|---------|--------|------|------|
+| **dev** | 本地开发、调试 | 1 | 简单快速、灵活调试 | 需手动启动应用 |
+| **test** | 集成测试、CI/CD | 1 | 一键部署、自动化测试 | 单点故障 |
+| **swarm** | 小型生产、资源受限 | 3 | 轻量集群、简单管理 | 扩展性有限 |
+| **k8s** | 生产环境、云原生 | 4+ | 高可用、自动扩缩容 | 复杂度高 |
 
-## 🐳 Docker Compose 部署
+## 1. 单机开发模式 (dev)
+
+### 场景说明
+
+适用于本地开发、代码调试、功能测试。只启动基础设施服务，MinIODB 应用使用 `go run` 或调试工具启动，便于热重载和断点调试。
+
+### 前置要求
+
+- Docker 20.10+
+- Docker Compose 2.0+
+- Go 1.24+ (用于本地运行)
+- 2GB+ 内存
+- 10GB+ 磁盘空间
+
+### 快速部署
+
+```bash
+# 1. 启动基础设施服务
+./deploy/deploy.sh dev
+
+# 2. 等待服务启动完成（约 30 秒）
+docker ps
+
+# 3. 启动 MinIODB 应用
+go run cmd/main.go
+
+# 或使用调试工具（VS Code / GoLand）
+```
+
+### 访问地址
+
+| 服务 | 地址 | 说明 |
+|------|------|------|
+| Redis | localhost:6379 | 元数据中心 |
+| MinIO API | http://localhost:9000 | 主存储 S3 API |
+| MinIO Console | http://localhost:9001 | MinIO Web 控制台 |
+| MinIO Backup API | http://localhost:9002 | 备份存储 S3 API |
+| MinIO Backup Console | http://localhost:9003 | 备份存储控制台 |
+| MinIODB REST API | http://localhost:8081 | REST API (手动启动) |
+| MinIODB gRPC API | localhost:8080 | gRPC API (手动启动) |
+
+### 开发调试
+
+```bash
+# 使用 dlv 调试
+dlv debug cmd/main.go
+
+# 使用 VS Code 调试配置
+# .vscode/launch.json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Package",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/main.go",
+      "env": {
+        "MINIODB_ENV": "development"
+      }
+    }
+  ]
+}
+```
+
+### 常用命令
+
+```bash
+# 查看服务日志
+docker-compose -f deploy/docker/docker-compose.dev.yml logs -f
+
+# 重启服务
+docker-compose -f deploy/docker/docker-compose.dev.yml restart
+
+# 停止服务
+docker-compose -f deploy/docker/docker-compose.dev.yml down
+
+# 清理所有数据
+docker-compose -f deploy/docker/docker-compose.dev.yml down -v
+```
+
+## 2. 单机集成测试模式 (test)
+
+### 场景说明
+
+适用于集成测试、端到端测试、CI/CD 流程。启动所有服务（包括 MinIODB 容器），实现一键部署和自动化测试。
 
 ### 前置要求
 
@@ -42,55 +148,185 @@ MinIODB 提供多种部署方式，适应不同的环境和需求。
 ### 快速部署
 
 ```bash
-# 1. 进入 Docker 目录
-cd deploy/docker
+# 1. 启动所有服务（自动构建镜像）
+./deploy/deploy.sh test
 
-# 2. 复制环境配置文件
-cp env.simple .env
+# 2. 等待服务启动完成（约 1-2 分钟）
+docker ps
 
-# 3. 编辑配置 (可选)
-nano .env
-
-# 4. 启动服务
-docker-compose up -d
-
-# 5. 检查服务状态
-docker-compose ps
-```
-
-### 简化版部署
-
-如果您只需要基本功能，可以使用简化版配置：
-
-```bash
-# 使用简化版 Docker Compose
-docker-compose -f docker-compose.simple.yml up -d
+# 3. 验证服务健康
+curl http://localhost:8081/v1/health
 ```
 
 ### 访问地址
 
-- **REST API**: http://localhost:8081
-- **gRPC API**: localhost:8080
-- **MinIO Console**: http://localhost:9001 (minioadmin/minioadmin123)
-- **Prometheus Metrics**: http://localhost:9090/metrics
+| 服务 | 地址 | 说明 |
+|------|------|------|
+| MinIODB REST API | http://localhost:8081 | REST API |
+| MinIODB gRPC API | localhost:8080 | gRPC API |
+| Prometheus Metrics | http://localhost:9090/metrics | 监控指标 |
+| MinIO Console | http://localhost:9001 | MinIO Web 控制台 |
+| MinIO Backup Console | http://localhost:9003 | 备份存储控制台 |
+
+### 集成测试
+
+```bash
+# 运行测试套件
+go test ./...
+
+# 带覆盖率的测试
+go test -cover ./...
+
+# 端到端测试
+curl -X POST http://localhost:8081/v1/tables \
+  -H "Content-Type: application/json" \
+  -d '{"name":"test_table","schema":{"columns":[{"name":"id","type":"int64"}]}}'
+```
 
 ### 常用命令
 
 ```bash
-# 查看日志
-docker-compose logs -f miniodb
+# 查看所有服务状态
+docker-compose -f deploy/docker/docker-compose.yml ps
 
-# 重启服务
-docker-compose restart
+# 查看 MinIODB 日志
+docker-compose -f deploy/docker/docker-compose.yml logs -f miniodb
 
-# 停止服务
-docker-compose down
+# 重启 MinIODB 服务
+docker-compose -f deploy/docker/docker-compose.yml restart miniodb
 
-# 完全清理 (包括数据)
-docker-compose down -v
+# 停止所有服务
+docker-compose -f deploy/docker/docker-compose.yml down
+
+# 清理所有数据
+docker-compose -f deploy/docker/docker-compose.yml down -v
 ```
 
-## ☸️ Kubernetes 部署
+## 3. 小型集群模式 (swarm)
+
+### 场景说明
+
+适用于小型生产环境、资源受限场景。基于 Docker Swarm 的轻量级集群部署，3 个节点分别运行不同服务，实现负载分担和资源优化。
+
+### 架构图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Docker Swarm Cluster                      │
+├─────────────────────────────────────────────────────────────┤
+│  Node 1 (Manager)     │  Node 2 (Worker)  │  Node 3 (Worker)│
+│                       │                   │                  │
+│  ┌───────────────┐    │  ┌──────────────┐ │ ┌──────────────┐ │
+│  │   MinIODB     │    │  │    MinIO     │ │ │ MinIO Backup │ │
+│  │   + Redis     │    │  │              │ │ │              │ │
+│  │   :8081       │    │  │   :9000      │ │ │    :9002     │ │
+│  └───────────────┘    │  └──────────────┘ │ └──────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 前置要求
+
+- Docker 20.10+ (所有节点)
+- Ansible 2.9+ (控制机)
+- 3 台服务器（1 manager + 2 workers）
+- 每台服务器 4GB+ 内存
+- 服务器间网络互通
+
+### 节点规划
+
+| 节点 | 角色 | 服务 | IP 示例 |
+|------|------|------|---------|
+| Node 1 | Manager | MinIODB + Redis | 192.168.1.10 |
+| Node 2 | Worker | MinIO (主存储) | 192.168.1.11 |
+| Node 3 | Worker | MinIO Backup | 192.168.1.12 |
+
+### 快速部署
+
+```bash
+# 1. 配置集群节点清单
+cd deploy/ansible
+cp inventory/swarm.ini inventory/my-swarm.ini
+nano inventory/my-swarm.ini
+
+# 2. 修改节点 IP 和认证信息
+[all]
+node1 ansible_host=192.168.1.10 ansible_user=root swarm_role=manager
+node2 ansible_host=192.168.1.11 ansible_user=root swarm_role=worker
+node3 ansible_host=192.168.1.12 ansible_user=root swarm_role=worker
+
+# 3. 测试节点连接
+ansible -i inventory/my-swarm.ini all -m ping
+
+# 4. 执行部署
+ansible-playbook -i inventory/my-swarm.ini swarm-deploy.yml
+
+# 5. 检查部署状态
+docker service ls
+```
+
+### 访问地址
+
+| 服务 | 地址 | 说明 |
+|------|------|------|
+| MinIODB REST API | http://node1:8081 | REST API |
+| MinIODB gRPC API | node1:8080 | gRPC API |
+| MinIO Console | http://node2:9001 | MinIO Web 控制台 |
+| MinIO Backup Console | http://node3:9003 | 备份存储控制台 |
+
+### 集群管理
+
+```bash
+# 查看节点状态
+docker node ls
+
+# 查看服务状态
+docker service ls
+
+# 查看服务日志
+docker service logs miniodb-swarm_miniodb
+
+# 扩容服务
+docker service scale miniodb-swarm_miniodb=3
+
+# 删除服务
+docker service rm miniodb-swarm_miniodb
+```
+
+### 清理集群
+
+```bash
+# 使用统一脚本清理
+./deploy/deploy.sh swarm --cleanup
+
+# 或手动清理
+cd deploy/ansible
+ansible-playbook -i inventory/my-swarm.ini swarm-cleanup.yml
+```
+
+## 4. Kubernetes 集群模式 (k8s)
+
+### 场景说明
+
+适用于生产环境、云原生部署。Kubernetes 提供 4 个 Pod（miniodb、redis、minio、minio-backup），支持高可用、自动扩缩容、滚动更新。
+
+### 架构图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Kubernetes Cluster                        │
+│                  Namespace: miniodb-system                   │
+├─────────────────────────────────────────────────────────────┤
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │  Redis   │  │  MinIODB │  │   MinIO  │  │MinIO Backup│  │
+│  │  Pod     │  │  (xN)    │  │   Pod    │  │    Pod     │   │
+│  │ Stateful │  │ Deploy   │  │ Stateful │  │  Stateful  │   │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
+│       │             │             │             │           │
+│       └─────────────┴─────────────┴─────────────┘           │
+│                      Services (ClusterIP)                    │
+│                   External Services (NodePort)               │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ### 前置要求
 
@@ -98,17 +334,16 @@ docker-compose down -v
 - kubectl 配置正确
 - 集群至少 3 个节点
 - 每个节点 4GB+ 内存
+- 支持 StorageClass（用于持久化存储）
 
 ### 快速部署
 
 ```bash
-# 1. 进入 K8s 目录
+# 1. 使用统一脚本部署
+./deploy/deploy.sh k8s -n miniodb-system -r 3
+
+# 2. 或手动分步部署
 cd deploy/k8s
-
-# 2. 一键部署 (推荐)
-kubectl apply -f all-in-one.yaml
-
-# 3. 或者分步部署
 kubectl apply -f namespace.yaml
 kubectl apply -f configmap.yaml
 kubectl apply -f secret.yaml
@@ -120,24 +355,32 @@ kubectl apply -f miniodb/
 ### 检查部署状态
 
 ```bash
-# 查看所有资源
-kubectl get all -n miniodb-system
-
 # 查看 Pod 状态
 kubectl get pods -n miniodb-system -w
 
+# 查看所有资源
+kubectl get all -n miniodb-system
+
 # 查看服务
 kubectl get svc -n miniodb-system
+
+# 查看 PVC
+kubectl get pvc -n miniodb-system
 ```
 
 ### 访问服务
 
 ```bash
-# 获取 NodePort
-kubectl get svc miniodb-external -n miniodb-system
-
 # 端口转发 (开发调试)
 kubectl port-forward svc/miniodb-service 8081:8081 -n miniodb-system
+kubectl port-forward svc/minio-external 9001:9001 -n miniodb-system
+
+# 通过 NodePort 访问
+MINIODB_PORT=$(kubectl get svc miniodb-external -n miniodb-system -o jsonpath='{.spec.ports[0].nodePort}')
+curl http://<node-ip>:$MINIODB_PORT/v1/health
+
+# 使用 Ingress (需要配置 Ingress Controller)
+# 访问: http://miniodb.yourdomain.com
 ```
 
 ### 扩缩容
@@ -146,65 +389,50 @@ kubectl port-forward svc/miniodb-service 8081:8081 -n miniodb-system
 # 扩容到 5 个副本
 kubectl scale deployment miniodb --replicas=5 -n miniodb-system
 
-# 自动扩缩容 (需要 HPA)
+# 自动扩缩容 (HPA)
 kubectl autoscale deployment miniodb --cpu-percent=70 --min=2 --max=10 -n miniodb-system
+
+# 查看 HPA 状态
+kubectl get hpa -n miniodb-system
 ```
 
-## 🔧 Ansible 部署
-
-### 前置要求
-
-- Ansible 2.9+
-- 目标服务器 SSH 访问权限
-- 目标服务器 sudo 权限
-
-### 快速部署
+### 滚动更新
 
 ```bash
-# 1. 进入 Ansible 目录
-cd deploy/ansible
+# 更新镜像版本
+kubectl set image deployment/miniodb miniodb=miniodb:v1.1.0 -n miniodb-system
 
-# 2. 复制并编辑清单文件
-cp inventory/simple.yml inventory/my-servers.yml
-nano inventory/my-servers.yml
+# 查看更新状态
+kubectl rollout status deployment/miniodb -n miniodb-system
 
-# 3. 测试连接
-ansible -i inventory/my-servers.yml miniodb_servers -m ping
+# 回滚到上一个版本
+kubectl rollout undo deployment/miniodb -n miniodb-system
 
-# 4. 执行部署
-ansible-playbook -i inventory/my-servers.yml simple-deploy.yml
-
-# 5. 或使用统一脚本
-../deploy.sh ansible -c inventory/my-servers.yml
+# 查看历史版本
+kubectl rollout history deployment/miniodb -n miniodb-system
 ```
 
-### 安全配置
-
-建议使用 Ansible Vault 保护敏感信息：
+### 清理部署
 
 ```bash
-# 创建加密的变量文件
-ansible-vault create group_vars/miniodb_servers/vault.yml
+# 使用统一脚本清理
+./deploy/deploy.sh k8s -n miniodb-system --cleanup
 
-# 编辑内容
-vault_redis_password: "your-strong-password"
-vault_minio_root_password: "your-strong-password"
-vault_jwt_secret: "your-256-bit-secret"
-
-# 使用 vault 运行
-ansible-playbook -i inventory/my-servers.yml simple-deploy.yml --ask-vault-pass
+# 或手动清理
+kubectl delete namespace miniodb-system
 ```
 
-## 🔧 配置说明
+## 配置说明
 
 ### 环境变量
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `MINIODB_ENV` | development | 运行环境 (development/testing/production) |
+| `MINIODB_ENV` | production | 运行环境 (development/testing/production) |
 | `LOG_LEVEL` | info | 日志级别 (debug/info/warn/error) |
 | `REDIS_PASSWORD` | redis123 | Redis 密码 |
 | `MINIO_ROOT_PASSWORD` | minioadmin123 | MinIO 管理员密码 |
+| `MINIO_BACKUP_PASSWORD` | minioadmin123 | MinIO 备份密码 |
 | `JWT_SECRET` | dev-secret... | JWT 签名密钥 |
 
 ### 端口配置
@@ -216,26 +444,20 @@ ansible-playbook -i inventory/my-servers.yml simple-deploy.yml --ask-vault-pass
 | Metrics | 9090 | Prometheus 指标 |
 | MinIO API | 9000 | MinIO S3 API |
 | MinIO Console | 9001 | MinIO Web 控制台 |
+| MinIO Backup API | 9002 | 备份 S3 API |
+| MinIO Backup Console | 9003 | 备份 Web 控制台 |
 | Redis | 6379 | Redis 数据库 |
 
 ### 资源要求
 
-#### 最小配置 (开发/测试)
-- CPU: 2 核
-- 内存: 4GB
-- 磁盘: 20GB
+| 模式 | CPU | 内存 | 磁盘 | 节点数 |
+|------|-----|------|------|--------|
+| dev | 2 核 | 4GB | 20GB | 1 |
+| test | 4 核 | 8GB | 50GB | 1 |
+| swarm | 8 核 (总) | 12GB (总) | 100GB (总) | 3 |
+| k8s | 12 核 (总) | 16GB (总) | 200GB (总) | 4+ |
 
-#### 推荐配置 (生产环境)
-- CPU: 4 核
-- 内存: 8GB
-- 磁盘: 100GB SSD
-
-#### 高负载配置
-- CPU: 8 核
-- 内存: 16GB
-- 磁盘: 500GB SSD
-
-## 🔍 故障排除
+## 故障排除
 
 ### 常见问题
 
@@ -243,11 +465,11 @@ ansible-playbook -i inventory/my-servers.yml simple-deploy.yml --ask-vault-pass
 
 ```bash
 # 检查日志
-docker-compose logs miniodb
+docker logs miniodb-app
 kubectl logs -l app.kubernetes.io/name=miniodb -n miniodb-system
 
 # 检查依赖服务
-docker-compose ps
+docker ps
 kubectl get pods -n miniodb-system
 ```
 
@@ -255,11 +477,12 @@ kubectl get pods -n miniodb-system
 
 ```bash
 # 检查 Redis 状态
-docker-compose exec redis redis-cli ping
-kubectl exec -it redis-0 -n miniodb-system -- redis-cli ping
+docker exec miniodb-dev-redis redis-cli -a redis123 ping
+kubectl exec -it redis-0 -n miniodb-system -- redis-cli -a redis123 ping
 
 # 检查密码配置
-grep REDIS_PASSWORD .env
+grep REDIS_PASSWORD deploy/docker/.env
+kubectl get secret miniodb-secrets -n miniodb-system -o yaml
 ```
 
 #### 3. MinIO 连接失败
@@ -269,31 +492,50 @@ grep REDIS_PASSWORD .env
 curl http://localhost:9000/minio/health/live
 
 # 检查存储桶
-docker-compose exec minio-init mc ls minio/
+docker exec miniodb-dev-minio-init mc ls minio/
+kubectl logs -l app.kubernetes.io/name=minio-init -n miniodb-system
 ```
 
-#### 4. 性能问题
+#### 4. Swarm 节点连接失败
 
 ```bash
-# 查看资源使用
-docker stats
-kubectl top pods -n miniodb-system
+# 检查 Swarm 状态
+docker node ls
 
-# 查看指标
-curl http://localhost:9090/metrics
+# 查看节点详情
+docker node inspect node1
+
+# 重新加入集群
+docker swarm join --token <token> <manager-ip>:2377
+```
+
+#### 5. K8s Pod 无法启动
+
+```bash
+# 查看 Pod 事件
+kubectl describe pod <pod-name> -n miniodb-system
+
+# 查看 Pod 日志
+kubectl logs <pod-name> -n miniodb-system --previous
+
+# 检查资源配额
+kubectl describe nodes
 ```
 
 ### 日志收集
 
 ```bash
 # Docker Compose
-docker-compose logs --tail=100 > miniodb.log
+docker-compose -f deploy/docker/docker-compose.yml logs --tail=100 > miniodb.log
+
+# Docker Swarm
+docker service logs miniodb-swarm_miniodb --tail=100 > miniodb.log
 
 # Kubernetes
 kubectl logs -l app.kubernetes.io/name=miniodb -n miniodb-system --tail=100 > miniodb.log
 ```
 
-## 🔐 安全建议
+## 安全建议
 
 ### 生产环境配置
 
@@ -305,26 +547,43 @@ kubectl logs -l app.kubernetes.io/name=miniodb -n miniodb-system --tail=100 > mi
 
 2. **启用 TLS**
    ```yaml
-   # docker-compose.yml
-   environment:
-     - ENABLE_TLS=true
-     - TLS_CERT_PATH=/app/certs/server.crt
-     - TLS_KEY_PATH=/app/certs/server.key
+   # k8s/minio/minio-statefulset.yaml
+   env:
+     - name: MINIO_SERVER_URL
+       value: "https://minio.miniodb-system.svc.cluster.local:9000"
+   volumes:
+     - name: certs
+       secret:
+         secretName: minio-certs
    ```
 
 3. **网络隔离**
-   - 使用防火墙限制访问
-   - 配置 VPN 或内网访问
-   - 启用 MinIO 和 Redis 的 TLS
+   - 使用 NetworkPolicy 限制 Pod 间通信
+   - 配置防火墙规则
+   - 使用 Ingress Controller 统一管理外部访问
 
 4. **备份策略**
    ```bash
-   # 定期备份
-   crontab -e
-   0 2 * * * /opt/miniodb/scripts/backup.sh
+   # 定期备份到 MinIO Backup
+   # 使用 k8s CronJob 配置定时备份
    ```
 
-## 📊 监控和运维
+5. **RBAC 权限控制**
+   ```yaml
+   # k8s/miniodb/rbac.yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: RoleBinding
+   metadata:
+     name: miniodb
+   subjects:
+   - kind: ServiceAccount
+     name: miniodb
+   roleRef:
+     kind: Role
+     name: miniodb
+   ```
+
+## 监控和运维
 
 ### Prometheus 监控
 
@@ -334,18 +593,20 @@ MinIODB 内置 Prometheus 指标支持：
 # prometheus.yml
 scrape_configs:
   - job_name: 'miniodb'
-    static_configs:
-      - targets: ['localhost:9090']
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - miniodb-system
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
 ```
 
 ### Grafana 仪表板
 
-导入预配置的 Grafana 仪表板：
-
-```bash
-# 下载仪表板配置
-curl -O https://raw.githubusercontent.com/your-org/minIODB/main/monitoring/grafana-dashboard.json
-```
+导入预配置的 Grafana 仪表板监控 MinIODB 运行状态。
 
 ### 健康检查
 
@@ -355,38 +616,14 @@ curl http://localhost:8081/v1/health
 
 # 详细状态检查
 curl http://localhost:8081/v1/status
+
+# Prometheus 指标
+curl http://localhost:9090/metrics
 ```
 
-## 🆙 升级指南
+### 日志聚合
 
-### Docker Compose 升级
-
-```bash
-# 1. 备份数据
-docker-compose exec miniodb /app/scripts/backup.sh
-
-# 2. 拉取新镜像
-docker-compose pull
-
-# 3. 重启服务
-docker-compose up -d
-```
-
-### Kubernetes 升级
-
-```bash
-# 1. 更新镜像版本
-kubectl set image deployment/miniodb miniodb=miniodb:v1.1.0 -n miniodb-system
-
-# 2. 等待滚动更新完成
-kubectl rollout status deployment/miniodb -n miniodb-system
-```
-
-## 📞 支持
-
-- **文档**: [项目 README](../README.md)
-- **问题反馈**: [GitHub Issues](https://github.com/your-org/minIODB/issues)
-- **讨论**: [GitHub Discussions](https://github.com/your-org/minIODB/discussions)
+推荐使用 ELK Stack 或 Loki 进行日志聚合和分析。
 
 ---
 

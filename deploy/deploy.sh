@@ -1,7 +1,9 @@
 #!/bin/bash
 
+#!/bin/bash
+
 # MinIODB 统一部署脚本
-# 支持 Docker Compose、Kubernetes、Ansible 三种部署方式
+# 支持4种部署模式：开发、集成测试、Swarm集群、K8s集群
 
 set -e
 
@@ -35,15 +37,15 @@ show_help() {
 MinIODB 统一部署脚本
 
 用法:
-    $0 [部署方式] [选项]
+    $0 [部署模式] [选项]
 
-部署方式:
-    docker      使用 Docker Compose 部署 (推荐开发和测试)
-    k8s         使用 Kubernetes 部署 (推荐生产环境)
-    ansible     使用 Ansible 部署 (推荐批量部署)
+部署模式:
+    dev         单机开发模式 (启动 redis、minio、minio-backup，miniodb手动启动)
+    test        单机集成测试模式 (启动所有服务，包括miniodb容器)
+    swarm       小型集群模式 (基于Docker Swarm的3节点部署)
+    k8s         Kubernetes集群模式 (4个pod部署)
 
 选项:
-    -e, --env ENV           设置环境 (development|testing|production)
     -c, --config FILE       指定配置文件路径
     -n, --namespace NS      Kubernetes 命名空间 (默认: miniodb-system)
     -r, --replicas NUM      副本数量 (默认: 2)
@@ -54,23 +56,25 @@ MinIODB 统一部署脚本
     -h, --help             显示此帮助信息
 
 示例:
-    # Docker Compose 开发环境部署
-    $0 docker -e development
+    # 开发模式部署
+    $0 dev
 
-    # Kubernetes 生产环境部署
-    $0 k8s -e production -r 3
+    # 集成测试模式部署
+    $0 test
 
-    # Ansible 批量部署
-    $0 ansible -e production -c /path/to/inventory
+    # Swarm集群部署
+    $0 swarm
 
-    # 清理 Docker 部署
-    $0 docker --cleanup
+    # K8s集群部署
+    $0 k8s -n my-namespace -r 3
 
-    # 干运行 Kubernetes 部署
+    # 清理开发模式
+    $0 dev --cleanup
+
+    # 干运行K8s部署
     $0 k8s --dry-run
 
 环境变量:
-    MINIODB_ENV             部署环境 (development|testing|production)
     MINIODB_CONFIG_PATH     配置文件路径
     MINIODB_DATA_PATH       数据存储路径
     MINIODB_NAMESPACE       Kubernetes 命名空间
@@ -81,10 +85,10 @@ EOF
 
 # 检查依赖
 check_dependencies() {
-    local deploy_method=$1
-    
-    case $deploy_method in
-        "docker")
+    local deploy_mode=$1
+
+    case $deploy_mode in
+        "dev"|"test")
             if ! command -v docker &> /dev/null; then
                 log_error "Docker 未安装或不在 PATH 中"
                 exit 1
@@ -94,54 +98,89 @@ check_dependencies() {
                 exit 1
             fi
             ;;
+        "swarm")
+            if ! command -v docker &> /dev/null; then
+                log_error "Docker 未安装或不在 PATH 中"
+                exit 1
+            fi
+            if ! docker info &> /dev/null; then
+                log_error "Docker 服务未运行"
+                exit 1
+            fi
+            if ! command -v ansible-playbook &> /dev/null; then
+                log_error "Ansible 未安装或不在 PATH 中"
+                exit 1
+            fi
+            ;;
         "k8s")
             if ! command -v kubectl &> /dev/null; then
                 log_error "kubectl 未安装或不在 PATH 中"
                 exit 1
             fi
-            # 检查 Kubernetes 集群连接
             if ! kubectl cluster-info &> /dev/null; then
                 log_error "无法连接到 Kubernetes 集群"
-                exit 1
-            fi
-            ;;
-        "ansible")
-            if ! command -v ansible-playbook &> /dev/null; then
-                log_error "Ansible 未安装或不在 PATH 中"
                 exit 1
             fi
             ;;
     esac
 }
 
-# Docker Compose 部署
-deploy_docker() {
-    local env=${ENV:-development}
+# 编译构建
+build_miniodb() {
     local data_path=${DATA_PATH:-./data}
-    local config_file=${CONFIG_FILE:-}
-    
-    log_info "开始 Docker Compose 部署..."
-    log_info "环境: $env"
-    log_info "数据路径: $data_path"
-    
+
+    log_info "编译构建 MinIODB..."
+    cd "$(dirname "$0")/.."
+
+    if [[ $DRY_RUN == "true" ]]; then
+        log_info "干运行模式 - 将要执行的命令:"
+        echo "go build -o miniodb cmd/main.go"
+        return
+    fi
+
+    go build -o miniodb cmd/main.go
+    log_success "MinIODB 编译完成"
+}
+
+# Docker 镜像构建
+build_docker_image() {
+    local data_path=${DATA_PATH:-./data}
+
+    log_info "构建 MinIODB Docker 镜像..."
     cd "$(dirname "$0")/docker"
-    
-    # 检测系统架构并设置相应的 Dockerfile
+
     local arch=$(uname -m)
     local dockerfile="Dockerfile"
-    local platform_tag="latest"
-    
+
     if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
         dockerfile="Dockerfile.arm"
-        platform_tag="latest-arm64"
         log_info "检测到 ARM64 架构，使用 $dockerfile"
     else
         dockerfile="Dockerfile"
-        platform_tag="latest-amd64"
         log_info "检测到 AMD64 架构，使用 $dockerfile"
     fi
-    
-    # 检查 .env 文件
+
+    export DOCKERFILE=$dockerfile
+
+    if [[ $DRY_RUN == "true" ]]; then
+        log_info "干运行模式 - 将要执行的命令:"
+        echo "docker build -f $dockerfile -t miniodb:latest ../.."
+        return
+    fi
+
+    docker build -f "$dockerfile" -t miniodb:latest ../..
+    log_success "Docker 镜像构建完成"
+}
+
+# 开发模式部署
+deploy_dev() {
+    local data_path=${DATA_PATH:-./data}
+
+    log_info "开始单机开发模式部署..."
+    log_info "数据路径: $data_path"
+
+    cd "$(dirname "$0")/docker"
+
     if [[ ! -f .env ]]; then
         if [[ -f env.example ]]; then
             log_warning ".env 文件不存在，从 env.example 复制"
@@ -151,33 +190,76 @@ deploy_docker() {
             exit 1
         fi
     fi
-    
-    # 创建数据目录
+
     mkdir -p "$data_path"/{redis,minio,minio-backup,logs}
-    
-    # 设置环境变量
-    export MINIODB_ENV=$env
     export DATA_PATH=$data_path
-    export DOCKERFILE=$dockerfile
-    export PLATFORM_TAG=$platform_tag
-    
+
+    if [[ $DRY_RUN == "true" ]]; then
+        log_info "干运行模式 - 将要执行的命令:"
+        echo "docker-compose -f docker-compose.dev.yml up -d"
+        return
+    fi
+
+    if command -v docker-compose &> /dev/null; then
+        docker-compose -f docker-compose.dev.yml up -d
+    else
+        docker compose -f docker-compose.dev.yml up -d
+    fi
+
+    log_success "开发模式部署完成!"
+    log_info "基础设施服务已启动:"
+    log_info "  Redis:      localhost:6379"
+    log_info "  MinIO:      http://localhost:9000 (API), http://localhost:9001 (Console)"
+    log_info "  MinIO Backup: http://localhost:9002 (API), http://localhost:9003 (Console)"
+    echo ""
+    log_warning "MinIODB 应用需要手动启动，请使用以下命令:"
+    log_info "  go run cmd/main.go"
+    log_info "  或使用调试工具 (VS Code / GoLand)"
+}
+
+# 集成测试模式部署
+deploy_test() {
+    local data_path=${DATA_PATH:-./data}
+
+    log_info "开始单机集成测试模式部署..."
+    log_info "数据路径: $data_path"
+
+    cd "$(dirname "$0")/docker"
+
+    if [[ ! -f .env ]]; then
+        if [[ -f env.example ]]; then
+            log_warning ".env 文件不存在，从 env.example 复制"
+            cp env.example .env
+        else
+            log_error ".env 文件和 env.example 都不存在"
+            exit 1
+        fi
+    fi
+
+    mkdir -p "$data_path"/{redis,minio,minio-backup,logs}
+    export DATA_PATH=$data_path
+
+    build_docker_image
+
     if [[ $DRY_RUN == "true" ]]; then
         log_info "干运行模式 - 将要执行的命令:"
         echo "docker-compose up -d"
         return
     fi
-    
-    # 启动服务
+
     if command -v docker-compose &> /dev/null; then
         docker-compose up -d
     else
         docker compose up -d
     fi
-    
-    log_success "Docker Compose 部署完成!"
+
+    log_info "等待服务启动..."
+    sleep 30
+
+    log_success "集成测试模式部署完成!"
     log_info "访问地址:"
-    log_info "  REST API: http://localhost:8081"
-    log_info "  gRPC API: localhost:8080"
+    log_info "  REST API:      http://localhost:8081"
+    log_info "  gRPC API:      localhost:8080"
     log_info "  MinIO Console: http://localhost:9001"
     log_info "  MinIO Backup Console: http://localhost:9003"
     log_info "  Prometheus Metrics: http://localhost:9090/metrics"
@@ -249,48 +331,68 @@ deploy_k8s() {
     log_info "  gRPC API: $node_ip:30090"
 }
 
-# Ansible 部署
-deploy_ansible() {
-    local env=${ENV:-production}
-    local inventory=${CONFIG_FILE:-inventory/auto-deploy.yml}
-    
-    log_info "开始 Ansible 部署..."
-    log_info "环境: $env"
-    log_info "清单文件: $inventory"
-    
+# Swarm 集群部署
+deploy_swarm() {
+    local data_path=${DATA_PATH:-./data}
+
+    log_info "开始 Docker Swarm 集群部署..."
+    log_info "数据路径: $data_path"
+
     cd "$(dirname "$0")/ansible"
-    
-    if [[ ! -f "$inventory" ]]; then
-        log_error "清单文件不存在: $inventory"
-        exit 1
-    fi
-    
+
+    build_docker_image
+
     if [[ $DRY_RUN == "true" ]]; then
         log_info "干运行模式 - 将要执行的命令:"
-        echo "ansible-playbook -i $inventory site.yml --check"
+        echo "ansible-playbook -i inventory/swarm.ini swarm-deploy.yml"
         return
     fi
-    
-    # 执行部署
-    ansible-playbook -i "$inventory" site.yml
-    
-    log_success "Ansible 部署完成!"
+
+    if [[ ! -f "inventory/swarm.ini" ]]; then
+        log_error "Swarm 清单文件不存在: inventory/swarm.ini"
+        log_info "请先创建 inventory/swarm.ini 文件配置集群节点"
+        exit 1
+    fi
+
+    ansible-playbook -i inventory/swarm.ini swarm-deploy.yml
+
+    log_success "Swarm 集群部署完成!"
+    log_info "请检查各个节点的服务状态:"
+    log_info "  节点1 (miniodb+redis): docker service ps miniodb_swarm_miniodb"
+    log_info "  节点2 (minio): docker service ps miniodb_swarm_minio"
+    log_info "  节点3 (minio-backup): docker service ps miniodb_swarm_minio-backup"
 }
 
 # 清理部署
 cleanup_deployment() {
-    local deploy_method=$1
-    
-    case $deploy_method in
-        "docker")
-            log_info "清理 Docker Compose 部署..."
+    local deploy_mode=$1
+
+    case $deploy_mode in
+        "dev")
+            log_info "清理开发模式部署..."
+            cd "$(dirname "$0")/docker"
+            if command -v docker-compose &> /dev/null; then
+                docker-compose -f docker-compose.dev.yml down -v
+            else
+                docker compose -f docker-compose.dev.yml down -v
+            fi
+            log_success "开发模式部署已清理"
+            ;;
+        "test")
+            log_info "清理集成测试模式部署..."
             cd "$(dirname "$0")/docker"
             if command -v docker-compose &> /dev/null; then
                 docker-compose down -v
             else
                 docker compose down -v
             fi
-            log_success "Docker 部署已清理"
+            log_success "集成测试模式部署已清理"
+            ;;
+        "swarm")
+            log_info "清理 Swarm 集群部署..."
+            cd "$(dirname "$0")/ansible"
+            ansible-playbook -i inventory/swarm.ini swarm-cleanup.yml || log_warning "清理脚本可能不存在，请手动清理"
+            log_success "Swarm 集群部署已清理（或请手动清理）"
             ;;
         "k8s")
             local namespace=${NAMESPACE:-miniodb-system}
@@ -298,27 +400,20 @@ cleanup_deployment() {
             kubectl delete namespace "$namespace" --ignore-not-found=true
             log_success "Kubernetes 部署已清理"
             ;;
-        "ansible")
-            log_warning "Ansible 清理需要手动执行相应的清理剧本"
-            ;;
     esac
 }
 
 # 主函数
 main() {
-    local deploy_method=""
+    local deploy_mode=""
     local cleanup=false
-    
+
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case $1 in
-            docker|k8s|ansible)
-                deploy_method=$1
+            dev|test|swarm|k8s)
+                deploy_mode=$1
                 shift
-                ;;
-            -e|--env)
-                ENV=$2
-                shift 2
                 ;;
             -c|--config)
                 CONFIG_FILE=$2
@@ -359,46 +454,48 @@ main() {
                 ;;
         esac
     done
-    
-    # 检查部署方式
-    if [[ -z "$deploy_method" ]]; then
-        log_error "请指定部署方式: docker, k8s, 或 ansible"
+
+    # 检查部署模式
+    if [[ -z "$deploy_mode" ]]; then
+        log_error "请指定部署模式: dev, test, swarm, 或 k8s"
         show_help
         exit 1
     fi
-    
+
     # 检查依赖
-    check_dependencies "$deploy_method"
-    
+    check_dependencies "$deploy_mode"
+
     # 执行清理或部署
     if [[ $cleanup == "true" ]]; then
         if [[ $FORCE != "true" ]]; then
-            read -p "确定要清理 $deploy_method 部署吗? [y/N] " -n 1 -r
+            read -p "确定要清理 $deploy_mode 部署吗? [y/N] " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log_info "取消清理操作"
                 exit 0
             fi
         fi
-        cleanup_deployment "$deploy_method"
+        cleanup_deployment "$deploy_mode"
     else
         # 执行部署
-        case $deploy_method in
-            "docker")
-                deploy_docker
+        case $deploy_mode in
+            "dev")
+                deploy_dev
+                ;;
+            "test")
+                deploy_test
+                ;;
+            "swarm")
+                deploy_swarm
                 ;;
             "k8s")
                 deploy_k8s
-                ;;
-            "ansible")
-                deploy_ansible
                 ;;
         esac
     fi
 }
 
 # 设置默认值
-ENV=${MINIODB_ENV:-development}
 DATA_PATH=${MINIODB_DATA_PATH:-./data}
 NAMESPACE=${MINIODB_NAMESPACE:-miniodb-system}
 REPLICAS=${MINIODB_REPLICAS:-2}

@@ -1,0 +1,76 @@
+---
+# MinIODB Docker Swarm 集群清理 Playbook
+
+- name: 清理 Docker Stack
+  hosts: managers
+  gather_facts: false
+  tasks:
+    - name: 停止并删除 Docker Stack
+      shell: docker stack rm miniodb-swarm || true
+      register: stack_rm
+      changed_when: false
+      ignore_errors: true
+
+    - name: 等待 Stack 清理完成
+      pause:
+        seconds: 10
+
+    - name: 删除临时文件
+      file:
+        path: /tmp/miniodb-swarm
+        state: absent
+      ignore_errors: true
+
+    - name: 显示清理结果
+      debug:
+        msg: "Docker Stack 清理完成"
+
+- name: 清理数据卷 (可选)
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: 显示可删除的卷
+      shell: docker volume ls -q | grep -E "^miniodb-swarm_"
+      register: volumes
+      changed_when: false
+      ignore_errors: true
+
+    - name: 询问是否删除数据卷
+      pause:
+        prompt: "是否删除所有数据卷? 将导致数据丢失! (yes/no)"
+      register: confirm_delete
+
+    - name: 删除数据卷
+      when: confirm_delete.user_input | lower == "yes"
+      shell: docker volume rm {{ item }}
+      with_items: "{{ volumes.stdout_lines }}"
+      ignore_errors: true
+
+    - name: 显示清理结果
+      debug:
+        msg: "数据卷清理完成"
+
+- name: 离开 Swarm 集群 (谨慎操作)
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: 询问是否离开集群
+      pause:
+        prompt: "是否让节点离开 Swarm 集群? (yes/no)"
+      register: confirm_leave
+
+    - name: Worker 节点离开集群
+      when:
+        - confirm_leave.user_input | lower == "yes"
+        - swarm_role == "worker"
+      shell: docker swarm leave || true
+      changed_when: false
+      ignore_errors: true
+
+    - name: Manager 节点离开集群 (强制)
+      when:
+        - confirm_leave.user_input | lower == "yes"
+        - swarm_role == "manager"
+      shell: docker swarm leave --force || true
+      changed_when: false
+      ignore_errors: true
