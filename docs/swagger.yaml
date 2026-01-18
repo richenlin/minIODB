@@ -1,0 +1,852 @@
+basePath: /v1
+definitions:
+  internal_transport_rest.CreateTableRequest:
+    properties:
+      config:
+        $ref: '#/definitions/internal_transport_rest.TableConfig'
+      if_not_exists:
+        type: boolean
+      table_name:
+        type: string
+    required:
+    - table_name
+    type: object
+  internal_transport_rest.CreateTableResponse:
+    properties:
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  internal_transport_rest.ErrorResponse:
+    properties:
+      code:
+        type: integer
+      error:
+        type: string
+      message:
+        type: string
+    type: object
+  internal_transport_rest.IDValidationRules:
+    properties:
+      allowed_chars:
+        description: 允许的字符集
+        type: string
+      max_length:
+        description: 最大长度
+        type: integer
+      pattern:
+        description: 正则验证模式
+        type: string
+      required:
+        description: 是否必须提供ID
+        type: boolean
+    type: object
+  internal_transport_rest.QueryRequest:
+    properties:
+      sql:
+        type: string
+    required:
+    - sql
+    type: object
+  internal_transport_rest.QueryResponse:
+    properties:
+      result_json:
+        description: 与gRPC的result_json字段保持一致
+        type: string
+    type: object
+  internal_transport_rest.StatsResponse:
+    properties:
+      buffer_stats:
+        additionalProperties:
+          format: int64
+          type: integer
+        type: object
+      minio_stats:
+        additionalProperties:
+          format: int64
+          type: integer
+        type: object
+      redis_stats:
+        additionalProperties:
+          format: int64
+          type: integer
+        type: object
+      timestamp:
+        type: string
+    type: object
+  internal_transport_rest.TableConfig:
+    properties:
+      auto_generate_id:
+        description: 是否自动生成ID（未提供时）
+        type: boolean
+      backup_enabled:
+        type: boolean
+      buffer_size:
+        type: integer
+      flush_interval_seconds:
+        type: integer
+      id_prefix:
+        description: ID前缀（用于custom和snowflake策略）
+        type: string
+      id_strategy:
+        description: ID生成配置
+        type: string
+      id_validation:
+        allOf:
+        - $ref: '#/definitions/internal_transport_rest.IDValidationRules'
+        description: ID验证规则
+      properties:
+        additionalProperties:
+          type: string
+        type: object
+      retention_days:
+        type: integer
+    type: object
+  internal_transport_rest.WriteRequest:
+    properties:
+      id:
+        type: string
+      payload:
+        additionalProperties: true
+        type: object
+      table:
+        description: 表名（新增）
+        type: string
+      timestamp:
+        type: string
+    required:
+    - id
+    - payload
+    - timestamp
+    type: object
+  internal_transport_rest.WriteResponse:
+    properties:
+      message:
+        type: string
+      node_id:
+        description: 扩展字段：处理请求的节点ID
+        type: string
+      success:
+        type: boolean
+    type: object
+host: localhost:8081
+info:
+  contact:
+    name: MinIODB Support
+    url: https://github.com/richenlin/minIODB
+  description: |-
+    基于MinIO+DuckDB+Redis的分布式OLAP系统API
+    支持高性能数据写入、SQL查询、表管理、元数据备份等功能
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  title: MinIODB API
+  version: "1.0"
+paths:
+  /auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: 使用Refresh Token获取新的访问令牌
+      parameters:
+      - description: 刷新请求
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            refresh_token:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              access_token:
+                type: string
+              expires_in:
+                type: integer
+              refresh_token:
+                type: string
+              token_type:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      summary: 刷新JWT令牌
+      tags:
+      - 认证
+  /auth/token:
+    delete:
+      consumes:
+      - application/json
+      description: 撤销指定的访问令牌
+      parameters:
+      - description: 撤销请求
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            token:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      summary: 撤销JWT令牌
+      tags:
+      - 认证
+    post:
+      consumes:
+      - application/json
+      description: 使用API Key和Secret获取访问令牌
+      parameters:
+      - description: 认证请求
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            api_key:
+              type: string
+            api_secret:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              access_token:
+                type: string
+              expires_in:
+                type: integer
+              refresh_token:
+                type: string
+              token_type:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      summary: 获取JWT令牌
+      tags:
+      - 认证
+  /data:
+    delete:
+      consumes:
+      - application/json
+      description: 删除指定表中的数据记录
+      parameters:
+      - description: 删除请求
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            ids:
+              items:
+                type: string
+              type: array
+            table:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              deleted_count:
+                type: integer
+              errors:
+                items:
+                  type: string
+                type: array
+              message:
+                type: string
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 删除数据
+      tags:
+      - 数据操作
+    post:
+      consumes:
+      - application/json
+      description: 向指定表写入一条数据记录
+      parameters:
+      - description: 写入请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_transport_rest.WriteRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_transport_rest.WriteResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 写入数据
+      tags:
+      - 数据操作
+    put:
+      consumes:
+      - application/json
+      description: 更新指定表中的数据记录
+      parameters:
+      - description: 更新请求
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            id:
+              type: string
+            partial:
+              type: boolean
+            payload:
+              type: object
+            table:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 更新数据
+      tags:
+      - 数据操作
+  /health:
+    get:
+      description: 检查服务健康状态
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              details:
+                type: object
+              status:
+                type: string
+              timestamp:
+                type: string
+              version:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      summary: 健康检查
+      tags:
+      - 系统监控
+  /metadata/backup:
+    post:
+      consumes:
+      - application/json
+      description: 备份系统元数据到MinIO
+      parameters:
+      - description: 备份请求
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            backup_name:
+              type: string
+            description:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              backup_id:
+                type: string
+              message:
+                type: string
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 备份元数据
+      tags:
+      - 元数据
+  /metadata/backups:
+    get:
+      description: 获取元数据备份列表
+      parameters:
+      - default: 30
+        description: 查询天数范围
+        in: query
+        name: days
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              backups:
+                items:
+                  properties:
+                    created_at:
+                      type: string
+                    id:
+                      type: string
+                    name:
+                      type: string
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 列出备份
+      tags:
+      - 元数据
+  /metadata/restore:
+    post:
+      consumes:
+      - application/json
+      description: 从备份恢复系统元数据
+      parameters:
+      - description: 恢复请求
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            backup_id:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 恢复元数据
+      tags:
+      - 元数据
+  /metadata/status:
+    get:
+      description: 获取系统元数据的当前状态
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              last_backup:
+                type: string
+              status:
+                type: string
+              tables_count:
+                type: integer
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取元数据状态
+      tags:
+      - 元数据
+  /metrics:
+    get:
+      description: 获取系统性能监控指标
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              performance_metrics:
+                type: object
+              resource_usage:
+                type: object
+              timestamp:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取性能指标
+      tags:
+      - 系统监控
+  /query:
+    post:
+      consumes:
+      - application/json
+      description: 执行SQL查询
+      parameters:
+      - description: 查询请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_transport_rest.QueryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_transport_rest.QueryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 查询数据
+      tags:
+      - 数据操作
+  /status:
+    get:
+      description: 获取系统运行状态和统计信息
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_transport_rest.StatsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取系统状态
+      tags:
+      - 系统监控
+  /tables:
+    get:
+      description: 获取所有表的列表
+      parameters:
+      - description: 表名匹配模式
+        in: query
+        name: pattern
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              tables:
+                items:
+                  type: string
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 列出表
+      tags:
+      - 表管理
+    post:
+      consumes:
+      - application/json
+      description: 创建新的数据表
+      parameters:
+      - description: 创建表请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_transport_rest.CreateTableRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_transport_rest.CreateTableResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 创建表
+      tags:
+      - 表管理
+  /tables/{name}:
+    delete:
+      description: 删除指定的数据表
+      parameters:
+      - description: 表名
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: 仅当存在时删除
+        in: query
+        name: if_exists
+        type: boolean
+      - description: 级联删除相关数据
+        in: query
+        name: cascade
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 删除表
+      tags:
+      - 表管理
+    get:
+      description: 获取指定表的详细信息
+      parameters:
+      - description: 表名
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              config:
+                $ref: '#/definitions/internal_transport_rest.TableConfig'
+              created_at:
+                type: string
+              table_name:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_transport_rest.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 获取表信息
+      tags:
+      - 表管理
+securityDefinitions:
+  BearerAuth:
+    description: 'JWT Bearer Token认证，格式: Bearer {token}'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
+tags:
+- description: 用户认证和Token管理
+  name: 认证
+- description: 数据写入、查询、更新、删除
+  name: 数据操作
+- description: 表的创建、查询、删除
+  name: 表管理
+- description: 元数据备份、恢复、状态查询
+  name: 元数据
+- description: 健康检查、状态查询、性能指标
+  name: 系统监控

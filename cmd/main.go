@@ -1,3 +1,37 @@
+// @title           MinIODB API
+// @version         1.0
+// @description     基于MinIO+DuckDB+Redis的分布式OLAP系统API
+// @description     支持高性能数据写入、SQL查询、表管理、元数据备份等功能
+
+// @contact.name   MinIODB Support
+// @contact.url    https://github.com/richenlin/minIODB
+
+// @license.name  MIT
+// @license.url   https://opensource.org/licenses/MIT
+
+// @host      localhost:8081
+// @BasePath  /v1
+
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description JWT Bearer Token认证，格式: Bearer {token}
+
+// @tag.name 认证
+// @tag.description 用户认证和Token管理
+
+// @tag.name 数据操作
+// @tag.description 数据写入、查询、更新、删除
+
+// @tag.name 表管理
+// @tag.description 表的创建、查询、删除
+
+// @tag.name 元数据
+// @tag.description 元数据备份、恢复、状态查询
+
+// @tag.name 系统监控
+// @tag.description 健康检查、状态查询、性能指标
+
 package main
 
 import (

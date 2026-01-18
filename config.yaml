@@ -632,3 +632,11 @@ subscription:
     # sasl_username: "user"
     # sasl_password: "password"
     # sasl_mechanism: "plain"       # plain, scram-sha-256, scram-sha-512
+
+# Swagger API文档配置
+swagger:
+  enabled: true                              # 生产环境设为false
+  host: "localhost:8081"                     # API主机地址
+  base_path: "/v1"                           # API基础路径
+  title: "MinIODB API"                       # API标题
+  description: "基于MinIO+DuckDB+Redis的分布式OLAP系统API"

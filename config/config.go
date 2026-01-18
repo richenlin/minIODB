@@ -39,6 +39,7 @@ type Config struct {
 	Subscription      SubscriptionConfig      `yaml:"subscription"`  // 数据订阅配置
 	SLA               SLAConfig               `yaml:"sla"`           // SLA监控配置
 	Benchmark         BenchmarkConfig         `yaml:"benchmark"`     // 基准测试配置
+	Swagger           SwaggerConfig           `yaml:"swagger"`       // Swagger文档配置
 }
 
 // TableConfig 表级配置
@@ -395,6 +396,15 @@ type BenchmarkConfig struct {
 	RunInterval time.Duration `yaml:"run_interval"`
 	Timeout     time.Duration `yaml:"timeout"`
 	MaxRetries  int           `yaml:"max_retries"`
+}
+
+// SwaggerConfig Swagger文档配置
+type SwaggerConfig struct {
+	Enabled     bool   `yaml:"enabled"`     // 是否启用Swagger UI
+	Host        string `yaml:"host"`        // API主机地址
+	BasePath    string `yaml:"base_path"`   // API基础路径
+	Title       string `yaml:"title"`       // API标题
+	Description string `yaml:"description"` // API描述
 }
 
 // LogConfig 日志配置
@@ -1236,6 +1246,15 @@ func (c *Config) setDefaults() {
 			UseSASL:         false,
 			SASLMechanism:   "plain",
 		},
+	}
+
+	// Swagger配置默认值
+	c.Swagger = SwaggerConfig{
+		Enabled:     true,             // 开发环境默认启用
+		Host:        "localhost:8081", // API主机地址
+		BasePath:    "/v1",            // API基础路径
+		Title:       "MinIODB API",    // API标题
+		Description: "基于MinIO+DuckDB+Redis的分布式OLAP系统API",
 	}
 }
 

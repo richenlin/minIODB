@@ -1,9 +1,9 @@
 package rest
 
 import (
-	"minIODB/pkg/logger"
 	"context"
 	"fmt"
+	"minIODB/pkg/logger"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +15,10 @@ import (
 	"minIODB/internal/metadata"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
+
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+	_ "minIODB/docs"
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -436,6 +440,15 @@ func (s *Server) SetMetadataManager(manager *metadata.Manager) {
 
 // setupRoutes 设置路由
 func (s *Server) setupRoutes() {
+	// Swagger API文档路由（根据配置决定是否启用）
+	if s.cfg.Swagger.Enabled {
+		s.router.GET("/api-docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler,
+			ginSwagger.URL("/api-docs/doc.json"),
+			ginSwagger.DefaultModelsExpandDepth(-1),
+		))
+		logger.GetLogger().Sugar().Info("Swagger UI enabled at /api-docs/index.html")
+	}
+
 	api := s.router.Group("/v1")
 
 	// 认证路由 - 不需要JWT验证
@@ -483,6 +496,13 @@ func (s *Server) setupRoutes() {
 }
 
 // healthCheck 处理健康检查请求
+// @Summary      健康检查
+// @Description  检查服务健康状态
+// @Tags         系统监控
+// @Produce      json
+// @Success      200 {object} object{status=string,timestamp=string,version=string,details=object}
+// @Failure      500 {object} ErrorResponse
+// @Router       /health [get]
 func (s *Server) healthCheck(c *gin.Context) {
 	// 调用统一服务
 	err := s.miniodbService.HealthCheck(c.Request.Context())
@@ -509,6 +529,18 @@ func (s *Server) healthCheck(c *gin.Context) {
 }
 
 // writeData 处理数据写入请求
+// @Summary      写入数据
+// @Description  向指定表写入一条数据记录
+// @Tags         数据操作
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body WriteRequest true "写入请求"
+// @Success      200 {object} WriteResponse
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /data [post]
 func (s *Server) writeData(c *gin.Context) {
 	var req struct {
 		Table     string                 `json:"table"`
@@ -599,6 +631,18 @@ func (s *Server) generateID(ctx context.Context, tableName string) (string, erro
 }
 
 // queryData 处理数据查询请求
+// @Summary      查询数据
+// @Description  执行SQL查询
+// @Tags         数据操作
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body QueryRequest true "查询请求"
+// @Success      200 {object} QueryResponse
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /query [post]
 func (s *Server) queryData(c *gin.Context) {
 	var req struct {
 		SQL    string `json:"sql" binding:"required"`
@@ -632,6 +676,18 @@ func (s *Server) queryData(c *gin.Context) {
 }
 
 // updateData 处理数据更新请求
+// @Summary      更新数据
+// @Description  更新指定表中的数据记录
+// @Tags         数据操作
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body object{table=string,id=string,payload=object,partial=bool} true "更新请求"
+// @Success      200 {object} object{success=bool,message=string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /data [put]
 func (s *Server) updateData(c *gin.Context) {
 	var req struct {
 		Table   string                 `json:"table" binding:"required"`
@@ -673,6 +729,18 @@ func (s *Server) updateData(c *gin.Context) {
 }
 
 // deleteData 处理数据删除请求
+// @Summary      删除数据
+// @Description  删除指定表中的数据记录
+// @Tags         数据操作
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body object{table=string,ids=[]string} true "删除请求"
+// @Success      200 {object} object{success=bool,message=string,deleted_count=int,errors=[]string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /data [delete]
 func (s *Server) deleteData(c *gin.Context) {
 	var req struct {
 		Table string   `json:"table" binding:"required"`
@@ -726,6 +794,15 @@ func (s *Server) deleteData(c *gin.Context) {
 }
 
 // getStatus 处理获取状态请求（合并了节点和统计信息）
+// @Summary      获取系统状态
+// @Description  获取系统运行状态和统计信息
+// @Tags         系统监控
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200 {object} StatsResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /status [get]
 func (s *Server) getStatus(c *gin.Context) {
 	protoReq := &miniodbv1.GetStatusRequest{}
 
@@ -747,6 +824,15 @@ func (s *Server) getStatus(c *gin.Context) {
 }
 
 // getMetrics 处理获取性能指标请求
+// @Summary      获取性能指标
+// @Description  获取系统性能监控指标
+// @Tags         系统监控
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200 {object} object{timestamp=string,performance_metrics=object,resource_usage=object}
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /metrics [get]
 func (s *Server) getMetrics(c *gin.Context) {
 	protoReq := &miniodbv1.GetMetricsRequest{}
 
@@ -766,6 +852,16 @@ func (s *Server) getMetrics(c *gin.Context) {
 }
 
 // getToken 处理获取JWT令牌请求
+// @Summary      获取JWT令牌
+// @Description  使用API Key和Secret获取访问令牌
+// @Tags         认证
+// @Accept       json
+// @Produce      json
+// @Param        request body object{api_key=string,api_secret=string} true "认证请求"
+// @Success      200 {object} object{access_token=string,refresh_token=string,expires_in=int,token_type=string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Router       /auth/token [post]
 func (s *Server) getToken(c *gin.Context) {
 	var req struct {
 		APIKey    string `json:"api_key" binding:"required"`
@@ -807,6 +903,16 @@ func (s *Server) getToken(c *gin.Context) {
 }
 
 // refreshToken 处理刷新JWT令牌请求
+// @Summary      刷新JWT令牌
+// @Description  使用Refresh Token获取新的访问令牌
+// @Tags         认证
+// @Accept       json
+// @Produce      json
+// @Param        request body object{refresh_token=string} true "刷新请求"
+// @Success      200 {object} object{access_token=string,refresh_token=string,expires_in=int,token_type=string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Router       /auth/refresh [post]
 func (s *Server) refreshToken(c *gin.Context) {
 	var req struct {
 		RefreshToken string `json:"refresh_token" binding:"required"`
@@ -857,6 +963,15 @@ func (s *Server) refreshToken(c *gin.Context) {
 }
 
 // revokeToken 处理撤销JWT令牌请求
+// @Summary      撤销JWT令牌
+// @Description  撤销指定的访问令牌
+// @Tags         认证
+// @Accept       json
+// @Produce      json
+// @Param        request body object{token=string} true "撤销请求"
+// @Success      200 {object} object{success=bool,message=string}
+// @Failure      400 {object} ErrorResponse
+// @Router       /auth/token [delete]
 func (s *Server) revokeToken(c *gin.Context) {
 	var req struct {
 		Token string `json:"token" binding:"required"`
@@ -889,6 +1004,18 @@ func (s *Server) revokeToken(c *gin.Context) {
 }
 
 // createTable 处理创建表请求
+// @Summary      创建表
+// @Description  创建新的数据表
+// @Tags         表管理
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body CreateTableRequest true "创建表请求"
+// @Success      200 {object} CreateTableResponse
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /tables [post]
 func (s *Server) createTable(c *gin.Context) {
 	var req CreateTableRequest
 
@@ -939,6 +1066,16 @@ func (s *Server) createTable(c *gin.Context) {
 }
 
 // listTables 处理列出表请求
+// @Summary      列出表
+// @Description  获取所有表的列表
+// @Tags         表管理
+// @Produce      json
+// @Security     BearerAuth
+// @Param        pattern query string false "表名匹配模式"
+// @Success      200 {object} object{tables=[]string}
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /tables [get]
 func (s *Server) listTables(c *gin.Context) {
 	pattern := c.DefaultQuery("pattern", "")
 
@@ -957,6 +1094,17 @@ func (s *Server) listTables(c *gin.Context) {
 }
 
 // getTable 处理获取表信息请求
+// @Summary      获取表信息
+// @Description  获取指定表的详细信息
+// @Tags         表管理
+// @Produce      json
+// @Security     BearerAuth
+// @Param        name path string true "表名"
+// @Success      200 {object} object{table_name=string,config=TableConfig,created_at=string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /tables/{name} [get]
 func (s *Server) getTable(c *gin.Context) {
 	tableName := c.Param("name")
 	if tableName == "" {
@@ -979,6 +1127,19 @@ func (s *Server) getTable(c *gin.Context) {
 }
 
 // deleteTable 处理删除表请求
+// @Summary      删除表
+// @Description  删除指定的数据表
+// @Tags         表管理
+// @Produce      json
+// @Security     BearerAuth
+// @Param        name path string true "表名"
+// @Param        if_exists query bool false "仅当存在时删除"
+// @Param        cascade query bool false "级联删除相关数据"
+// @Success      200 {object} object{success=bool,message=string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /tables/{name} [delete]
 func (s *Server) deleteTable(c *gin.Context) {
 	tableName := c.Param("name")
 	if tableName == "" {
@@ -1006,6 +1167,18 @@ func (s *Server) deleteTable(c *gin.Context) {
 }
 
 // backupMetadata 处理备份元数据请求
+// @Summary      备份元数据
+// @Description  备份系统元数据到MinIO
+// @Tags         元数据
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body object{backup_name=string,description=string} true "备份请求"
+// @Success      200 {object} object{success=bool,message=string,backup_id=string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /metadata/backup [post]
 func (s *Server) backupMetadata(c *gin.Context) {
 	var req miniodbv1.BackupMetadataRequest
 
@@ -1025,6 +1198,18 @@ func (s *Server) backupMetadata(c *gin.Context) {
 }
 
 // restoreMetadata 处理恢复元数据请求
+// @Summary      恢复元数据
+// @Description  从备份恢复系统元数据
+// @Tags         元数据
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body object{backup_id=string} true "恢复请求"
+// @Success      200 {object} object{success=bool,message=string}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /metadata/restore [post]
 func (s *Server) restoreMetadata(c *gin.Context) {
 	var req miniodbv1.RestoreMetadataRequest
 
@@ -1044,6 +1229,16 @@ func (s *Server) restoreMetadata(c *gin.Context) {
 }
 
 // listBackups 处理列出备份请求
+// @Summary      列出备份
+// @Description  获取元数据备份列表
+// @Tags         元数据
+// @Produce      json
+// @Security     BearerAuth
+// @Param        days query int false "查询天数范围" default(30)
+// @Success      200 {object} object{backups=[]object{id=string,name=string,created_at=string}}
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /metadata/backups [get]
 func (s *Server) listBackups(c *gin.Context) {
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
 
@@ -1062,6 +1257,15 @@ func (s *Server) listBackups(c *gin.Context) {
 }
 
 // getMetadataStatus 处理获取元数据状态请求
+// @Summary      获取元数据状态
+// @Description  获取系统元数据的当前状态
+// @Tags         元数据
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200 {object} object{status=string,last_backup=string,tables_count=int}
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /metadata/status [get]
 func (s *Server) getMetadataStatus(c *gin.Context) {
 	protoReq := &miniodbv1.GetMetadataStatusRequest{}
 
