@@ -118,7 +118,7 @@ services:
 
   # MinIO Gateway (Distributed)
   minio-gateway:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -136,7 +136,7 @@ services:
 
   # MinIO Storage Nodes
   minio-node-1:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -375,7 +375,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: minio/minio:latest
+        image: minio/minio:RELEASE.2025-04-22T22-12-26Z
         ports:
         - containerPort: 9000
         - containerPort: 9001
