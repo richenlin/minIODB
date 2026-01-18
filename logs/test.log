@@ -1,0 +1,5 @@
+{"level":"info","timestamp":"2026-01-18T16:58:05.646+0800","caller":"cmd/main.go:112","msg":"Starting MinIODB server with config: -c"}
+{"level":"info","timestamp":"2026-01-18T16:58:05.647+0800","caller":"storage/storage.go:25","msg":"Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture"}
+{"level":"info","timestamp":"2026-01-18T16:58:05.668+0800","caller":"pool/redis_pool.go:539","msg":"Redis pool (standalone mode) closed successfully"}
+{"level":"fatal","timestamp":"2026-01-18T16:58:05.668+0800","caller":"cmd/main.go:125","msg":"Failed to create storage instance: failed to create pool manager: failed to create Redis pool: initial health check failed: ping failed: NOAUTH Authentication required.","stacktrace":"main.main\n\t/Users/richen/Workspace/go/src/minIODB/cmd/main.go:125\nruntime.main\n\t/opt/homebrew/opt/go/libexec/src/runtime/proc.go:285"}
+exit status 1

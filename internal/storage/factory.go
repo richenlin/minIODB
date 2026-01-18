@@ -66,6 +66,23 @@ func NewStorageFactory(cfg *config.Config, logger *zap.Logger) (StorageFactory, 
 	if cfg.Backup.Enabled && cfg.Backup.MinIO.Endpoint != "" {
 		poolConfig.BackupMinIO = getBackupMinIOPoolConfig(cfg)
 	}
+	// 或者如果Network.Pools.BackupMinIO配置了，也添加
+	if cfg.Network.Pools.BackupMinIO != nil && cfg.Network.Pools.BackupMinIO.Endpoint != "" {
+		poolConfig.BackupMinIO = getBackupMinIOPoolConfig(cfg)
+	}
+
+	// 添加Failover配置
+	poolConfig.Failover = pool.FailoverConfig{
+		Enabled:             cfg.Network.Pools.Failover.Enabled,
+		HealthCheckInterval: cfg.Network.Pools.Failover.HealthCheckInterval,
+		AsyncSync: pool.AsyncSyncConfig{
+			QueueSize:     cfg.Network.Pools.Failover.AsyncSync.QueueSize,
+			WorkerCount:   cfg.Network.Pools.Failover.AsyncSync.WorkerCount,
+			RetryTimes:    cfg.Network.Pools.Failover.AsyncSync.RetryTimes,
+			RetryInterval: cfg.Network.Pools.Failover.AsyncSync.RetryInterval,
+			SyncTimeout:   cfg.Network.Pools.Failover.AsyncSync.SyncTimeout,
+		},
+	}
 
 	// 创建连接池管理器
 	poolManager, err := pool.NewPoolManager(poolConfig, logger)

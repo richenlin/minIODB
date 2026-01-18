@@ -1344,19 +1344,56 @@ func (c *Config) overrideWithEnv() {
 		c.Server.RestPort = restPort
 	}
 
-	// 备份配置环境变量覆盖
+	// 备份MinIO配置环境变量覆盖
 	if minioBackupEndpoint := os.Getenv("MINIO_BACKUP_ENDPOINT"); minioBackupEndpoint != "" {
 		c.Backup.MinIO.Endpoint = minioBackupEndpoint
 		c.Backup.Enabled = true
+		// 同时更新Network.Pools.BackupMinIO配置
+		if c.Network.Pools.BackupMinIO == nil {
+			// 初始化BackupMinIO配置，复制主MinIO的配置作为基础
+			c.Network.Pools.BackupMinIO = &EnhancedMinIOConfig{
+				UseSSL:                false,
+				Region:                "us-east-1",
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   50,
+				MaxConnsPerHost:       100,
+				IdleConnTimeout:       90 * time.Second,
+				DialTimeout:           10 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxRetries:            3,
+				RetryDelay:            100 * time.Millisecond,
+				RequestTimeout:        120 * time.Second,
+				KeepAlive:             30 * time.Second,
+				DisableKeepAlive:      false,
+				DisableCompression:    false,
+			}
+		}
+		c.Network.Pools.BackupMinIO.Endpoint = minioBackupEndpoint
 	}
 	if minioBackupAccessKey := os.Getenv("MINIO_BACKUP_ACCESS_KEY"); minioBackupAccessKey != "" {
 		c.Backup.MinIO.AccessKeyID = minioBackupAccessKey
+		if c.Network.Pools.BackupMinIO != nil {
+			c.Network.Pools.BackupMinIO.AccessKeyID = minioBackupAccessKey
+		}
 	}
 	if minioBackupSecretKey := os.Getenv("MINIO_BACKUP_SECRET_KEY"); minioBackupSecretKey != "" {
 		c.Backup.MinIO.SecretAccessKey = minioBackupSecretKey
+		if c.Network.Pools.BackupMinIO != nil {
+			c.Network.Pools.BackupMinIO.SecretAccessKey = minioBackupSecretKey
+		}
 	}
 	if minioBackupBucket := os.Getenv("MINIO_BACKUP_BUCKET"); minioBackupBucket != "" {
 		c.Backup.MinIO.Bucket = minioBackupBucket
+		if c.Network.Pools.BackupMinIO != nil {
+			c.Network.Pools.BackupMinIO.Bucket = minioBackupBucket
+		}
+	}
+	if minioBackupUseSSL := os.Getenv("MINIO_BACKUP_USE_SSL"); minioBackupUseSSL == "true" {
+		if c.Network.Pools.BackupMinIO != nil {
+			c.Network.Pools.BackupMinIO.UseSSL = true
+		}
 	}
 
 	// 元数据备份配置环境变量覆盖

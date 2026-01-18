@@ -187,6 +187,22 @@
       "description": "将cmd/main.go的60处logger.Logger替换为logger.Sugar，提升日志性能",
       "phase": "性能优化",
       "estimated_days": 0.5
+    },
+    {
+      "id": "F021",
+      "name": "MinIO双池自动故障切换",
+      "priority": 1,
+      "status": "completed",
+      "description": "实现主存储池故障自动切换到备份池，主池恢复后自动切回，异步数据同步保证最终一致性",
+      "phase": "高可用优化",
+      "estimated_days": 3,
+      "details": {
+        "新增文件": ["pkg/pool/failover_manager.go (~450行)", "internal/metrics/failover_metrics.go (~75行)"],
+        "修改文件": ["config/config.go", "pkg/pool/manager.go", "internal/buffer/concurrent_buffer.go", "internal/storage/storage.go"],
+        "核心功能": ["故障切换管理器", "异步同步队列(队列1000，3 workers)", "健康检查循环(15秒间隔)", "Redis状态持久化", "7个Prometheus指标"],
+        "数据一致性": "异步同步，最终一致性",
+        "启用条件": "Redis启用 + 备份池配置 + failover.enabled=true"
+      }
     }
   ]
 }

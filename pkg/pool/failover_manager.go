@@ -122,6 +122,12 @@ func (fm *FailoverManager) Start() error {
 		zap.Bool("enabled", fm.config.Enabled),
 		zap.Duration("health_check_interval", fm.config.HealthCheckInterval))
 
+	// 初始化metrics指标（触发注册）
+	metrics.CurrentActivePool.Set(0)   // 0表示使用主池
+	metrics.BackupSyncQueueSize.Set(0) // 初始队列为空
+	metrics.PrimaryPoolHealthy.Set(1)  // 假设主池健康
+	metrics.BackupPoolHealthy.Set(1)   // 假设备份池健康
+
 	// 从Redis加载状态
 	if err := fm.loadStateFromRedis(); err != nil {
 		fm.logger.Warn("Failed to load state from Redis, using default", zap.Error(err))
@@ -286,19 +292,37 @@ func (fm *FailoverManager) checkAndRecover() {
 
 	fm.lastHealthCheck = time.Now()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 检查主池健康状态
+	primaryPool := fm.poolManager.GetMinIOPool()
+	if primaryPool != nil {
+		if err := primaryPool.HealthCheck(ctx); err != nil {
+			metrics.PrimaryPoolHealthy.Set(0)
+		} else {
+			metrics.PrimaryPoolHealthy.Set(1)
+		}
+	}
+
+	// 检查备份池健康状态
+	backupPool := fm.poolManager.GetBackupMinIOPool()
+	if backupPool != nil {
+		if err := backupPool.HealthCheck(ctx); err != nil {
+			metrics.BackupPoolHealthy.Set(0)
+		} else {
+			metrics.BackupPoolHealthy.Set(1)
+		}
+	}
+
 	// 只有在使用备份池时才检查主池恢复
 	if !fm.usingBackup {
 		return
 	}
 
-	// 检查主池是否恢复
-	primaryPool := fm.poolManager.GetMinIOPool()
 	if primaryPool == nil {
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	if err := primaryPool.HealthCheck(ctx); err != nil {
 		fm.logger.Debug("Primary pool still unhealthy", zap.Error(err))
