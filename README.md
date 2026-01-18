@@ -121,6 +121,9 @@ minio:
 ### 启动服务
 
 ```bash
+# 启动redis、minio和服务
+./deploy/deploy.sh dev --install-deps
+＃　启动go服务
 go run cmd/main.go -c config/config.local.yaml
 ```
 
