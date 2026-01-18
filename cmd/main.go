@@ -45,7 +45,6 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
-	"go.uber.org/zap"
 
 	"minIODB/config"
 	"minIODB/internal/buffer"
@@ -110,7 +109,7 @@ func main() {
 	logger.InitLogger(logCfg)
 	defer logger.Close()
 
-	logger.Logger.Info("Starting MinIODB server...", zap.String("config_path", configPath))
+	logger.Sugar.Infof("Starting MinIODB server with config: %s", configPath)
 
 	// 创建上下文
 	ctx, cancel := context.WithCancel(context.Background())
@@ -123,7 +122,7 @@ func main() {
 	// 初始化存储层
 	storageInstance, err := storage.NewStorage(cfg, logger.Logger)
 	if err != nil {
-		logger.Logger.Fatal("Failed to create storage instance", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to create storage instance: %v", err)
 	}
 	defer storageInstance.Close()
 
@@ -133,9 +132,9 @@ func main() {
 	// 获取Redis连接池（支持高可用）
 	redisPool := poolManager.GetRedisPool()
 	if redisPool != nil {
-		logger.Logger.Info("Redis connection pool initialized successfully")
+		logger.Sugar.Info("Redis connection pool initialized successfully")
 	} else {
-		logger.Logger.Warn("Redis disabled - running in single-node mode")
+		logger.Sugar.Warn("Redis disabled - running in single-node mode")
 	}
 
 	// 注意：高级存储引擎优化功能已实现但当前保持禁用以维持系统简单性
@@ -145,14 +144,14 @@ func main() {
 	// 初始化MinIO客户端
 	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO, logger.Logger)
 	if err != nil {
-		logger.Logger.Fatal("Failed to create primary MinIO client", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to create primary MinIO client: %v", err)
 	}
 
 	var backupMinio storage.Uploader
 	if cfg.Backup.Enabled {
 		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.MinIO, logger.Logger)
 		if err != nil {
-			logger.Logger.Fatal("Failed to create backup MinIO client", zap.Error(err))
+			logger.Sugar.Fatalf("Failed to create backup MinIO client: %v", err)
 		}
 	}
 
@@ -172,17 +171,17 @@ func main() {
 	// 初始化查询服务
 	querierService, err := query.NewQuerier(redisPool, primaryMinio, cfg, concurrentBuffer, logger.Logger)
 	if err != nil {
-		logger.Logger.Fatal("Failed to create querier service", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to create querier service: %v", err)
 	}
 
 	// 初始化服务注册与发现
 	serviceRegistry, err := discovery.NewServiceRegistry(*cfg, cfg.Server.NodeID, cfg.Server.GrpcPort, logger.Logger)
 	if err != nil {
-		logger.Logger.Fatal("Failed to create service registry", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to create service registry: %v", err)
 	}
 
 	// 初始化服务
-	logger.Logger.Info("Initializing services...")
+	logger.Sugar.Info("Initializing services...")
 
 	// 初始化协调器
 	writeCoord := coordinator.NewWriteCoordinator(serviceRegistry, cfg, logger.Logger)
@@ -214,9 +213,9 @@ func main() {
 		metadataManager = metadata.NewManager(storageInstance, storageInstance, &metadataConfig, logger.Logger)
 
 		if err := metadataManager.Start(); err != nil {
-			logger.Logger.Warn("Failed to start metadata manager", zap.Error(err))
+			logger.Sugar.Warnf("Failed to start metadata manager: %v", err)
 		} else {
-			logger.Logger.Info("Metadata manager started successfully")
+			logger.Sugar.Info("Metadata manager started successfully")
 		}
 	}
 
@@ -227,7 +226,7 @@ func main() {
 		metricsServer = startMetricsServer(cfg)
 		systemMonitor = metrics.NewSystemMonitor()
 		systemMonitor.Start()
-		logger.Logger.Info("Metrics server and system monitor started")
+		logger.Sugar.Info("Metrics server and system monitor started")
 	}
 
 	// 初始化并启动 Compaction Manager
@@ -248,15 +247,14 @@ func main() {
 			var err error
 			compactionManager, err = compaction.NewManager(minioPool.GetClient(), cfg.MinIO.Bucket, compactionConfig, logger.Logger)
 			if err != nil {
-				logger.Logger.Warn("Failed to create compaction manager", zap.Error(err))
+				logger.Sugar.Warnf("Failed to create compaction manager: %v", err)
 			} else {
 				compactionManager.Start(ctx)
-				logger.Logger.Info("Compaction manager started",
-					zap.Duration("check_interval", cfg.Compaction.CheckInterval),
-					zap.Int64("target_file_size", cfg.Compaction.TargetFileSize))
+				logger.Sugar.Infof("Compaction manager started - check_interval: %v, target_file_size: %d",
+					cfg.Compaction.CheckInterval, cfg.Compaction.TargetFileSize)
 			}
 		} else {
-			logger.Logger.Warn("Compaction manager disabled - MinIO pool not available")
+			logger.Sugar.Warn("Compaction manager disabled - MinIO pool not available")
 		}
 	}
 
@@ -269,10 +267,10 @@ func main() {
 		if cfg.Subscription.Redis.Enabled && redisPool != nil {
 			redisSubscriber, err := subscription.NewRedisSubscriber(redisPool, &cfg.Subscription.Redis, logger.Logger)
 			if err != nil {
-				logger.Logger.Warn("Failed to create Redis subscriber", zap.Error(err))
+				logger.Sugar.Warnf("Failed to create Redis subscriber: %v", err)
 			} else {
 				if err := subscriptionManager.RegisterSubscriber(redisSubscriber); err != nil {
-					logger.Logger.Warn("Failed to register Redis subscriber", zap.Error(err))
+					logger.Sugar.Warnf("Failed to register Redis subscriber: %v", err)
 				}
 			}
 		}
@@ -281,10 +279,10 @@ func main() {
 		if cfg.Subscription.Kafka.Enabled {
 			kafkaSubscriber, err := subscription.NewKafkaSubscriber(&cfg.Subscription.Kafka, logger.Logger)
 			if err != nil {
-				logger.Logger.Warn("Failed to create Kafka subscriber", zap.Error(err))
+				logger.Sugar.Warnf("Failed to create Kafka subscriber: %v", err)
 			} else {
 				if err := subscriptionManager.RegisterSubscriber(kafkaSubscriber); err != nil {
-					logger.Logger.Warn("Failed to register Kafka subscriber", zap.Error(err))
+					logger.Sugar.Warnf("Failed to register Kafka subscriber: %v", err)
 				}
 			}
 		}
@@ -292,10 +290,10 @@ func main() {
 		// 启动订阅管理器
 		if subscriptionManager.SubscriberCount() > 0 {
 			if err := subscriptionManager.Start(ctx); err != nil {
-				logger.Logger.Warn("Failed to start subscription manager", zap.Error(err))
+				logger.Sugar.Warnf("Failed to start subscription manager: %v", err)
 			} else {
-				logger.Logger.Info("Subscription manager started",
-					zap.Int("subscriber_count", subscriptionManager.SubscriberCount()))
+				logger.Sugar.Infof("Subscription manager started - subscriber_count: %d",
+					subscriptionManager.SubscriberCount())
 			}
 		}
 	}
@@ -303,7 +301,7 @@ func main() {
 	// 创建MinIODB服务
 	miniodbService, err := service.NewMinIODBService(cfg, logger.Logger, ingesterService, querierService, redisPool, metadataManager)
 	if err != nil {
-		logger.Logger.Fatal("Failed to create MinIODB service", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to create MinIODB service: %v", err)
 	}
 
 	// 设置订阅管理器到服务（用于发布写入事件）
@@ -313,14 +311,14 @@ func main() {
 
 	// 启动服务注册
 	if err := serviceRegistry.Start(); err != nil {
-		logger.Logger.Fatal("Failed to start service registry", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to start service registry: %v", err)
 	}
 	defer serviceRegistry.Stop()
 
 	// 启动gRPC服务器
 	grpcService, err := grpcTransport.NewServer(miniodbService, *cfg, logger.Logger)
 	if err != nil {
-		logger.Logger.Fatal("Failed to create gRPC service", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to create gRPC service: %v", err)
 	}
 	grpcService.SetCoordinators(writeCoord, queryCoord)
 	if metadataManager != nil {
@@ -329,20 +327,20 @@ func main() {
 
 	go func() {
 		if err := grpcService.Start(cfg.Server.GrpcPort); err != nil {
-			logger.Logger.Fatal("Failed to start gRPC server", zap.Error(err))
+			logger.Sugar.Fatalf("Failed to start gRPC server: %v", err)
 		}
 	}()
 
 	// 启动REST服务器
 	restServer, err := restTransport.NewServer(miniodbService, cfg, logger.Logger)
 	if err != nil {
-		logger.Logger.Fatal("Failed to create REST server", zap.Error(err))
+		logger.Sugar.Fatalf("Failed to create REST server: %v", err)
 	}
 	restServer.SetCoordinators(writeCoord, queryCoord)
 
 	go func() {
 		if err := restServer.Start(cfg.Server.RestPort); err != nil {
-			logger.Logger.Fatal("Failed to start REST server", zap.Error(err))
+			logger.Sugar.Fatalf("Failed to start REST server: %v", err)
 		}
 	}()
 
@@ -355,11 +353,11 @@ func main() {
 		}()
 	}
 
-	logger.Logger.Info("MinIODB server started successfully")
+	logger.Sugar.Info("MinIODB server started successfully")
 
 	// 等待中断信号
 	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager, subscriptionManager)
-	logger.Logger.Info("MinIODB server stopped")
+	logger.Sugar.Info("MinIODB server stopped")
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
@@ -371,52 +369,52 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
-	logger.Logger.Info("Received shutdown signal")
+	logger.Sugar.Info("Received shutdown signal")
 
 	// 1. 首先取消Context，通知所有goroutine停止
-	logger.Logger.Info("Canceling all contexts...")
+	logger.Sugar.Info("Canceling all contexts...")
 	cancel()
 
 	// 2. 停止接收新请求
-	logger.Logger.Info("Stopping gRPC server...")
+	logger.Sugar.Info("Stopping gRPC server...")
 	grpcService.Stop()
-	logger.Logger.Info("gRPC server stopped")
+	logger.Sugar.Info("gRPC server stopped")
 
-	logger.Logger.Info("Stopping REST server...")
+	logger.Sugar.Info("Stopping REST server...")
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel2()
 	if err := restServer.Stop(ctx2); err != nil {
-		logger.Logger.Error("Error shutting down REST server", zap.Error(err))
+		logger.Sugar.Errorf("Error shutting down REST server: %v", err)
 	} else {
-		logger.Logger.Info("REST server stopped")
+		logger.Sugar.Info("REST server stopped")
 	}
 
-	logger.Logger.Info("Stopping metrics server...")
+	logger.Sugar.Info("Stopping metrics server...")
 	if err := metricsServer.Shutdown(context.Background()); err != nil {
-		logger.Logger.Error("Error shutting down metrics server", zap.Error(err))
+		logger.Sugar.Errorf("Error shutting down metrics server: %v", err)
 	} else {
-		logger.Logger.Info("Metrics server stopped")
+		logger.Sugar.Info("Metrics server stopped")
 	}
 
 	// 3. 停止后台任务
 	// 停止订阅管理器
 	if subscriptionManager != nil {
-		logger.Logger.Info("Stopping subscription manager...")
+		logger.Sugar.Info("Stopping subscription manager...")
 		if err := subscriptionManager.Stop(ctx); err != nil {
-			logger.Logger.Error("Error stopping subscription manager", zap.Error(err))
+			logger.Sugar.Errorf("Error stopping subscription manager: %v", err)
 		} else {
-			logger.Logger.Info("Subscription manager stopped")
+			logger.Sugar.Info("Subscription manager stopped")
 		}
 	}
 
 	if compactionManager != nil {
-		logger.Logger.Info("Stopping compaction manager...")
+		logger.Sugar.Info("Stopping compaction manager...")
 		compactionManager.Stop()
-		logger.Logger.Info("Compaction manager stopped")
+		logger.Sugar.Info("Compaction manager stopped")
 	}
 
 	// 4. 等待所有goroutine完成（带超时）
-	logger.Logger.Info("Waiting for background tasks to complete...")
+	logger.Sugar.Info("Waiting for background tasks to complete...")
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -425,12 +423,12 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 
 	select {
 	case <-done:
-		logger.Logger.Info("All goroutines stopped gracefully")
+		logger.Sugar.Info("All goroutines stopped gracefully")
 	case <-time.After(30 * time.Second):
-		logger.Logger.Warn("Timeout waiting for goroutines, forcing shutdown")
+		logger.Sugar.Warn("Timeout waiting for goroutines, forcing shutdown")
 	}
 
-	logger.Logger.Info("Shutdown complete")
+	logger.Sugar.Info("Shutdown complete")
 	os.Exit(0)
 }
 
@@ -443,19 +441,19 @@ func startBackupRoutine(ctx context.Context, primaryMinio, backupMinio storage.U
 	ticker := time.NewTicker(backupInterval)
 	defer ticker.Stop()
 
-	logger.Logger.Info("Backup routine started", zap.Duration("interval", backupInterval))
+	logger.Sugar.Infof("Backup routine started - interval: %v", backupInterval)
 
 	for {
 		select {
 		case <-ticker.C:
-			logger.Logger.Info("Starting scheduled backup...")
+			logger.Sugar.Info("Starting scheduled backup...")
 			if err := performDataBackup(primaryMinio, backupMinio, cfg); err != nil {
-				logger.Logger.Error("Backup failed", zap.Error(err))
+				logger.Sugar.Errorf("Backup failed: %v", err)
 			} else {
-				logger.Logger.Info("Backup completed successfully")
+				logger.Sugar.Info("Backup completed successfully")
 			}
 		case <-ctx.Done():
-			logger.Logger.Info("Backup routine stopped gracefully")
+			logger.Sugar.Info("Backup routine stopped gracefully")
 			return
 		}
 	}
@@ -479,7 +477,7 @@ func startMetricsServer(cfg *config.Config) *http.Server {
 			w.Write([]byte(metric + "\n"))
 		}
 
-		logger.Logger.Debug("Metrics endpoint accessed", zap.Int("metric_lines", len(metrics)))
+		logger.Sugar.Debugf("Metrics endpoint accessed - metric_lines: %d", len(metrics))
 	})
 
 	metricsServer := &http.Server{
@@ -488,9 +486,9 @@ func startMetricsServer(cfg *config.Config) *http.Server {
 	}
 
 	go func() {
-		logger.Logger.Info("Starting metrics server", zap.String("port", cfg.Metrics.Port))
+		logger.Sugar.Infof("Starting metrics server"+": %s", "port", cfg.Metrics.Port)
 		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Logger.Fatal("Failed to start metrics server", zap.Error(err))
+			logger.Sugar.Fatalf("Failed to start metrics server: %v", err)
 		}
 	}()
 
@@ -504,7 +502,7 @@ func performDataBackup(primaryMinio, backupMinio storage.Uploader, cfg config.Co
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if attempt > 1 {
-			logger.Logger.Warn("Retry attempt", zap.Int("attempt", attempt), zap.Int("max_retries", maxRetries))
+			logger.Sugar.Warnf("Retry attempt %d/%d", attempt, maxRetries)
 			time.Sleep(retryDelay)
 			retryDelay *= 2
 		}
@@ -551,14 +549,14 @@ func executeBackupWithRetry(ctx context.Context, primaryMinio, backupMinio stora
 	}
 
 	if len(errors) > 0 {
-		logger.Logger.Warn("Backup completed with errors", zap.Int("error_count", len(errors)))
+		logger.Sugar.Warnf("Backup completed with %d errors", len(errors))
 		for _, err := range errors {
-			logger.Logger.Debug("Backup error", zap.String("error", err))
+			logger.Sugar.Debugf("Backup error: %s", err)
 		}
 	}
 
 	duration := time.Since(backupStartTime)
-	logger.Logger.Info("Backup summary", zap.Int64("objects", backupCount), zap.Int64("size_bytes", totalSize), zap.Duration("duration", duration))
+	logger.Sugar.Infof("Backup summary - objects: %d, size: %d bytes, duration: %v", backupCount, totalSize, duration)
 
 	if backupCount == 0 {
 		return fmt.Errorf("no objects were backed up")

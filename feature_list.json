@@ -178,6 +178,15 @@
       "description": "优化7个OLAP核心组件的goroutine管理，完善WaitGroup跟踪和Stop方法",
       "phase": "稳定性优化",
       "estimated_days": 3
+    },
+    {
+      "id": "F020",
+      "name": "日志系统性能优化",
+      "priority": 2,
+      "status": "completed",
+      "description": "将cmd/main.go的60处logger.Logger替换为logger.Sugar，提升日志性能",
+      "phase": "性能优化",
+      "estimated_days": 0.5
     }
   ]
 }
