@@ -147,7 +147,7 @@
       "id": "P1-ENH01",
       "name": "近似算法支持",
       "priority": 2,
-      "status": "pending",
+      "status": "completed",
       "description": "实现HyperLogLog等近似算法，COUNT DISTINCT性能提升10-100倍",
       "phase": "性能优化 Phase 2: 功能增强",
       "estimated_days": 10
