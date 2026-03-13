@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"minIODB/internal/metrics"
@@ -30,6 +31,10 @@ type FailoverManager struct {
 	syncQueue chan *SyncTask
 	workers   []*syncWorker
 
+	// 停止控制
+	stopOnce sync.Once
+	stopped  atomic.Bool
+
 	mutex  sync.RWMutex
 	logger *zap.Logger
 	ctx    context.Context
@@ -42,6 +47,7 @@ type FailoverConfig struct {
 	Enabled             bool            // 是否启用故障切换
 	HealthCheckInterval time.Duration   // 健康检查间隔（默认15秒）
 	AsyncSync           AsyncSyncConfig // 异步同步配置
+	NodeID              string          // 节点标识
 }
 
 // AsyncSyncConfig 异步同步配置
@@ -158,14 +164,14 @@ func (fm *FailoverManager) Start() error {
 
 // Stop 停止故障切换管理器
 func (fm *FailoverManager) Stop() error {
-	fm.logger.Info("Stopping failover manager")
-
-	fm.cancel()
-	fm.wg.Wait()
-
-	close(fm.syncQueue)
-
-	fm.logger.Info("Failover manager stopped")
+	fm.stopOnce.Do(func() {
+		fm.logger.Info("Stopping failover manager")
+		fm.stopped.Store(true)
+		fm.cancel()
+		fm.wg.Wait()
+		close(fm.syncQueue)
+		fm.logger.Info("Failover manager stopped")
+	})
 	return nil
 }
 
@@ -347,6 +353,11 @@ func (fm *FailoverManager) checkAndRecover() {
 
 // EnqueueSync 将同步任务加入队列
 func (fm *FailoverManager) EnqueueSync(bucket, objectName, filePath string) {
+	// 已停止，丢弃任务
+	if fm.stopped.Load() {
+		return
+	}
+
 	task := &SyncTask{
 		Bucket:     bucket,
 		ObjectName: objectName,
@@ -438,7 +449,7 @@ func (fm *FailoverManager) saveStateToRedis(ctx context.Context) error {
 	state := RedisFailoverState{
 		UsingBackup: fm.usingBackup,
 		LastUpdate:  time.Now(),
-		NodeID:      "default", // TODO: 从配置中获取节点ID
+		NodeID:      fm.config.NodeID,
 	}
 
 	data, err := json.Marshal(state)

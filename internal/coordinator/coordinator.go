@@ -363,29 +363,19 @@ func (qc *QueryCoordinator) executeDistributedPlan(ctx context.Context, plan *Qu
 
 		for _, nodeAddr := range plan.TargetNodes {
 			go func(addr string) {
-				// 使用重试机制查询节点
+				var finalResult QueryResult
 				retryErr := retry.Do(ctx, retry.DefaultConfig, qc.logger, "remote_query", func(ctx context.Context) error {
 					result, queryErr := qc.executeRemoteQuery(addr, plan.SQL)
 					if queryErr != nil {
-						resultChan <- QueryResult{
-							NodeID: addr,
-							Error:  queryErr.Error(),
-						}
 						return retry.NewRetryableError(queryErr)
 					}
-					resultChan <- QueryResult{
-						NodeID: addr,
-						Data:   result,
-					}
+					finalResult = QueryResult{NodeID: addr, Data: result}
 					return nil
 				})
-
 				if retryErr != nil {
-					resultChan <- QueryResult{
-						NodeID: addr,
-						Error:  retryErr.Error(),
-					}
+					finalResult = QueryResult{NodeID: addr, Error: retryErr.Error()}
 				}
+				resultChan <- finalResult
 			}(nodeAddr)
 		}
 
@@ -475,7 +465,7 @@ func (qc *QueryCoordinator) getDataDistribution(tables []string) (map[string][]s
 	for _, table := range tables {
 		// 从Redis获取该表的文件分布信息
 		pattern := fmt.Sprintf("file_index:%s:*", table)
-		keys, err := qc.redisPool.GetClient().Keys(ctx, pattern).Result()
+		keys, err := pool.ScanKeys(ctx, qc.redisPool.GetClient(), pattern)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get file index keys for table %s: %w", table, err)
 		}

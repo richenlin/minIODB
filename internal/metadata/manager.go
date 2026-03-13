@@ -1181,7 +1181,7 @@ func (m *Manager) logConsistencyReport(report ConsistencyReport) {
 	if len(report.Recommendations) > 0 {
 		m.logger.Info("Recommendations", zap.Strings("recommendations", report.Recommendations))
 		for _, rec := range report.Recommendations {
-			m.logger.Info("  - %s", zap.String("recommendation", rec))
+			m.logger.Info("  - recommendation", zap.String("recommendation", rec))
 		}
 	}
 

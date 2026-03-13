@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
 	"time"
 
@@ -71,7 +72,7 @@ func (hc *HealthChecker) Start() {
 			// 执行健康检查逻辑
 			if hc.registry.redisEnabled {
 				if err := hc.registry.sendHeartbeat(); err != nil {
-					hc.registry.logger.Info("Health check failed: %v", zap.Error(err))
+					hc.registry.logger.Info("Health check failed", zap.Error(err))
 				}
 			}
 		case <-hc.registry.stopChan:
@@ -202,7 +203,7 @@ func NewServiceRegistry(cfg config.Config, nodeID, grpcPort string, logger *zap.
 	registry.healthChecker = NewHealthChecker(registry)
 
 	if redisEnabled {
-		registry.logger.Info("Service registry initialized with Redis enabled (mode: %s)", zap.String("mode", string(redisConfig.Mode)))
+		registry.logger.Info("Service registry initialized with Redis enabled", zap.String("mode", string(redisConfig.Mode)))
 	} else {
 		registry.logger.Info("Service registry initialized with Redis disabled (single-node mode)")
 	}
@@ -237,7 +238,7 @@ func (sr *ServiceRegistry) Start() error {
 	go sr.startServiceDiscovery()
 
 	sr.isRunning = true
-	sr.logger.Info("Service registry started for node: %s", zap.String("node_id", sr.nodeID))
+	sr.logger.Info("Service registry started for node", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
@@ -256,16 +257,16 @@ func (sr *ServiceRegistry) Stop() error {
 	if sr.redisEnabled && sr.redisPool != nil {
 		// 注销服务
 		if err := sr.unregisterService(); err != nil {
-			sr.logger.Info("Failed to unregister service: %v", zap.Error(err))
+			sr.logger.Info("Failed to unregister service", zap.Error(err))
 		}
 
 		// 关闭Redis连接池
 		if err := sr.redisPool.Close(); err != nil {
-			sr.logger.Info("Failed to close Redis pool: %v", zap.Error(err))
+			sr.logger.Info("Failed to close Redis pool", zap.Error(err))
 		}
 	}
 
-	sr.logger.Info("Service registry stopped for node: %s", zap.String("node_id", sr.nodeID))
+	sr.logger.Info("Service registry stopped for node", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
@@ -295,7 +296,7 @@ func (sr *ServiceRegistry) registerService() error {
 	}
 
 	ctx := context.Background()
-	client := sr.redisPool.GetRedisClient()
+	client := sr.redisPool.GetClient()
 
 	// 获取本机IP地址
 	address, err := getLocalIP()
@@ -331,7 +332,7 @@ func (sr *ServiceRegistry) registerService() error {
 		return fmt.Errorf("failed to set service health: %w", err)
 	}
 
-	sr.logger.Info("Service registered: %s at %s:%s", zap.String("node_id", sr.nodeID), zap.String("address", address), zap.String("port", sr.grpcPort))
+	sr.logger.Info("Service registered", zap.String("node_id", sr.nodeID), zap.String("address", address), zap.String("port", sr.grpcPort))
 	return nil
 }
 
@@ -342,20 +343,20 @@ func (sr *ServiceRegistry) unregisterService() error {
 	}
 
 	ctx := context.Background()
-	client := sr.redisPool.GetRedisClient()
+	client := sr.redisPool.GetClient()
 
 	// 从服务列表移除
 	if err := client.HDel(ctx, ServiceRegistryKey, sr.nodeID).Err(); err != nil {
-		sr.logger.Warn("WARN: failed to remove service from registry: %v", zap.Error(err))
+		sr.logger.Warn("Failed to remove service from registry", zap.Error(err))
 	}
 
 	// 删除健康状态
 	healthKey := fmt.Sprintf(NodeHealthKey, sr.nodeID)
 	if err := client.Del(ctx, healthKey).Err(); err != nil {
-		sr.logger.Sugar().Infof("WARN: failed to remove service health: %v", err)
+		sr.logger.Warn("Failed to remove service health", zap.Error(err))
 	}
 
-	sr.logger.Sugar().Infof("Service unregistered: %s", sr.nodeID)
+	sr.logger.Info("Service unregistered", zap.String("node_id", sr.nodeID))
 	return nil
 }
 
@@ -366,7 +367,7 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 	}
 
 	ctx := context.Background()
-	client := sr.redisPool.GetRedisClient()
+	client := sr.redisPool.GetClient()
 
 	// 获取所有注册的服务
 	serviceMap, err := client.HGetAll(ctx, ServiceRegistryKey).Result()
@@ -379,7 +380,7 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 	for serviceID, serviceData := range serviceMap {
 		var service ServiceInfo
 		if err := json.Unmarshal([]byte(serviceData), &service); err != nil {
-			sr.logger.Sugar().Infof("WARN: failed to unmarshal service data for %s: %v", serviceID, err)
+			sr.logger.Warn("Failed to unmarshal service data", zap.String("service_id", serviceID), zap.Error(err))
 			continue
 		}
 
@@ -389,10 +390,10 @@ func (sr *ServiceRegistry) discoverFromRedis() ([]*ServiceInfo, error) {
 		if err == redis.Nil {
 			// 服务不健康，从注册表移除
 			client.HDel(ctx, ServiceRegistryKey, serviceID)
-			sr.logger.Sugar().Infof("Removed unhealthy service %s from registry", serviceID)
+			sr.logger.Info("Removed unhealthy service from registry", zap.String("service_id", serviceID))
 			continue
 		} else if err != nil {
-			sr.logger.Sugar().Infof("WARN: failed to check health for service %s: %v", serviceID, err)
+			sr.logger.Warn("Failed to check health for service", zap.String("service_id", serviceID), zap.Error(err))
 			continue
 		}
 
@@ -416,12 +417,12 @@ func (sr *ServiceRegistry) startServiceDiscovery() {
 		case <-ticker.C:
 			// 发送心跳
 			if err := sr.sendHeartbeat(); err != nil {
-				sr.logger.Sugar().Infof("ERROR: heartbeat failed: %v", err)
+				sr.logger.Error("Heartbeat failed", zap.Error(err))
 			}
 
 			// 更新服务列表
 			if err := sr.updateServiceList(); err != nil {
-				sr.logger.Sugar().Infof("ERROR: failed to update service list: %v", err)
+				sr.logger.Error("Failed to update service list", zap.Error(err))
 			}
 		case <-sr.stopChan:
 			return
@@ -436,7 +437,7 @@ func (sr *ServiceRegistry) sendHeartbeat() error {
 	}
 
 	ctx := context.Background()
-	client := sr.redisPool.GetRedisClient()
+	client := sr.redisPool.GetClient()
 
 	// 刷新健康状态TTL
 	healthKey := fmt.Sprintf(NodeHealthKey, sr.nodeID)
@@ -483,19 +484,16 @@ func (sr *ServiceRegistry) GetNodeForKey(key string) string {
 		return sr.nodeID
 	}
 
-	// 简单的哈希分配（实际应用中可以使用更复杂的一致性哈希）
-	hash := hashString(key)
-	nodeIndex := hash % len(sr.services)
-
-	i := 0
+	// 使用排序的节点列表确保确定性
+	nodeIDs := make([]string, 0, len(sr.services))
 	for nodeID := range sr.services {
-		if i == nodeIndex {
-			return nodeID
-		}
-		i++
+		nodeIDs = append(nodeIDs, nodeID)
 	}
+	sort.Strings(nodeIDs)
 
-	return sr.nodeID
+	hash := hashString(key)
+	nodeIndex := hash % len(nodeIDs)
+	return nodeIDs[nodeIndex]
 }
 
 // IsNodeHealthy 检查节点是否健康

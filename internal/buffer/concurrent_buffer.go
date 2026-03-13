@@ -192,7 +192,7 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 	// 启动定期刷新
 	go cb.periodicFlush()
 
-	cb.logger.Info("Concurrent buffer initialized with %d workers, queue size %d, WAL enabled: %v",
+	cb.logger.Info("Concurrent buffer initialized",
 		zap.Int("worker_pool_size", config.WorkerPoolSize),
 		zap.Int("task_queue_size", config.TaskQueueSize),
 		zap.Bool("wal_enabled", cb.walEnabled))
@@ -292,11 +292,24 @@ func (w *Worker) run() {
 				atomic.StoreInt64(&w.active, 0)
 			}
 		case <-w.stopChan:
-			w.buffer.logger.Info("Worker %d stopping", zap.Int("id", w.id))
+			w.buffer.logger.Info("Worker stopping", zap.Int("id", w.id))
 			return
 		case <-w.buffer.shutdown:
-			w.buffer.logger.Info("Worker %d shutting down", zap.Int("id", w.id))
-			return
+			w.buffer.logger.Info("Worker received shutdown signal, draining remaining tasks", zap.Int("id", w.id))
+			// Drain remaining tasks from queue before exiting
+			for {
+				select {
+				case task := <-w.buffer.taskQueue:
+					if task != nil {
+						atomic.StoreInt64(&w.active, 1)
+						w.processTask(task)
+						atomic.StoreInt64(&w.active, 0)
+					}
+				default:
+					w.buffer.logger.Info("Worker drained all tasks, exiting", zap.Int("id", w.id))
+					return
+				}
+			}
 		}
 	}
 }
@@ -307,21 +320,21 @@ func (w *Worker) processTask(task *FlushTask) {
 
 	// 更新统计信息
 	w.buffer.updateStats(func(stats *ConcurrentBufferStats) {
-		atomic.AddInt64(&stats.ActiveWorkers, 1)
+		stats.ActiveWorkers++
 	})
 
 	defer func() {
 		duration := time.Since(startTime)
 		w.buffer.updateStats(func(stats *ConcurrentBufferStats) {
-			atomic.AddInt64(&stats.ActiveWorkers, -1)
-			atomic.AddInt64(&stats.TotalFlushTime, duration.Milliseconds())
-			atomic.AddInt64(&stats.CompletedTasks, 1)
+			stats.ActiveWorkers--
+			stats.TotalFlushTime += duration.Milliseconds()
+			stats.CompletedTasks++
 			stats.LastFlushTime = time.Now().Unix()
 
 			// 更新平均刷新时间
-			totalTasks := atomic.LoadInt64(&stats.CompletedTasks)
+			totalTasks := stats.CompletedTasks
 			if totalTasks > 0 {
-				stats.AvgFlushTime = atomic.LoadInt64(&stats.TotalFlushTime) / totalTasks
+				stats.AvgFlushTime = stats.TotalFlushTime / totalTasks
 			}
 		})
 	}()
@@ -329,7 +342,7 @@ func (w *Worker) processTask(task *FlushTask) {
 	// 执行刷新任务
 	err := w.flushData(task.BufferKey, task.Rows)
 	if err != nil {
-		w.buffer.logger.Info("Worker %d: flush task failed for key %s: %v", zap.Int("id", w.id), zap.String("buffer_key", task.BufferKey), zap.Error(err))
+		w.buffer.logger.Info("Worker flush task failed", zap.Int("id", w.id), zap.String("buffer_key", task.BufferKey), zap.Error(err))
 
 		// 重试逻辑
 		if task.Retries < w.buffer.config.MaxRetries {
@@ -341,19 +354,19 @@ func (w *Worker) processTask(task *FlushTask) {
 				time.Sleep(w.buffer.config.RetryDelay * time.Duration(task.Retries))
 				select {
 				case w.buffer.taskQueue <- task:
-					w.buffer.logger.Info("Retrying flush task for key %s (attempt %d)", zap.String("buffer_key", task.BufferKey), zap.Int("attempt", task.Retries+1))
+					w.buffer.logger.Info("Retrying flush task", zap.String("buffer_key", task.BufferKey), zap.Int("attempt", task.Retries+1))
 				case <-w.buffer.shutdown:
 					// 系统关闭，放弃重试
 				}
 			}()
 		} else {
-			w.buffer.logger.Info("Worker %d: max retries exceeded for key %s", zap.Int("id", w.id), zap.String("buffer_key", task.BufferKey))
+			w.buffer.logger.Info("Worker max retries exceeded", zap.Int("id", w.id), zap.String("buffer_key", task.BufferKey))
 			w.buffer.updateStats(func(stats *ConcurrentBufferStats) {
-				atomic.AddInt64(&stats.FailedTasks, 1)
+				stats.FailedTasks++
 			})
 		}
 	} else {
-		w.buffer.logger.Info("Worker %d: successfully flushed %d rows for key %s", zap.Int("id", w.id), zap.Int("rows", len(task.Rows)), zap.String("buffer_key", task.BufferKey))
+		w.buffer.logger.Info("Worker successfully flushed rows", zap.Int("id", w.id), zap.Int("rows", len(task.Rows)), zap.String("buffer_key", task.BufferKey))
 
 		// Flush 成功后，截断 WAL
 		if w.buffer.walEnabled && w.buffer.wal != nil && task.MaxSeqNum > 0 {
@@ -423,7 +436,7 @@ func (w *Worker) writeParquetFile(filePath string, rows []DataRow) error {
 func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	// 如果poolManager为nil（测试模式），直接返回成功
 	if w.buffer.poolManager == nil {
-		w.buffer.logger.Info("Test mode: skipping upload for key %s", zap.String("buffer_key", bufferKey))
+		w.buffer.logger.Info("Test mode: skipping upload", zap.String("buffer_key", bufferKey))
 		return nil
 	}
 
@@ -473,12 +486,12 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 
 	// 提取并存储 Parquet 文件元数据到 Redis（用于查询时的文件剪枝）
 	if err := w.extractAndStoreFileMetadata(ctx, localFilePath, objectName); err != nil {
-		w.buffer.logger.Warn("Failed to store file metadata (non-fatal): %v", zap.Error(err))
+		w.buffer.logger.Warn("Failed to store file metadata (non-fatal)", zap.Error(err))
 		// 不阻塞主流程，继续更新索引
 	}
 
 	if err := w.updateRedisIndex(ctx, bufferKey, objectName); err != nil {
-		w.buffer.logger.Error("ERROR: Redis index update failed, rolling back MinIO upload: %v", zap.Error(err))
+		w.buffer.logger.Error("Redis index update failed, rolling back MinIO upload", zap.Error(err))
 		w.rollbackMinIOUpload(ctx, primaryBucket, objectName)
 		return fmt.Errorf("failed to update metadata, upload rolled back: %w", err)
 	}
@@ -499,9 +512,9 @@ func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName str
 	})
 
 	if err != nil {
-		w.buffer.logger.Error("ERROR: failed to rollback MinIO upload for %s/%s: %v", zap.String("bucket", bucket), zap.String("object_name", objectName), zap.Error(err))
+		w.buffer.logger.Error("Failed to rollback MinIO upload", zap.String("bucket", bucket), zap.String("object_name", objectName), zap.Error(err))
 	} else {
-		w.buffer.logger.Info("INFO: successfully rolled back MinIO upload for %s/%s", zap.String("bucket", bucket), zap.String("object_name", objectName))
+		w.buffer.logger.Info("Successfully rolled back MinIO upload", zap.String("bucket", bucket), zap.String("object_name", objectName))
 	}
 }
 
@@ -509,7 +522,7 @@ func (w *Worker) rollbackMinIOUpload(ctx context.Context, bucket, objectName str
 func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName string) error {
 	// 如果poolManager为nil（测试模式），直接返回成功
 	if w.buffer.poolManager == nil {
-		w.buffer.logger.Info("Test mode: skipping Redis index update for key %s", zap.String("buffer_key", bufferKey))
+		w.buffer.logger.Info("Test mode: skipping Redis index update", zap.String("buffer_key", bufferKey))
 		return nil
 	}
 
@@ -541,7 +554,7 @@ func (w *Worker) updateRedisIndex(ctx context.Context, bufferKey, objectName str
 	if w.buffer.nodeID != "" {
 		nodeDataKey := fmt.Sprintf("node:data:%s", w.buffer.nodeID)
 		if _, err := client.SAdd(ctx, nodeDataKey, redisKey).Result(); err != nil {
-			w.buffer.logger.Warn("WARN: failed to update node data mapping: %v", zap.Error(err))
+			w.buffer.logger.Warn("Failed to update node data mapping", zap.Error(err))
 		}
 	}
 
@@ -698,9 +711,6 @@ func (w *Worker) storeMetadataToMinIOSidecar(ctx context.Context, minioPool *poo
 
 // Add 添加数据到缓冲区
 func (cb *ConcurrentBuffer) Add(row DataRow) {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
 	t := time.Unix(0, row.Timestamp)
 	dayStr := t.Format("2006-01-02")
 
@@ -716,49 +726,59 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 	}
 	bufferKey := fmt.Sprintf("%s/%s/%s", tableName, row.ID, dayStr)
 
-	// 先写 WAL，确保数据持久化
+	// 准备 WAL 数据（在锁内准备，避免数据竞争）
+	var walDataToWrite []byte
+	var needFlush bool
+
+	cb.mutex.Lock()
+	// 写入内存缓冲区
+	cb.buffer[bufferKey] = append(cb.buffer[bufferKey], row)
+	needFlush = len(cb.buffer[bufferKey]) >= cb.config.BufferSize
+
+	// 准备 WAL 数据
 	if cb.walEnabled && cb.wal != nil {
 		walData := walDataRow{
 			BufferKey: bufferKey,
 			Row:       row,
 		}
-		data, err := json.Marshal(walData)
+		var err error
+		walDataToWrite, err = json.Marshal(walData)
 		if err != nil {
 			cb.logger.Error("Failed to marshal WAL data",
 				zap.Error(err),
 				zap.String("buffer_key", bufferKey))
-			// WAL 写入失败，但仍写入内存（降级模式）
-		} else {
-			seqNum, err := cb.wal.Append(wal.RecordTypeData, data)
-			if err != nil {
-				cb.logger.Error("Failed to append to WAL",
-					zap.Error(err),
-					zap.String("buffer_key", bufferKey))
-				// WAL 写入失败，但仍写入内存（降级模式）
-			} else {
-				// 记录此 bufferKey 的最新序列号
-				cb.walSeqMutex.Lock()
-				cb.lastFlushedSeq[bufferKey] = seqNum
-				cb.walSeqMutex.Unlock()
-			}
+			walDataToWrite = nil // 标记为不需要写入 WAL
 		}
 	}
 
-	// 写入内存缓冲区
-	cb.buffer[bufferKey] = append(cb.buffer[bufferKey], row)
-
-	// 更新统计信息
+	// 更新统计信息（updateStats 使用独立的 stats.mutex，不会死锁）
 	cb.updateStats(func(stats *ConcurrentBufferStats) {
-		atomic.StoreInt64(&stats.BufferSize, int64(len(cb.buffer)))
+		stats.BufferSize = int64(len(cb.buffer))
 		totalPending := int64(0)
 		for _, rows := range cb.buffer {
 			totalPending += int64(len(rows))
 		}
-		atomic.StoreInt64(&stats.PendingWrites, totalPending)
+		stats.PendingWrites = totalPending
 	})
+	cb.mutex.Unlock()
 
-	// 检查是否需要刷新
-	if len(cb.buffer[bufferKey]) >= cb.config.BufferSize {
+	// WAL 写入在锁外执行（WAL 内部有自己的 mutex 保护并发写入安全）
+	if cb.walEnabled && cb.wal != nil && len(walDataToWrite) > 0 {
+		seqNum, err := cb.wal.Append(wal.RecordTypeData, walDataToWrite)
+		if err != nil {
+			cb.logger.Warn("WAL append failed",
+				zap.Error(err),
+				zap.String("buffer_key", bufferKey))
+			// WAL 写入失败，数据已在内存中（降级模式）
+		} else {
+			// 记录此 bufferKey 的最新序列号
+			cb.walSeqMutex.Lock()
+			cb.lastFlushedSeq[bufferKey] = seqNum
+			cb.walSeqMutex.Unlock()
+		}
+	}
+
+	if needFlush {
 		cb.triggerFlush(bufferKey, false)
 	}
 }
@@ -801,8 +821,8 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 	select {
 	case cb.taskQueue <- task:
 		cb.updateStats(func(stats *ConcurrentBufferStats) {
-			atomic.AddInt64(&stats.TotalTasks, 1)
-			atomic.AddInt64(&stats.QueuedTasks, 1)
+			stats.TotalTasks++
+			stats.QueuedTasks++
 		})
 
 		// 记录缓冲区刷新指标
@@ -813,14 +833,26 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 		}
 	case <-cb.shutdown:
 		// 系统关闭，直接执行刷新
-		cb.logger.Info("System shutting down, executing immediate flush for key %s", zap.String("buffer_key", bufferKey))
+		cb.logger.Info("System shutting down, executing immediate flush", zap.String("buffer_key", bufferKey))
 		worker := cb.workers[0] // 使用第一个worker
 		worker.processTask(task)
 	default:
-		cb.logger.Warn("WARN: task queue full, dropping flush task for key %s", zap.String("buffer_key", bufferKey))
-		cb.updateStats(func(stats *ConcurrentBufferStats) {
-			atomic.AddInt64(&stats.FailedTasks, 1)
-		})
+		// 背压：等待 5 秒，避免直接丢弃
+		timer := time.NewTimer(5 * time.Second)
+		select {
+		case cb.taskQueue <- task:
+			timer.Stop()
+		case <-cb.shutdown:
+			timer.Stop()
+			// 尝试同步处理
+			cb.logger.Warn("Shutdown during backpressure, attempting sync processing")
+		case <-timer.C:
+			cb.logger.Error("Task queue full after backpressure timeout, task dropped",
+				zap.String("buffer_key", bufferKey))
+			cb.updateStats(func(stats *ConcurrentBufferStats) {
+				stats.FailedTasks++
+			})
+		}
 	}
 }
 
@@ -904,34 +936,37 @@ func (cb *ConcurrentBuffer) GetAllKeys() []string {
 
 // Size 获取缓冲区大小
 func (cb *ConcurrentBuffer) Size() int {
-	return int(atomic.LoadInt64(&cb.stats.BufferSize))
+	cb.stats.mutex.RLock()
+	defer cb.stats.mutex.RUnlock()
+	return int(cb.stats.BufferSize)
 }
 
 // PendingWrites 获取待写入数据数量
 func (cb *ConcurrentBuffer) PendingWrites() int {
-	return int(atomic.LoadInt64(&cb.stats.PendingWrites))
+	cb.stats.mutex.RLock()
+	defer cb.stats.mutex.RUnlock()
+	return int(cb.stats.PendingWrites)
 }
 
 // GetStats 获取统计信息
 func (cb *ConcurrentBuffer) GetStats() *ConcurrentBufferStats {
-	cb.stats.mutex.RLock()
-	defer cb.stats.mutex.RUnlock()
+	cb.stats.mutex.Lock()
+	defer cb.stats.mutex.Unlock()
 
-	// 实时更新队列长度
-	queuedTasks := int64(len(cb.taskQueue))
-	atomic.StoreInt64(&cb.stats.QueuedTasks, queuedTasks)
+	// 实时更新队列长度（直接赋值，已有 Lock 保护）
+	cb.stats.QueuedTasks = int64(len(cb.taskQueue))
 
 	return &ConcurrentBufferStats{
-		TotalTasks:     atomic.LoadInt64(&cb.stats.TotalTasks),
-		CompletedTasks: atomic.LoadInt64(&cb.stats.CompletedTasks),
-		FailedTasks:    atomic.LoadInt64(&cb.stats.FailedTasks),
-		QueuedTasks:    queuedTasks,
-		ActiveWorkers:  atomic.LoadInt64(&cb.stats.ActiveWorkers),
-		AvgFlushTime:   atomic.LoadInt64(&cb.stats.AvgFlushTime),
-		TotalFlushTime: atomic.LoadInt64(&cb.stats.TotalFlushTime),
+		TotalTasks:     cb.stats.TotalTasks,
+		CompletedTasks: cb.stats.CompletedTasks,
+		FailedTasks:    cb.stats.FailedTasks,
+		QueuedTasks:    cb.stats.QueuedTasks,
+		ActiveWorkers:  cb.stats.ActiveWorkers,
+		AvgFlushTime:   cb.stats.AvgFlushTime,
+		TotalFlushTime: cb.stats.TotalFlushTime,
 		LastFlushTime:  cb.stats.LastFlushTime,
-		BufferSize:     atomic.LoadInt64(&cb.stats.BufferSize),
-		PendingWrites:  atomic.LoadInt64(&cb.stats.PendingWrites),
+		BufferSize:     cb.stats.BufferSize,
+		PendingWrites:  cb.stats.PendingWrites,
 	}
 }
 
@@ -947,24 +982,19 @@ func (cb *ConcurrentBuffer) Stop() {
 	cb.shutdownOnce.Do(func() {
 		cb.logger.Info("Stopping concurrent buffer...")
 
-		// 刷新所有剩余数据
+		// 1. 刷新所有剩余缓冲数据
 		cb.flushAllBuffers()
 
-		// 关闭shutdown channel
+		// 2. 关闭 shutdown 信号
 		close(cb.shutdown)
 
-		// 停止所有worker
-		for _, worker := range cb.workers {
-			close(worker.stopChan)
-		}
-
-		// 等待所有worker完成
+		// 3. 等待 worker 完成（worker 会 drain 剩余任务后退出）
 		cb.workerWg.Wait()
 
-		// 关闭任务队列
+		// 4. 关闭任务队列（此时所有 worker 已退出，可以安全关闭）
 		close(cb.taskQueue)
 
-		// 关闭 WAL
+		// 5. 关闭 WAL
 		if cb.walEnabled && cb.wal != nil {
 			if err := cb.wal.Close(); err != nil {
 				cb.logger.Warn("Failed to close WAL",
@@ -1005,7 +1035,7 @@ func (cb *ConcurrentBuffer) GetTableKeys(tableName string) []string {
 // InvalidateTableConfig 使表配置缓存失效（兼容接口，ConcurrentBuffer不需要此功能）
 func (cb *ConcurrentBuffer) InvalidateTableConfig(tableName string) {
 	// ConcurrentBuffer不缓存表配置，此方法为兼容性保留
-	cb.logger.Info("InvalidateTableConfig called for table %s (no-op in ConcurrentBuffer)", zap.String("table_name", tableName))
+	cb.logger.Info("InvalidateTableConfig called (no-op in ConcurrentBuffer)", zap.String("table_name", tableName))
 }
 
 // GetTableBufferKeys 获取指定表的所有缓冲区键（别名方法，兼容性）

@@ -4,11 +4,18 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// APIKeyPair API凭证对（包含Key和Secret）
+type APIKeyPair struct {
+	Key    string `yaml:"key" json:"key"`
+	Secret string `yaml:"secret" json:"secret"`
+}
 
 // AuthConfig 认证配置
 type AuthConfig struct {
@@ -18,7 +25,9 @@ type AuthConfig struct {
 	Issuer          string        `yaml:"issuer" json:"issuer"`
 	Audience        string        `yaml:"audience" json:"audience"`
 	// 预设的token列表，用于简单的token验证
-	ValidTokens     []string      `yaml:"valid_tokens" json:"valid_tokens"`
+	ValidTokens []string `yaml:"valid_tokens" json:"valid_tokens"`
+	// API凭证对列表（推荐使用）
+	APIKeyPairs []APIKeyPair `yaml:"api_key_pairs" json:"api_key_pairs"`
 }
 
 // DefaultAuthConfig 默认认证配置
@@ -46,7 +55,9 @@ type User struct {
 
 // AuthManager 认证管理器
 type AuthManager struct {
-	config *AuthConfig
+	config      *AuthConfig
+	credentials map[string]string // apiKey -> bcrypt hash of apiSecret
+	mu          sync.RWMutex      // 保护 credentials 的并发访问
 }
 
 // NewAuthManager 创建认证管理器
@@ -64,9 +75,19 @@ func NewAuthManager(config *AuthConfig) (*AuthManager, error) {
 		config.JWTSecret = secret
 	}
 
-	return &AuthManager{
-		config: config,
-	}, nil
+	am := &AuthManager{
+		config:      config,
+		credentials: make(map[string]string),
+	}
+
+	// 从配置加载凭证
+	for _, keyPair := range config.APIKeyPairs {
+		if keyPair.Key != "" && keyPair.Secret != "" {
+			am.credentials[keyPair.Key] = hashPassword(keyPair.Secret)
+		}
+	}
+
+	return am, nil
 }
 
 // IsEnabled 检查认证是否启用
@@ -146,6 +167,52 @@ func (am *AuthManager) GenerateToken(userID, username string) (string, error) {
 	}
 
 	return tokenString, nil
+}
+
+// ValidateCredentials 验证API凭证
+// 返回 true 表示凭证有效，false 表示无效
+func (am *AuthManager) ValidateCredentials(apiKey, apiSecret string) bool {
+	if apiKey == "" || apiSecret == "" {
+		return false
+	}
+
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+
+	hashedSecret, exists := am.credentials[apiKey]
+	if !exists {
+		return false
+	}
+
+	return verifyPassword(apiSecret, hashedSecret)
+}
+
+// AddCredential 添加或更新API凭证（用于动态管理）
+func (am *AuthManager) AddCredential(apiKey, apiSecret string) {
+	if apiKey == "" || apiSecret == "" {
+		return
+	}
+
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	am.credentials[apiKey] = hashPassword(apiSecret)
+}
+
+// RemoveCredential 移除API凭证
+func (am *AuthManager) RemoveCredential(apiKey string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	delete(am.credentials, apiKey)
+}
+
+// HasCredentials 检查是否配置了任何凭证
+func (am *AuthManager) HasCredentials() bool {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+
+	return len(am.credentials) > 0
 }
 
 // ExtractUserFromToken 从token中提取用户信息

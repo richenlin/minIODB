@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"minIODB/config"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,13 +24,22 @@ const (
 // SecurityMiddleware 安全中间件
 type SecurityMiddleware struct {
 	authManager *AuthManager
+	corsConfig  config.CORSConfig
+	stopCh      chan struct{}
 }
 
 // NewSecurityMiddleware 创建安全中间件
-func NewSecurityMiddleware(authManager *AuthManager) *SecurityMiddleware {
+func NewSecurityMiddleware(authManager *AuthManager, corsConfig config.CORSConfig) *SecurityMiddleware {
 	return &SecurityMiddleware{
 		authManager: authManager,
+		corsConfig:  corsConfig,
+		stopCh:      make(chan struct{}),
 	}
+}
+
+// Stop 停止安全中间件的后台goroutine
+func (sm *SecurityMiddleware) Stop() {
+	close(sm.stopCh)
 }
 
 // AuthRequired 需要认证的中间件
@@ -114,23 +125,48 @@ func (sm *SecurityMiddleware) OptionalAuth() gin.HandlerFunc {
 	}
 }
 
-// CORS 跨域中间件
+// CORS 跨域中间件 - 使用白名单验证
+// 安全规则：
+// 1. 只有白名单中的 origin 才会被允许
+// 2. 禁止 * 与 Allow-Credentials: true 同时出现
+// 3. 空白名单表示不允许任何跨域请求
 func (sm *SecurityMiddleware) CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		method := c.Request.Method
 		origin := c.Request.Header.Get("Origin")
 
-		// 允许的来源
-		if origin != "" {
-			c.Header("Access-Control-Allow-Origin", origin)
-		} else {
-			c.Header("Access-Control-Allow-Origin", "*")
-		}
+		// 检查 origin 是否在白名单中
+		allowedOrigin := sm.isOriginAllowed(origin)
 
-		c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, UPDATE")
-		c.Header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization")
-		c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Cache-Control, Content-Language, Content-Type")
-		c.Header("Access-Control-Allow-Credentials", "true")
+		if allowedOrigin != "" {
+			// 设置允许的来源（使用实际匹配的 origin，而不是反射）
+			c.Header("Access-Control-Allow-Origin", allowedOrigin)
+
+			// 设置允许的方法
+			if len(sm.corsConfig.AllowMethods) > 0 {
+				c.Header("Access-Control-Allow-Methods", strings.Join(sm.corsConfig.AllowMethods, ", "))
+			}
+
+			// 设置允许的请求头
+			if len(sm.corsConfig.AllowHeaders) > 0 {
+				c.Header("Access-Control-Allow-Headers", strings.Join(sm.corsConfig.AllowHeaders, ", "))
+			}
+
+			// 设置暴露的响应头
+			c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Cache-Control, Content-Language, Content-Type")
+
+			// 设置是否允许携带凭证
+			// 注意：当 AllowCredentials 为 true 时，Access-Control-Allow-Origin 不能是 "*"
+			if sm.corsConfig.AllowCredentials {
+				c.Header("Access-Control-Allow-Credentials", "true")
+			}
+
+			// 设置预检请求缓存时间
+			if sm.corsConfig.MaxAge > 0 {
+				c.Header("Access-Control-Max-Age", fmt.Sprintf("%d", sm.corsConfig.MaxAge))
+			}
+		}
+		// 如果 origin 不在白名单中，不设置任何 CORS 头，浏览器会阻止跨域请求
 
 		// 处理预检请求
 		if method == "OPTIONS" {
@@ -140,6 +176,47 @@ func (sm *SecurityMiddleware) CORS() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// isOriginAllowed 检查 origin 是否在白名单中
+// 返回空字符串表示不允许，返回 origin 值表示允许
+func (sm *SecurityMiddleware) isOriginAllowed(origin string) string {
+	if origin == "" {
+		return ""
+	}
+
+	// 遍历白名单检查
+	for _, allowedOrigin := range sm.corsConfig.AllowedOrigins {
+		// 支持精确匹配
+		if allowedOrigin == origin {
+			return origin
+		}
+
+		// 支持通配符匹配（例如：*.example.com）
+		if strings.HasPrefix(allowedOrigin, "*.") {
+			domain := allowedOrigin[2:] // 去掉 "*."
+			// 检查是否以该域名结尾
+			if strings.HasSuffix(origin, domain) {
+				// 确保是子域名（不是任意后缀匹配）
+				originHost := origin
+				if strings.Contains(origin, "://") {
+					parts := strings.SplitN(origin, "://", 2)
+					if len(parts) == 2 {
+						originHost = parts[1]
+					}
+				}
+				// 去掉端口部分
+				if strings.Contains(originHost, ":") {
+					originHost = strings.Split(originHost, ":")[0]
+				}
+				if originHost == domain || strings.HasSuffix(originHost, "."+domain) {
+					return origin
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // SecurityHeaders 安全头中间件
@@ -180,6 +257,8 @@ func (sm *SecurityMiddleware) RateLimiter(requestsPerMinute int) gin.HandlerFunc
 		defer ticker.Stop()
 		for {
 			select {
+			case <-sm.stopCh:
+				return
 			case <-ticker.C:
 				globalMutex.Lock()
 				now := time.Now()

@@ -19,6 +19,7 @@ import (
 	"minIODB/internal/subscription"
 	"minIODB/pkg/idgen"
 	"minIODB/pkg/pool"
+	"minIODB/pkg/version"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -40,6 +41,7 @@ type MinIODBService struct {
 	idGenerator         idgen.IDGenerator
 	subscriptionManager *subscription.Manager // 数据订阅管理器
 	logger              *zap.Logger
+	startTime           time.Time
 }
 
 // NewMinIODBService 创建新的MinIODBService实例
@@ -83,6 +85,7 @@ func NewMinIODBService(cfg *config.Config, logger *zap.Logger, ingester *ingest.
 		configManager: configManager,
 		idGenerator:   idGenerator,
 		logger:        logger,
+		startTime:     time.Now(),
 	}, nil
 }
 
@@ -348,22 +351,12 @@ func (s *MinIODBService) QueryData(ctx context.Context, req *miniodb.QueryDataRe
 
 	// 处理向后兼容：将旧的"table"关键字替换为默认表名
 	sql := req.Sql
-	if strings.Contains(strings.ToLower(sql), "from table") {
-		defaultTable := s.cfg.TableManagement.DefaultTable
-
-		// 验证默认表名
-		if !s.cfg.IsValidTableName(defaultTable) {
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Invalid default table name: %s", defaultTable))
-		}
-
-		// 使用安全的SQL构建器进行替换
-		quotedTable := security.DefaultSanitizer.QuoteIdentifier(defaultTable)
-
-		// 精确匹配并替换（使用正则确保只替换完整的"FROM table"模式）
-		// 匹配 FROM table 或 from table，确保前后有空格或字符串边界
-		sql = strings.ReplaceAll(sql, "FROM table", "FROM "+quotedTable)
-		sql = strings.ReplaceAll(sql, "from table", "from "+quotedTable)
-
+	rewrittenSQL, err := s.rewriteLegacyTable(sql)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if rewrittenSQL != sql {
+		sql = rewrittenSQL
 		s.logger.Sugar().Infof("Converted legacy SQL to use default table: %s", sql)
 	}
 
@@ -420,9 +413,9 @@ func (s *MinIODBService) rewriteLegacyTable(sql string) (string, error) {
 
 	quotedTable := security.DefaultSanitizer.QuoteIdentifier(defaultTable)
 
-	// 精确匹配并替换：FROM/ from 后跟空格，然后是完整的"table"单词
-	// 使用正则确保只替换"FROM table"或"from table"，不替换"FROM table_data"
-	sql = regexp.MustCompile(`(?i)(FROM|from)\s+table\b`).ReplaceAllString(sql, "$1 "+quotedTable)
+	// 精确匹配并替换：FROM 后跟空格，然后是完整的"table"单词
+	// 使用正则边界匹配确保只替换"FROM table"或"from table"，不替换"FROM table_data"
+	sql = regexp.MustCompile(`(?i)\bfrom\s+table\b`).ReplaceAllString(sql, "FROM "+quotedTable)
 
 	return sql, nil
 }
@@ -512,7 +505,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 
 		// 清理相关的缓存项
 		cachePattern := fmt.Sprintf("cache:table:%s:id:%s:*", tableName, req.Id)
-		if keys, err := redisClient.Keys(ctx, cachePattern).Result(); err == nil {
+		if keys, err := pool.ScanKeys(ctx, redisClient, cachePattern); err == nil {
 			if len(keys) > 0 {
 				redisClient.Del(ctx, keys...)
 				s.logger.Sugar().Infof("Cleaned %d cache entries for updated record", len(keys))
@@ -521,7 +514,7 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 
 		// 清理查询缓存（因为数据已更新）
 		queryCachePattern := fmt.Sprintf("query_cache:*%s*", tableName)
-		if keys, err := redisClient.Keys(ctx, queryCachePattern).Result(); err == nil {
+		if keys, err := pool.ScanKeys(ctx, redisClient, queryCachePattern); err == nil {
 			if len(keys) > 0 {
 				redisClient.Del(ctx, keys...)
 				s.logger.Sugar().Infof("Cleaned %d query cache entries for table %s", len(keys), tableName)
@@ -633,7 +626,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 
 		// 清理相关的缓存项
 		cachePattern := fmt.Sprintf("cache:table:%s:id:%s:*", tableName, req.Id)
-		if keys, err := redisClient.Keys(ctx, cachePattern).Result(); err == nil {
+		if keys, err := pool.ScanKeys(ctx, redisClient, cachePattern); err == nil {
 			if len(keys) > 0 {
 				redisClient.Del(ctx, keys...)
 				s.logger.Sugar().Infof("Cleaned %d cache entries for deleted record", len(keys))
@@ -1605,7 +1598,7 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 	// 从Redis发现其他节点（如果有的话）
 	if s.redisPool != nil {
 		nodePattern := "service:nodes:*"
-		if keys, err := s.redisPool.GetClient().Keys(ctx, nodePattern).Result(); err == nil {
+		if keys, err := pool.ScanKeys(ctx, s.redisPool.GetClient(), nodePattern); err == nil {
 			for _, key := range keys {
 				if nodeInfo, err := s.redisPool.GetClient().HGetAll(ctx, key).Result(); err == nil {
 					nodeID := strings.TrimPrefix(key, "service:nodes:")
@@ -1634,8 +1627,12 @@ func (s *MinIODBService) GetStatus(ctx context.Context, req *miniodb.GetStatusRe
 			"address":   fmt.Sprintf("localhost:%s", strings.TrimPrefix(s.cfg.Server.GrpcPort, ":")),
 			"last_seen": time.Now().Unix(),
 		}
-		s.redisPool.GetClient().HMSet(ctx, nodeKey, nodeData)
-		s.redisPool.GetClient().Expire(ctx, nodeKey, 60*time.Second) // 60秒过期
+		if err := s.redisPool.GetClient().HMSet(ctx, nodeKey, nodeData).Err(); err != nil {
+			s.logger.Warn("Failed to update node status in Redis", zap.Error(err))
+		}
+		if err := s.redisPool.GetClient().Expire(ctx, nodeKey, 60*time.Second).Err(); err != nil {
+			s.logger.Warn("Failed to set node status expiry in Redis", zap.Error(err))
+		}
 	}
 
 	response := &miniodb.GetStatusResponse{
@@ -1752,9 +1749,9 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 	// 收集系统信息
 	systemInfo := make(map[string]string)
 	systemInfo["node_id"] = s.cfg.Server.NodeID
-	systemInfo["version"] = "1.0.0"
+	systemInfo["version"] = version.Get()
 	systemInfo["build_time"] = time.Now().Format(time.RFC3339)
-	systemInfo["uptime_seconds"] = fmt.Sprintf("%.0f", time.Since(time.Now()).Seconds()) // 这里需要实际的启动时间
+	systemInfo["uptime_seconds"] = fmt.Sprintf("%.0f", time.Since(s.startTime).Seconds())
 
 	// 配置信息
 	systemInfo["grpc_port"] = s.cfg.Server.GrpcPort

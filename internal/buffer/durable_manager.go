@@ -153,7 +153,7 @@ func (dm *DurableManager) Flush(flushFunc FlushFunc) error {
 
 	data := make([]DataPoint, len(dm.buffer))
 	copy(data, dm.buffer)
-	seqAtFlush := dm.lastFlushedSeq
+	seqBeforeFlush := dm.lastFlushedSeq
 
 	dm.buffer = dm.buffer[:0]
 	dm.mutex.Unlock()
@@ -161,11 +161,12 @@ func (dm *DurableManager) Flush(flushFunc FlushFunc) error {
 	if err := flushFunc(data); err != nil {
 		dm.mutex.Lock()
 		dm.buffer = append(data, dm.buffer...)
+		dm.lastFlushedSeq = seqBeforeFlush
 		dm.mutex.Unlock()
 		return err
 	}
 
-	if err := dm.wal.Truncate(seqAtFlush); err != nil {
+	if err := dm.wal.Truncate(dm.lastFlushedSeq); err != nil {
 		dm.logger.Warn("Failed to truncate WAL", zap.Error(err))
 	}
 

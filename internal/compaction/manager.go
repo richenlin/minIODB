@@ -92,6 +92,8 @@ func (m *Manager) Start(ctx context.Context) {
 		m.mu.Unlock()
 		return
 	}
+	// 重建 stopCh 以支持多次 Start/Stop
+	m.stopCh = make(chan struct{})
 	m.running = true
 	m.mu.Unlock()
 
@@ -313,7 +315,11 @@ func (m *Manager) compactFiles(ctx context.Context, table string, files []FileIn
 
 	var totalSizeAfter int64
 	for _, outputFile := range outputFiles {
-		info, _ := os.Stat(outputFile)
+		info, err := os.Stat(outputFile)
+		if err != nil {
+			m.logger.Warn("Failed to stat compacted file", zap.String("file", outputFile), zap.Error(err))
+			continue
+		}
 		totalSizeAfter += info.Size()
 
 		objectName := fmt.Sprintf("%s/compacted_%d_%s", table, time.Now().UnixNano(), filepath.Base(outputFile))

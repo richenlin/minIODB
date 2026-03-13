@@ -116,11 +116,25 @@ func TestSQLSanitizer_ValidateSelectQuery(t *testing.T) {
 	}{
 		{"valid select", "SELECT * FROM users", false},
 		{"valid with where", "SELECT name FROM users WHERE age > 18", false},
+		{"valid CTE with", "WITH user_cte AS (SELECT * FROM users) SELECT * FROM user_cte", false},
 		{"empty query", "", true},
 		{"not select", "INSERT INTO users VALUES (1)", true},
 		{"contains drop", "SELECT * FROM users; DROP TABLE users", true},
 		{"contains comment", "SELECT * FROM users -- comment", true},
 		{"too long", "SELECT " + strings.Repeat("a", 10000), true},
+		// 新增绕过场景测试
+		{"tab bypass drop", "SELECT\t*\tFROM\tusers\tdrop\tusers", true},
+		{"newline bypass union", "SELECT\n*\nFROM\nusers\nunion\nselect", true},
+		{"hash comment", "SELECT * FROM users # comment", true},
+		{"block comment", "SELECT * FROM users /* comment */", true},
+		{"multi statement no space", "SELECT * FROM users;DROP TABLE users", true},
+		{"multi statement with tab", "SELECT * FROM users;\tDROP TABLE users", true},
+		{"union with tab", "SELECT * FROM users\tUNION\tSELECT * FROM passwords", true},
+		{"xp_ bypass", "SELECT * FROM xp_cmdshell", true},
+		{"exec bypass", "SELECT * FROM users; EXEC sp_help", true},
+		{"execute bypass", "SELECT * FROM users; execute sp_help", true},
+		{"valid select lowercase", "select * from users", false},
+		{"valid CTE lowercase", "with cte as (select * from users) select * from cte", false},
 	}
 
 	for _, tt := range tests {

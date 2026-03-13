@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -10,7 +11,12 @@ type JWTManager struct {
 }
 
 // NewJWTManager 创建新的JWT管理器
-func NewJWTManager(secret string, expiration time.Duration) *JWTManager {
+// 当 secret 为空时返回 error，强制要求配置 JWT Secret
+func NewJWTManager(secret string, expiration time.Duration) (*JWTManager, error) {
+	if secret == "" {
+		return nil, fmt.Errorf("JWT secret must be configured, cannot be empty")
+	}
+
 	authConfig := &AuthConfig{
 		Mode:            "jwt",
 		JWTSecret:       secret,
@@ -21,19 +27,12 @@ func NewJWTManager(secret string, expiration time.Duration) *JWTManager {
 
 	authManager, err := NewAuthManager(authConfig)
 	if err != nil {
-		// 如果创建失败，使用默认配置
-		authManager, _ = NewAuthManager(&AuthConfig{
-			Mode:            "jwt",
-			JWTSecret:       "default-secret-change-in-production",
-			TokenExpiration: 24 * time.Hour,
-			Issuer:          "miniodb",
-			Audience:        "miniodb-api",
-		})
+		return nil, fmt.Errorf("failed to create auth manager: %w", err)
 	}
 
 	return &JWTManager{
 		authManager: authManager,
-	}
+	}, nil
 }
 
 // GenerateToken 生成JWT令牌

@@ -7,12 +7,38 @@ import (
 	"unicode"
 )
 
+// 危险SQL模式的正则表达式（包级别预编译）
+var dangerousRegexes = []*struct {
+	re      *regexp.Regexp
+	message string
+}{
+	{regexp.MustCompile(`(?i)\b(drop|alter|truncate|create|insert|update|delete)\b`), "only SELECT statements are allowed"},
+	{regexp.MustCompile(`(?i)\bunion\b`), "UNION is not allowed"},
+	{regexp.MustCompile(`(?i)\bexec(ute)?\b`), "EXEC statements are not allowed"},
+	{regexp.MustCompile(`(?i)\bxp_`), "extended stored procedures are not allowed"},
+}
+
+// SQL注释模式（覆盖 --, /*, #）
+var commentPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`--`),
+	regexp.MustCompile(`/\*`),
+	regexp.MustCompile(`#`),
+}
+
+// 多语句检测：分号后跟非空白字符
+var multiStatementRegex = regexp.MustCompile(`;\s*\S`)
+
+// 空白字符规范化正则
+var whitespaceNormalizeRegex = regexp.MustCompile(`\s+`)
+
 // SQLSanitizer 提供 SQL 安全相关的工具函数
 type SQLSanitizer struct {
 	// 允许的表名正则表达式
 	tableNameRegex *regexp.Regexp
 	// 允许的 ID 正则表达式
 	idRegex *regexp.Regexp
+	// SELECT 或 WITH 开头的正则（支持 CTE）
+	selectStartRegex *regexp.Regexp
 }
 
 // NewSQLSanitizer 创建新的 SQL 清理器
@@ -22,6 +48,8 @@ func NewSQLSanitizer() *SQLSanitizer {
 		tableNameRegex: regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`),
 		// ID 只允许字母、数字、连字符和下划线
 		idRegex: regexp.MustCompile(`^[a-zA-Z0-9_-]+$`),
+		// 支持 SELECT 或 WITH (CTE) 开头
+		selectStartRegex: regexp.MustCompile(`(?i)^\s*(select|with\s+[\w_]+\s+as\s*\()`),
 	}
 }
 
@@ -198,8 +226,13 @@ func (s *SQLSanitizer) BuildSafeCreateViewSQL(viewName string, filePaths []strin
 	return sql, nil
 }
 
+// normalizeWhitespace 规范化空白字符，将连续空白替换为单个空格
+func normalizeWhitespace(str string) string {
+	return whitespaceNormalizeRegex.ReplaceAllString(str, " ")
+}
+
 // ValidateSelectQuery 验证 SELECT 查询是否安全
-// 这是一个基本的验证，检查常见的危险模式
+// 使用正则匹配危险模式，支持 CTE (WITH...SELECT)
 func (s *SQLSanitizer) ValidateSelectQuery(sql string) error {
 	if sql == "" {
 		return fmt.Errorf("SQL query cannot be empty")
@@ -209,40 +242,31 @@ func (s *SQLSanitizer) ValidateSelectQuery(sql string) error {
 		return fmt.Errorf("SQL query too long: maximum 10000 characters")
 	}
 
-	// 规范化查询以便检查
-	normalizedSQL := strings.ToLower(strings.TrimSpace(sql))
+	// 规范化查询以便检查（规范化空白字符）
+	normalizedSQL := normalizeWhitespace(strings.ToLower(strings.TrimSpace(sql)))
 
-	// 检查危险的关键字组合
-	dangerousPatterns := []struct {
-		pattern string
-		message string
-	}{
-		{"drop ", "DROP statements are not allowed"},
-		{"delete ", "DELETE statements are not allowed"},
-		{"truncate ", "TRUNCATE statements are not allowed"},
-		{"alter ", "ALTER statements are not allowed"},
-		{"create ", "CREATE statements are not allowed"},
-		{"insert ", "INSERT statements are not allowed"},
-		{"update ", "UPDATE statements are not allowed"},
-		{"union ", "UNION statements are not allowed in basic queries"},
-		{"; ", "Multiple statements are not allowed"},
-		{"--", "SQL comments are not allowed"},
-		{"/*", "SQL comments are not allowed"},
-		{"xp_", "Extended stored procedures are not allowed"},
-		{"exec ", "EXEC statements are not allowed"},
-		{"execute ", "EXECUTE statements are not allowed"},
-	}
-
-	// 检查是否包含危险模式
-	for _, dp := range dangerousPatterns {
-		if strings.Contains(normalizedSQL, dp.pattern) {
-			return fmt.Errorf("%s", dp.message)
+	// 使用正则检查危险模式（对空白字符变体有效）
+	for _, dr := range dangerousRegexes {
+		if dr.re.MatchString(normalizedSQL) {
+			return fmt.Errorf("%s", dr.message)
 		}
 	}
 
-	// 检查是否是 SELECT 语句
-	if !strings.HasPrefix(normalizedSQL, "select") {
-		return fmt.Errorf("only SELECT statements are allowed")
+	// 检查注释模式（--, /*, #）
+	for _, cp := range commentPatterns {
+		if cp.MatchString(normalizedSQL) {
+			return fmt.Errorf("SQL comments are not allowed")
+		}
+	}
+
+	// 检查多语句（分号后跟非空白字符）
+	if multiStatementRegex.MatchString(normalizedSQL) {
+		return fmt.Errorf("multiple statements are not allowed")
+	}
+
+	// 检查是否是 SELECT 语句或 CTE (WITH...SELECT)
+	if !s.selectStartRegex.MatchString(normalizedSQL) {
+		return fmt.Errorf("only SELECT statements (or WITH...SELECT CTEs) are allowed")
 	}
 
 	return nil

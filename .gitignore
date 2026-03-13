@@ -18,3 +18,4 @@ internal/query/logs/*.log
 data/wal/*.log
 .gitignore
 logs/minIODB.log
+.opencode/

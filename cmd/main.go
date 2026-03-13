@@ -47,6 +47,7 @@ import (
 	"github.com/minio/minio-go/v7"
 
 	"minIODB/config"
+	"minIODB/pkg/version"
 	"minIODB/internal/buffer"
 	"minIODB/internal/compaction"
 	"minIODB/internal/coordinator"
@@ -111,6 +112,13 @@ func main() {
 	defer logger.Close()
 
 	logger.Sugar.Infof("Starting MinIODB server with config: %s", configPath)
+
+	// JWT Secret 强制检查：当 auth mode 为 "token" 或 "jwt" 时，必须配置 JWT Secret
+	if cfg.Security.Mode == "token" || cfg.Security.Mode == "jwt" {
+		if cfg.Security.JWTSecret == "" {
+			logger.Sugar.Fatalf("FATAL: JWT secret is required when auth mode is '%s'. Please set JWT_SECRET environment variable or configure security.jwt_secret in config file", cfg.Security.Mode)
+		}
+	}
 
 	// 创建上下文
 	ctx, cancel := context.WithCancel(context.Background())
@@ -376,32 +384,35 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 	logger.Sugar.Info("Canceling all contexts...")
 	cancel()
 
+	// 创建独立的 shutdownCtx 用于关闭操作，避免使用已取消的 ctx
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
 	// 2. 停止接收新请求
 	logger.Sugar.Info("Stopping gRPC server...")
 	grpcService.Stop()
 	logger.Sugar.Info("gRPC server stopped")
 
 	logger.Sugar.Info("Stopping REST server...")
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel2()
-	if err := restServer.Stop(ctx2); err != nil {
+	if err := restServer.Stop(shutdownCtx); err != nil {
 		logger.Sugar.Errorf("Error shutting down REST server: %v", err)
 	} else {
 		logger.Sugar.Info("REST server stopped")
 	}
 
-	logger.Sugar.Info("Stopping metrics server...")
-	if err := metricsServer.Shutdown(context.Background()); err != nil {
-		logger.Sugar.Errorf("Error shutting down metrics server: %v", err)
-	} else {
-		logger.Sugar.Info("Metrics server stopped")
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			logger.Sugar.Errorf("Error shutting down metrics server: %v", err)
+		} else {
+			logger.Sugar.Info("Metrics server stopped")
+		}
 	}
 
 	// 3. 停止后台任务
 	// 停止订阅管理器
 	if subscriptionManager != nil {
 		logger.Sugar.Info("Stopping subscription manager...")
-		if err := subscriptionManager.Stop(ctx); err != nil {
+		if err := subscriptionManager.Stop(shutdownCtx); err != nil {
 			logger.Sugar.Errorf("Error stopping subscription manager: %v", err)
 		} else {
 			logger.Sugar.Info("Subscription manager stopped")
@@ -469,7 +480,7 @@ func startMetricsServer(cfg *config.Config) *http.Server {
 		var metrics []string
 		metrics = append(metrics, "# HELP miniodb_info MinIODB service information")
 		metrics = append(metrics, "# TYPE miniodb_info gauge")
-		metrics = append(metrics, fmt.Sprintf(`miniodb_info{version="1.0.0",node_id="%s"} 1`, cfg.Server.NodeID))
+		metrics = append(metrics, fmt.Sprintf(`miniodb_info{version="%s",node_id="%s"} 1`, version.Get(), cfg.Server.NodeID))
 		metrics = append(metrics, "# HELP miniodb_start_time_seconds MinIODB start time in unix timestamp")
 		metrics = append(metrics, "# TYPE miniodb_start_time_seconds gauge")
 		metrics = append(metrics, fmt.Sprintf("miniodb_start_time_seconds %d", time.Now().Unix()))
@@ -560,7 +571,8 @@ func executeBackupWithRetry(ctx context.Context, primaryMinio, backupMinio stora
 	logger.Sugar.Infof("Backup summary - objects: %d, size: %d bytes, duration: %v", backupCount, totalSize, duration)
 
 	if backupCount == 0 {
-		return fmt.Errorf("no objects were backed up")
+		logger.Sugar.Warn("Backup completed but no objects found (bucket may be empty)")
+		return nil // 空桶是合法状态，不视为错误
 	}
 
 	return nil

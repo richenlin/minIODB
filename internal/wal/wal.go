@@ -259,6 +259,9 @@ func (w *WAL) readRecord(reader *bufio.Reader) (*Record, error) {
 	}
 
 	dataLen := binary.BigEndian.Uint32(header[0:4])
+	if dataLen > MaxRecordSize {
+		return nil, fmt.Errorf("WAL record size %d exceeds maximum %d", dataLen, MaxRecordSize)
+	}
 	recordType := header[4]
 	seqNum := binary.BigEndian.Uint64(header[5:13])
 

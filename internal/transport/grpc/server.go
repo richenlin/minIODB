@@ -14,10 +14,13 @@ import (
 	"minIODB/internal/metrics"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
+	"minIODB/pkg/version"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -47,6 +50,15 @@ type Server struct {
 // NewServer 创建新的gRPC服务器
 func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger *zap.Logger) (*Server, error) {
 	// 初始化认证管理器
+	// 转换配置中的 APIKeyPairs
+	apiKeyPairs := make([]security.APIKeyPair, len(cfg.Auth.APIKeyPairs))
+	for i, kp := range cfg.Auth.APIKeyPairs {
+		apiKeyPairs[i] = security.APIKeyPair{
+			Key:    kp.Key,
+			Secret: kp.Secret,
+		}
+	}
+
 	authConfig := &security.AuthConfig{
 		Mode:            cfg.Security.Mode,
 		JWTSecret:       cfg.Security.JWTSecret,
@@ -54,6 +66,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 		Issuer:          "miniodb",
 		Audience:        "miniodb-grpc",
 		ValidTokens:     cfg.Security.ValidTokens,
+		APIKeyPairs:     apiKeyPairs,
 	}
 
 	authManager, err := security.NewAuthManager(authConfig)
@@ -98,7 +111,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 
 		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
 		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
-		logger.Info("gRPC smart rate limiter initialized with %d tiers and %d path rules", zap.Int("tiers", len(smartRateLimitConfig.Tiers)), zap.Int("path_limits", len(smartRateLimitConfig.PathLimits)))
+		logger.Info("gRPC smart rate limiter initialized", zap.Int("tiers", len(smartRateLimitConfig.Tiers)), zap.Int("path_limits", len(smartRateLimitConfig.PathLimits)))
 	} else {
 		// 使用默认配置但禁用
 		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
@@ -109,7 +122,10 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 	}
 
 	// 创建JWT管理器
-	jwtManager := security.NewJWTManager(cfg.Security.JWTSecret, 24*time.Hour)
+	jwtManager, err := security.NewJWTManager(cfg.Security.JWTSecret, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWT manager: %w", err)
+	}
 
 	// 创建令牌管理器 (假设有Redis客户端可用)
 	var tokenManager *security.TokenManager
@@ -208,7 +224,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 		rateLimitStatus = fmt.Sprintf("traditional limiter enabled (%d req/min)", cfg.Security.RateLimit.RequestsPerMinute)
 	}
 
-	logger.Info("gRPC server initialized with authentication mode: %s, rate limit: %s", zap.String("mode", cfg.Security.Mode), zap.String("rate_limit", rateLimitStatus))
+	logger.Info("gRPC server initialized", zap.String("authentication_mode", cfg.Security.Mode), zap.String("rate_limit", rateLimitStatus))
 
 	return server, nil
 }
@@ -231,7 +247,7 @@ func (s *Server) Start(port string) error {
 		return fmt.Errorf("failed to listen on port %s: %w", port, err)
 	}
 
-	s.logger.Info("gRPC server starting on port %s", zap.String("port", port))
+	s.logger.Info("gRPC server starting", zap.String("port", port))
 	if err := s.grpcServer.Serve(lis); err != nil {
 		return fmt.Errorf("failed to serve gRPC server: %w", err)
 	}
@@ -251,6 +267,11 @@ func (s *Server) Stop() {
 
 // WriteData 实现写入数据API
 func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (*miniodb.WriteDataResponse, error) {
+	// 检查必要字段
+	if req.Data == nil {
+		return nil, status.Error(codes.InvalidArgument, "data field is required")
+	}
+
 	// 记录gRPC指标
 	grpcMetrics := metrics.NewGRPCMetrics("WriteData")
 	defer func() {
@@ -260,10 +281,10 @@ func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
-			s.logger.Info("WriteData request from user: %s (ID: %s) for data ID: %s", zap.String("username", user.Username), zap.String("id", user.ID), zap.String("data_id", req.Data.Id))
+			s.logger.Info("WriteData request from authenticated user", zap.String("username", user.Username), zap.String("id", user.ID), zap.String("data_id", req.Data.Id))
 		}
 	} else {
-		s.logger.Info("Received WriteData request for ID: %s", zap.String("data_id", req.Data.Id))
+		s.logger.Info("Received WriteData request", zap.String("data_id", req.Data.Id))
 	}
 
 	// ID自动生成逻辑（与REST API保持一致）
@@ -281,7 +302,7 @@ func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (
 		if tableConfig.AutoGenerateID {
 			generatedID, err := s.miniodbService.GenerateID(ctx, tableName, tableConfig)
 			if err != nil {
-				s.logger.Info("ERROR: Failed to generate ID: %v", zap.Error(err))
+				s.logger.Error("Failed to generate ID", zap.Error(err))
 				return &miniodb.WriteDataResponse{
 					Success: false,
 					Message: fmt.Sprintf("Failed to generate ID: %v", err),
@@ -289,14 +310,14 @@ func (s *Server) WriteData(ctx context.Context, req *miniodb.WriteDataRequest) (
 				}, nil
 			}
 			req.Data.Id = generatedID
-			s.logger.Info("Auto-generated ID for table %s: %s", zap.String("table", tableName), zap.String("id", req.Data.Id))
+			s.logger.Info("Auto-generated ID", zap.String("table", tableName), zap.String("id", req.Data.Id))
 		}
 	}
 
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.WriteData(ctx, req)
 	if err != nil {
-		s.logger.Info("ERROR: WriteData failed: %v", zap.Error(err))
+		s.logger.Error("WriteData failed", zap.Error(err))
 		return nil, err
 	}
 
@@ -314,16 +335,16 @@ func (s *Server) QueryData(ctx context.Context, req *miniodb.QueryDataRequest) (
 	// 获取用户信息（如果启用了认证）
 	if s.authManager.IsEnabled() {
 		if user, ok := security.UserFromContext(ctx); ok {
-			s.logger.Info("QueryData request from user: %s (ID: %s)", zap.String("username", user.Username), zap.String("id", user.ID))
+			s.logger.Info("QueryData request from authenticated user", zap.String("username", user.Username), zap.String("id", user.ID))
 		}
 	} else {
-		s.logger.Info("Received QueryData request: %s", zap.String("sql", req.Sql))
+		s.logger.Info("Received QueryData request", zap.String("sql", req.Sql))
 	}
 
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.QueryData(ctx, req)
 	if err != nil {
-		s.logger.Info("ERROR: QueryData failed: %v", zap.Error(err))
+		s.logger.Error("QueryData failed", zap.Error(err))
 		return nil, err
 	}
 
@@ -341,7 +362,7 @@ func (s *Server) UpdateData(ctx context.Context, req *miniodb.UpdateDataRequest)
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.UpdateData(ctx, req)
 	if err != nil {
-		s.logger.Info("ERROR: UpdateData failed: %v", zap.Error(err))
+		s.logger.Error("UpdateData failed", zap.Error(err))
 		return nil, err
 	}
 
@@ -359,7 +380,7 @@ func (s *Server) DeleteData(ctx context.Context, req *miniodb.DeleteDataRequest)
 	// 调用服务方法处理请求
 	result, err := s.miniodbService.DeleteData(ctx, req)
 	if err != nil {
-		s.logger.Error("ERROR: DeleteData failed: %v", zap.Error(err))
+		s.logger.Error("DeleteData failed", zap.Error(err))
 		return nil, err
 	}
 
@@ -606,7 +627,7 @@ func (s *Server) HealthCheck(ctx context.Context, req *miniodb.HealthCheckReques
 		return &miniodb.HealthCheckResponse{
 			Status:    "unhealthy",
 			Timestamp: timestamppb.Now(),
-			Version:   "1.0.0",
+			Version:   version.Get(),
 			Details: map[string]string{
 				"error": err.Error(),
 			},
@@ -616,7 +637,7 @@ func (s *Server) HealthCheck(ctx context.Context, req *miniodb.HealthCheckReques
 	return &miniodb.HealthCheckResponse{
 		Status:    "healthy",
 		Timestamp: timestamppb.Now(),
-		Version:   "1.0.0",
+		Version:   version.Get(),
 		Details: map[string]string{
 			"message": "All systems operational",
 		},
@@ -651,16 +672,22 @@ func (s *Server) GetMetrics(ctx context.Context, req *miniodb.GetMetricsRequest)
 
 // GetToken 实现获取JWT令牌API
 func (s *Server) GetToken(ctx context.Context, req *miniodb.GetTokenRequest) (*miniodb.GetTokenResponse, error) {
-	// 验证API密钥和密码 (简单实现，实际应该验证credentials)
+	// 验证API密钥和密码
 	if req.ApiKey == "" || req.Secret == "" {
 		return nil, fmt.Errorf("api key and secret are required")
+	}
+
+	// 验证凭证有效性
+	if !s.authManager.ValidateCredentials(req.ApiKey, req.Secret) {
+		s.logger.Sugar().Infof("WARN: Invalid credentials for API key: %s", req.ApiKey)
+		return nil, fmt.Errorf("invalid credentials")
 	}
 
 	// 生成JWT token
 	accessToken, err := s.authManager.GenerateToken(req.ApiKey, req.ApiKey)
 	if err != nil {
 		s.logger.Sugar().Infof("ERROR: Token generation failed: %v", err)
-		return nil, fmt.Errorf("invalid credentials: %w", err)
+		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
 
 	// 生成安全的刷新令牌
@@ -671,7 +698,7 @@ func (s *Server) GetToken(ctx context.Context, req *miniodb.GetTokenRequest) (*m
 
 	// 存储刷新令牌
 	if err := s.tokenManager.StoreRefreshToken(ctx, refreshToken, req.ApiKey); err != nil {
-		return nil, fmt.Errorf("failed to store refresh token: %w", err)
+		s.logger.Sugar().Infof("WARN: Failed to store refresh token: %v", err)
 	}
 
 	return &miniodb.GetTokenResponse{
@@ -689,13 +716,6 @@ func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequ
 		return nil, fmt.Errorf("refresh token is required")
 	}
 
-	// 这里应该验证refresh token，简单实现直接生成新的
-	accessToken, err := s.authManager.GenerateToken("refresh_user", "refresh_user")
-	if err != nil {
-		s.logger.Sugar().Infof("ERROR: Token refresh failed: %v", err)
-		return nil, fmt.Errorf("invalid refresh token: %w", err)
-	}
-
 	// 验证刷新令牌
 	userID, err := s.tokenManager.ValidateRefreshToken(ctx, req.RefreshToken)
 	if err != nil {
@@ -703,7 +723,7 @@ func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequ
 	}
 
 	// 生成新的访问令牌
-	accessToken, err = s.jwtManager.GenerateToken(userID)
+	accessToken, err := s.jwtManager.GenerateToken(userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -740,7 +760,11 @@ func (s *Server) RevokeToken(ctx context.Context, req *miniodb.RevokeTokenReques
 		return nil, fmt.Errorf("token is required")
 	}
 
-	s.logger.Sugar().Infof("INFO: Token revoked: %s", req.Token[:10]+"...")
+	tokenPreview := req.Token
+	if len(tokenPreview) > 10 {
+		tokenPreview = tokenPreview[:10] + "..."
+	}
+	s.logger.Sugar().Infof("INFO: Token revoked: %s", tokenPreview)
 
 	return &miniodb.RevokeTokenResponse{
 		Success: true,

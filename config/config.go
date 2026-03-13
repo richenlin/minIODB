@@ -360,6 +360,15 @@ type SmartRateLimitConfigOld struct {
 	CleanupInterval time.Duration   `yaml:"cleanup_interval"`
 }
 
+// CORSConfig CORS 跨域配置
+type CORSConfig struct {
+	AllowedOrigins   []string `yaml:"allowed_origins"`   // 允许的来源白名单，空列表表示不允许任何跨域请求
+	AllowMethods     []string `yaml:"allow_methods"`     // 允许的 HTTP 方法
+	AllowHeaders     []string `yaml:"allow_headers"`     // 允许的请求头
+	AllowCredentials bool     `yaml:"allow_credentials"` // 是否允许携带凭证
+	MaxAge           int      `yaml:"max_age"`           // 预检请求缓存时间（秒）
+}
+
 // SecurityConfig 安全配置
 type SecurityConfig struct {
 	Mode           string                  `yaml:"mode"`
@@ -368,6 +377,7 @@ type SecurityConfig struct {
 	ValidTokens    []string                `yaml:"valid_tokens"`
 	RateLimit      RateLimitConfig         `yaml:"rate_limit"`       // 传统限流配置（保持向后兼容）
 	SmartRateLimit SmartRateLimitConfigOld `yaml:"smart_rate_limit"` // 智能限流器配置（旧版本）
+	CORS           CORSConfig              `yaml:"cors"`             // CORS 跨域配置
 }
 
 // RateLimitConfig 速率限制配置（传统配置，保持向后兼容）
@@ -434,15 +444,22 @@ type LogConfig struct {
 	Compress   bool   `yaml:"compress"`
 }
 
+// APIKeyPair API凭证对（包含Key和Secret）
+type APIKeyPair struct {
+	Key    string `yaml:"key"`
+	Secret string `yaml:"secret"`
+}
+
 // AuthConfig 认证配置
 type AuthConfig struct {
-	EnableJWT        bool     `yaml:"enable_jwt"`
-	JWTSecret        string   `yaml:"jwt_secret"`
-	TokenExpiry      string   `yaml:"token_expiry"`
-	EnableAPIKey     bool     `yaml:"enable_api_key"`
-	APIKeys          []string `yaml:"api_keys"`
-	SkipAuthPaths    []string `yaml:"skip_auth_paths"`
-	RequireAuthPaths []string `yaml:"require_auth_paths"`
+	EnableJWT        bool         `yaml:"enable_jwt"`
+	JWTSecret        string       `yaml:"jwt_secret"`
+	TokenExpiry      string       `yaml:"token_expiry"`
+	EnableAPIKey     bool         `yaml:"enable_api_key"`
+	APIKeys          []string     `yaml:"api_keys"`           // 保留向后兼容，但建议使用 APIKeyPairs
+	APIKeyPairs      []APIKeyPair `yaml:"api_key_pairs"`      // 结构化凭证配置
+	SkipAuthPaths    []string     `yaml:"skip_auth_paths"`
+	RequireAuthPaths []string     `yaml:"require_auth_paths"`
 }
 
 // QueryOptimizationConfig 查询优化配置
@@ -958,6 +975,13 @@ func (c *Config) setDefaults() {
 			Tiers:           []RateLimitTier{},
 			PathLimits:      []PathRateLimit{},
 		},
+		CORS: CORSConfig{
+			AllowedOrigins:   []string{},                                                          // 空列表表示不允许跨域（安全默认值）
+			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},                  // 常用 HTTP 方法
+			AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},         // 常用请求头
+			AllowCredentials: false,                                                                // 默认不允许携带凭证
+			MaxAge:           86400,                                                                // 预检请求缓存 24 小时
+		},
 	}
 
 	// 指标默认配置
@@ -1110,15 +1134,14 @@ func (c *Config) setDefaults() {
 	}
 
 	// 认证配置默认值
+	// 安全警告：默认不提供任何 API Key，生产环境必须通过配置文件或环境变量配置凭证
 	c.Auth = AuthConfig{
 		EnableJWT:    false,
 		JWTSecret:    "",
 		TokenExpiry:  "24h",
 		EnableAPIKey: true,
-		APIKeys: []string{
-			"api-key-1234567890abcdef",
-			"api-key-0987654321fedcba",
-		},
+		APIKeys:      []string{},      // 默认不提供任何 API Key，避免安全风险
+		APIKeyPairs:  []APIKeyPair{},  // 默认不提供任何凭证对
 		SkipAuthPaths: []string{
 			"/health",
 			"/metrics",
@@ -1534,6 +1557,41 @@ func (c *Config) validate() error {
 	if c.Auth.EnableJWT {
 		if err := validateJWTSecret(c.Auth.JWTSecret); err != nil {
 			return fmt.Errorf("JWT secret validation failed: %w", err)
+		}
+	}
+
+	// 验证 CORS 配置
+	if err := c.validateCORSConfig(); err != nil {
+		return fmt.Errorf("CORS config validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateCORSConfig 验证 CORS 配置的安全性
+func (c *Config) validateCORSConfig() error {
+	cors := c.Security.CORS
+
+	// 规则1: AllowCredentials: true 时禁止 AllowedOrigins 为空
+	// 因为空列表 + credentials 在某些浏览器中可能被解释为允许所有来源
+	if cors.AllowCredentials && len(cors.AllowedOrigins) == 0 {
+		return fmt.Errorf("when allow_credentials is true, allowed_origins cannot be empty - this creates an ambiguous security policy")
+	}
+
+	// 规则2: AllowCredentials: true 时禁止 AllowedOrigins 包含 "*"
+	// 根据 CORS 规范，* 与 credentials 不能同时使用
+	if cors.AllowCredentials {
+		for _, origin := range cors.AllowedOrigins {
+			if origin == "*" {
+				return fmt.Errorf("when allow_credentials is true, allowed_origins cannot contain '*' - this violates CORS specification")
+			}
+		}
+	}
+
+	// 规则3: 如果 AllowedOrigins 包含 "*"，确保 AllowCredentials 为 false
+	for _, origin := range cors.AllowedOrigins {
+		if origin == "*" && cors.AllowCredentials {
+			return fmt.Errorf("allowed_origins contains '*' and allow_credentials is true - this violates CORS specification")
 		}
 	}
 

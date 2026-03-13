@@ -1,6 +1,7 @@
 package query
 
 import (
+	"container/list"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -23,6 +24,76 @@ import (
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 )
+
+// stmtEntry 预编译语句缓存条目
+type stmtEntry struct {
+	key  string
+	stmt *sql.Stmt
+}
+
+// stmtCache 预编译语句LRU缓存
+type stmtCache struct {
+	mu      sync.Mutex
+	cache   map[string]*list.Element
+	lru     *list.List
+	maxSize int
+}
+
+// newStmtCache 创建预编译语句缓存
+func newStmtCache(maxSize int) *stmtCache {
+	return &stmtCache{
+		cache:   make(map[string]*list.Element),
+		lru:     list.New(),
+		maxSize: maxSize,
+	}
+}
+
+// Get 从缓存获取预编译语句
+func (sc *stmtCache) Get(key string) (*sql.Stmt, bool) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if elem, ok := sc.cache[key]; ok {
+		sc.lru.MoveToFront(elem)
+		return elem.Value.(*stmtEntry).stmt, true
+	}
+	return nil, false
+}
+
+// Put 将预编译语句放入缓存
+func (sc *stmtCache) Put(key string, stmt *sql.Stmt) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if elem, ok := sc.cache[key]; ok {
+		sc.lru.MoveToFront(elem)
+		return
+	}
+	if sc.lru.Len() >= sc.maxSize {
+		oldest := sc.lru.Back()
+		if oldest != nil {
+			entry := sc.lru.Remove(oldest).(*stmtEntry)
+			delete(sc.cache, entry.key)
+			// 关闭被淘汰的语句
+			if entry.stmt != nil {
+				entry.stmt.Close()
+			}
+		}
+	}
+	elem := sc.lru.PushFront(&stmtEntry{key: key, stmt: stmt})
+	sc.cache[key] = elem
+}
+
+// Close 关闭所有预编译语句
+func (sc *stmtCache) Close() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, elem := range sc.cache {
+		if entry, ok := elem.Value.(*stmtEntry); ok && entry.stmt != nil {
+			entry.stmt.Close()
+		}
+	}
+	sc.cache = make(map[string]*list.Element)
+	sc.lru = list.New()
+}
 
 // DuckDBPool DuckDB连接池
 type DuckDBPool struct {
@@ -67,8 +138,7 @@ type Querier struct {
 
 	// 性能优化组件
 	dbPool         *DuckDBPool
-	preparedStmts  map[string]*sql.Stmt
-	stmtMutex      sync.RWMutex
+	stmtCache      *stmtCache      // 预编译语句LRU缓存
 	queryOptimizer *QueryOptimizer // 查询优化器（文件剪枝、谓词下推）
 	columnPruner   *ColumnPruner   // 列剪枝优化器
 
@@ -150,7 +220,7 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		logger:         logger,
 		tempDir:        tempDir,
 		tableExtractor: NewTableExtractor(),
-		preparedStmts:  make(map[string]*sql.Stmt),
+		stmtCache:      newStmtCache(1000),                                            // 预编译语句LRU缓存，maxSize=1000
 		queryStats:     queryStats,
 		queryOptimizer: NewQueryOptimizer(logger),                                     // 查询优化器（文件剪枝、谓词下推）
 		columnPruner:   NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy), // 列剪枝优化器
@@ -289,9 +359,21 @@ func (q *Querier) getBufferFilesForTable(tableName string) []string {
 
 // getStorageFilesForTable 获取表的存储文件
 func (q *Querier) getStorageFilesForTable(ctx context.Context, tableName string) ([]string, error) {
+	// 单节点模式：redisPool 为 nil，无法从 Redis 索引获取
+	if q.redisPool == nil {
+		return []string{}, nil
+	}
+
+	// 从连接池获取 Redis 客户端
+	redisClient := q.redisPool.GetClient()
+	if redisClient == nil {
+		return []string{}, nil
+	}
+
 	// 使用架构设计的索引格式：index:table:tableName:id:*
 	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
-	keys, err := q.redisClient.Keys(ctx, pattern).Result()
+	// 使用 SCAN 替代 KEYS，避免阻塞 Redis
+	keys, err := pool.ScanKeys(ctx, redisClient, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get file index keys: %w", err)
 	}
@@ -299,7 +381,7 @@ func (q *Querier) getStorageFilesForTable(ctx context.Context, tableName string)
 	var files []string
 	for _, key := range keys {
 		// 获取集合中的所有文件名（使用SMembers读取集合）
-		objectNames, err := q.redisClient.SMembers(ctx, key).Result()
+		objectNames, err := redisClient.SMembers(ctx, key).Result()
 		if err != nil {
 			q.logger.Sugar().Infof("WARN: failed to get object names for key %s: %v", key, err)
 			continue
@@ -564,13 +646,10 @@ func (q *Querier) Close() error {
 		q.dbPool.Close()
 	}
 
-	// 关闭所有预编译语句
-	q.stmtMutex.Lock()
-	for _, stmt := range q.preparedStmts {
-		stmt.Close()
+	// 关闭所有预编译语句（使用LRU缓存）
+	if q.stmtCache != nil {
+		q.stmtCache.Close()
 	}
-	q.preparedStmts = make(map[string]*sql.Stmt)
-	q.stmtMutex.Unlock()
 
 	// 清理缓存
 	if q.fileCache != nil {
@@ -627,21 +706,28 @@ func (p *DuckDBPool) Get() (*sql.DB, error) {
 	case db := <-p.connections:
 		return db, nil
 	default:
-		// 如果池中没有可用连接，创建新连接
 		p.mu.Lock()
-		defer p.mu.Unlock()
-
 		if p.created < p.maxConns {
 			db, err := sql.Open("duckdb", ":memory:")
 			if err != nil {
+				p.mu.Unlock()
 				return nil, err
 			}
 			p.created++
+			p.mu.Unlock()
 			return db, nil
 		}
+		p.mu.Unlock()
 
-		// 等待可用连接
-		return <-p.connections, nil
+		// 带超时等待
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case db := <-p.connections:
+			return db, nil
+		case <-timer.C:
+			return nil, fmt.Errorf("DuckDB connection pool: timeout waiting for available connection")
+		}
 	}
 }
 
@@ -703,7 +789,8 @@ func (q *Querier) getStorageFilesWithCache(ctx context.Context, tableName string
 	redisClient := q.redisPool.GetClient()
 
 	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
-	keys, err := redisClient.Keys(ctx, pattern).Result()
+	// 使用 SCAN 替代 KEYS，避免阻塞 Redis
+	keys, err := pool.ScanKeys(ctx, redisClient, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get file index keys: %w", err)
 	}
@@ -841,9 +928,8 @@ func (q *Querier) executeWithPreparedStatement(db *sql.DB, sqlQuery string) (str
 	// 生成语句键
 	stmtKey := fmt.Sprintf("%p_%s", db, sqlQuery)
 
-	q.stmtMutex.RLock()
-	stmt, exists := q.preparedStmts[stmtKey]
-	q.stmtMutex.RUnlock()
+	// 从LRU缓存获取预编译语句
+	stmt, exists := q.stmtCache.Get(stmtKey)
 
 	if !exists {
 		// 创建预编译语句
@@ -859,9 +945,8 @@ func (q *Querier) executeWithPreparedStatement(db *sql.DB, sqlQuery string) (str
 			return q.processQueryResults(rows)
 		}
 
-		q.stmtMutex.Lock()
-		q.preparedStmts[stmtKey] = stmt
-		q.stmtMutex.Unlock()
+		// 将预编译语句放入LRU缓存
+		q.stmtCache.Put(stmtKey, stmt)
 	}
 
 	// 执行预编译语句
@@ -1102,7 +1187,8 @@ func (q *Querier) getStorageFilesMetadata(ctx context.Context, tableName string)
 	redisClient := q.redisPool.GetClient()
 
 	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
-	keys, err := redisClient.Keys(ctx, pattern).Result()
+	// 使用 SCAN 替代 KEYS，避免阻塞 Redis
+	keys, err := pool.ScanKeys(ctx, redisClient, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get file index keys: %w", err)
 	}
