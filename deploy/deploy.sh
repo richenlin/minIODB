@@ -330,20 +330,30 @@ deploy_dev() {
         return
     fi
 
+    # 优先使用 Docker Compose V2 插件（避免 V1 与新版 Docker 的 ContainerConfig 兼容性问题）
+    local use_compose_v2=false
+    if docker compose version &> /dev/null; then
+        use_compose_v2=true
+    fi
+
     # --no-cache 时先强制重新构建镜像
     if [[ "${FORCE_REBUILD}" == "true" ]]; then
         log_info "强制重新构建镜像（--no-cache）..."
-        if command -v docker-compose &> /dev/null; then
-            docker-compose build --no-cache
-        else
+        if $use_compose_v2; then
             docker compose build --no-cache
+        else
+            docker-compose build --no-cache
         fi
     fi
 
-    if command -v docker-compose &> /dev/null; then
-        docker-compose up -d
-    else
+    if $use_compose_v2; then
         docker compose up -d
+    else
+        # 使用旧版 docker-compose 且刚重建镜像时，先删除 app 容器再 up，避免 recreate 时的 ContainerConfig KeyError
+        if [[ "${FORCE_REBUILD}" == "true" ]]; then
+            docker-compose rm -f miniodb 2>/dev/null || true
+        fi
+        docker-compose up -d
     fi
 
     log_info "等待服务启动..."
