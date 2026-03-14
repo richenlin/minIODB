@@ -1,4 +1,5 @@
 deploy/docker/data
+deploy/ansible/inventory/hosts.ini
 test/performance/tools/data_generator
 bin
 test/performance/tools/jwt_generator

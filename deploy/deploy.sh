@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # MinIODB 统一部署脚本
-# 支持4种部署模式：开发、集成测试、Swarm集群、K8s集群
+# 支持4种部署模式：allinone、ansible、Swarm集群、K8s集群
 
 set -e
 
@@ -44,16 +44,17 @@ MinIODB 统一部署脚本
     $0 [部署模式] [选项]
 
 部署模式:
-    dev         单机开发模式 (启动 redis、minio、minio-backup，miniodb手动启动)
-    test        单机集成测试模式 (启动所有服务，包括miniodb容器)
-    swarm       小型集群模式 (基于Docker Swarm的3节点部署)
-    k8s         Kubernetes集群模式 (4个pod部署)
+    dev         单机 allinone 模式 (miniodb + dashboard 一体化，含所有基础设施)
+    ansible     Ansible 直接部署 (client/server 分离，需要目标主机可 SSH 访问)
+    swarm       Docker Swarm 集群模式 (client/server 分离，基于 Swarm 3节点部署)
+    k8s         Kubernetes 集群模式 (client/server 分离，4个pod部署)
 
  选项:
     -c, --config FILE       指定配置文件路径
     -n, --namespace NS      Kubernetes 命名空间 (默认: miniodb-system)
     -r, --replicas NUM      副本数量 (默认: 2)
     -d, --data-path PATH    数据存储路径 (默认: ./data)
+    --no-cache, --force-rebuild  强制重新构建镜像（所有使用镜像的模式均生效），不使用缓存
     --install-deps         自动检测并安装依赖
     --show-deps            显示离线安装包下载地址
     --dry-run              仅显示将要执行的命令，不实际执行
@@ -62,29 +63,33 @@ MinIODB 统一部署脚本
     -h, --help             显示此帮助信息
 
 示例:
-    # 开发模式部署
+    # allinone 模式部署（开发/单机）
     $0 dev
 
-    # 集成测试模式部署
-    $0 test
+    # Ansible 直接部署
+    $0 ansible
 
-    # Swarm集群部署
+    # Swarm 集群部署
     $0 swarm
 
-    # K8s集群部署
+    # K8s 集群部署
     $0 k8s -n my-namespace -r 3
 
-    # 清理开发模式
+    # 清理 allinone 部署
     $0 dev --cleanup
 
-    # 干运行K8s部署
+    # 干运行 K8s 部署
     $0 k8s --dry-run
+
+    # 强制重新构建镜像后部署（不使用 Docker 缓存）
+    $0 dev --no-cache
 
 环境变量:
     MINIODB_CONFIG_PATH     配置文件路径
     MINIODB_DATA_PATH       数据存储路径
     MINIODB_NAMESPACE       Kubernetes 命名空间
     MINIODB_REPLICAS        副本数量
+    FORCE_REBUILD=true      等同于 --no-cache，强制重新构建镜像
 
 EOF
 }
@@ -95,8 +100,11 @@ check_dependencies() {
 
     local deps=""
     case $deploy_mode in
-        "dev"|"test")
+        "dev")
             deps="docker docker-compose"
+            ;;
+        "ansible")
+            deps="docker docker-compose ansible"
             ;;
         "swarm")
             deps="docker docker-compose ansible"
@@ -228,7 +236,11 @@ build_miniodb() {
 build_docker_image() {
     local data_path=${DATA_PATH:-./data}
 
-    log_info "构建 MinIODB Docker 镜像..."
+    if [[ "${FORCE_REBUILD}" == "true" ]]; then
+        log_info "构建 MinIODB Docker 镜像（--no-cache 强制重建）..."
+    else
+        log_info "构建 MinIODB Docker 镜像..."
+    fi
     cd "$(dirname "$0")/docker"
 
     local arch=$(uname -m)
@@ -244,21 +256,46 @@ build_docker_image() {
 
     export DOCKERFILE=$dockerfile
 
+    local build_opts="-f $dockerfile -t miniodb:latest ../.."
+    [[ "${FORCE_REBUILD}" == "true" ]] && build_opts="--no-cache $build_opts"
+
     if [[ $DRY_RUN == "true" ]]; then
         log_info "干运行模式 - 将要执行的命令:"
-        echo "docker build -f $dockerfile -t miniodb:latest ../.."
+        echo "docker build $build_opts"
         return
     fi
 
-    docker build -f "$dockerfile" -t miniodb:latest ../..
+    docker build $build_opts
     log_success "Docker 镜像构建完成"
 }
 
-# 开发模式部署
+# Dashboard 镜像构建
+build_dashboard_image() {
+    if [[ "${FORCE_REBUILD}" == "true" ]]; then
+        log_info "构建 Dashboard 镜像（--no-cache 强制重建）..."
+    else
+        log_info "构建 Dashboard 镜像..."
+    fi
+    cd "$(dirname "$0")/docker"
+
+    local build_opts="-f Dockerfile.dashboard -t miniodb-dashboard:latest ../.."
+    [[ "${FORCE_REBUILD}" == "true" ]] && build_opts="--no-cache $build_opts"
+
+    if [[ $DRY_RUN == "true" ]]; then
+        log_info "干运行模式 - 将要执行的命令:"
+        echo "docker build $build_opts"
+        return
+    fi
+
+    docker build $build_opts
+    log_success "Dashboard 镜像构建完成"
+}
+
+# 开发 allinone 模式部署
 deploy_dev() {
     local data_path=${DATA_PATH:-./data}
 
-    log_info "开始单机开发模式部署..."
+    log_info "开始单机 allinone 模式部署（miniodb + dashboard 一体化）..."
     log_info "数据路径: $data_path"
 
     cd "$(dirname "$0")/docker"
@@ -276,57 +313,31 @@ deploy_dev() {
     mkdir -p "$data_path"/{redis,minio,minio-backup,logs}
     export DATA_PATH=$data_path
 
-    if [[ $DRY_RUN == "true" ]]; then
-        log_info "干运行模式 - 将要执行的命令:"
-        echo "docker-compose -f docker-compose.dev.yml up -d"
-        return
-    fi
-
-    if command -v docker-compose &> /dev/null; then
-        docker-compose -f docker-compose.dev.yml up -d
+    # 根据架构选择 Dockerfile
+    local arch=$(uname -m)
+    if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
+        export DOCKERFILE=deploy/docker/Dockerfile.arm
+        log_info "检测到 ARM64 架构，使用 Dockerfile.arm"
     else
-        docker compose -f docker-compose.dev.yml up -d
+        export DOCKERFILE=deploy/docker/Dockerfile
+        log_info "检测到 AMD64 架构，使用 Dockerfile"
     fi
-
-    log_success "开发模式部署完成!"
-    log_info "基础设施服务已启动:"
-    log_info "  Redis:      localhost:6379"
-    log_info "  MinIO:      http://localhost:9000 (API), http://localhost:9001 (Console)"
-    log_info "  MinIO Backup: http://localhost:9002 (API), http://localhost:9003 (Console)"
-    echo ""
-    log_warning "MinIODB 应用需要手动启动，请使用以下命令:"
-    log_info "  go run cmd/main.go"
-    log_info "  或使用调试工具 (VS Code / GoLand)"
-}
-
-# 集成测试模式部署
-deploy_test() {
-    local data_path=${DATA_PATH:-./data}
-
-    log_info "开始单机集成测试模式部署..."
-    log_info "数据路径: $data_path"
-
-    cd "$(dirname "$0")/docker"
-
-    if [[ ! -f .env ]]; then
-        if [[ -f env.example ]]; then
-            log_warning ".env 文件不存在，从 env.example 复制"
-            cp env.example .env
-        else
-            log_error ".env 文件和 env.example 都不存在"
-            exit 1
-        fi
-    fi
-
-    mkdir -p "$data_path"/{redis,minio,minio-backup,logs}
-    export DATA_PATH=$data_path
-
-    build_docker_image
 
     if [[ $DRY_RUN == "true" ]]; then
         log_info "干运行模式 - 将要执行的命令:"
+        [[ "${FORCE_REBUILD}" == "true" ]] && echo "docker-compose build --no-cache"
         echo "docker-compose up -d"
         return
+    fi
+
+    # --no-cache 时先强制重新构建镜像
+    if [[ "${FORCE_REBUILD}" == "true" ]]; then
+        log_info "强制重新构建镜像（--no-cache）..."
+        if command -v docker-compose &> /dev/null; then
+            docker-compose build --no-cache
+        else
+            docker compose build --no-cache
+        fi
     fi
 
     if command -v docker-compose &> /dev/null; then
@@ -338,13 +349,42 @@ deploy_test() {
     log_info "等待服务启动..."
     sleep 30
 
-    log_success "集成测试模式部署完成!"
+    log_success "allinone 模式部署完成!"
     log_info "访问地址:"
     log_info "  REST API:      http://localhost:8081"
     log_info "  gRPC API:      localhost:8080"
+    log_info "  Dashboard UI:  http://localhost:9090"
     log_info "  MinIO Console: http://localhost:9001"
     log_info "  MinIO Backup Console: http://localhost:9003"
-    log_info "  Prometheus Metrics: http://localhost:9090/metrics"
+}
+
+# Ansible 直接部署（client/server 分离）
+deploy_ansible() {
+    log_info "开始 Ansible 直接部署（client/server 分离）..."
+
+    build_docker_image
+    build_dashboard_image
+
+    cd "$(dirname "$0")/ansible"
+
+    if [[ $DRY_RUN == "true" ]]; then
+        log_info "干运行模式 - 将要执行的命令:"
+        echo "ansible-playbook -i inventory/hosts.ini site.yml"
+        return
+    fi
+
+    if [[ ! -f "inventory/hosts.ini" ]]; then
+        log_error "Ansible 清单文件不存在: inventory/hosts.ini"
+        log_info "请从模板创建清单文件并填入实际主机信息:"
+        log_info "  cp deploy/ansible/inventory/hosts.ini.example deploy/ansible/inventory/hosts.ini"
+        log_info "  然后编辑 hosts.ini，替换 IP 地址和凭据"
+        exit 1
+    fi
+
+    ansible-playbook -i inventory/hosts.ini site.yml
+
+    log_success "Ansible 部署完成!"
+    log_info "服务架构: client(dashboard) + server(miniodb)"
 }
 
 # Kubernetes 部署
@@ -358,10 +398,18 @@ deploy_k8s() {
     log_info "命名空间: $namespace"
     log_info "副本数: $replicas"
     
+    # --no-cache 时先强制重新构建镜像（供 k8s 使用本地镜像）
+    if [[ "${FORCE_REBUILD}" == "true" ]]; then
+        log_info "强制重新构建镜像（--no-cache）..."
+        build_docker_image
+        [[ -d "$(dirname "$0")/k8s/dashboard" ]] && build_dashboard_image
+    fi
+    
     cd "$(dirname "$0")/k8s"
     
     if [[ $DRY_RUN == "true" ]]; then
         log_info "干运行模式 - 将要执行的命令:"
+        [[ "${FORCE_REBUILD}" == "true" ]] && echo "docker build (miniodb + dashboard, --no-cache)"
         echo "kubectl create namespace $namespace"
         echo "kubectl apply -f namespace.yaml"
         echo "kubectl apply -f configmap.yaml"
@@ -392,6 +440,15 @@ deploy_k8s() {
     
     # 部署 MinIODB
     kubectl apply -f miniodb/
+
+    # 部署 Dashboard（client/server 分离）
+    if [[ -d "dashboard" ]]; then
+        kubectl apply -f dashboard/
+        log_info "等待 Dashboard 部署完成..."
+        kubectl wait --for=condition=available deployment/miniodb-dashboard -n "$namespace" --timeout=300s || log_warning "Dashboard 部署超时，请手动检查"
+    else
+        log_warning "未找到 k8s/dashboard/ 目录，跳过 Dashboard 部署"
+    fi
     
     # 等待部署完成
     log_info "等待 MinIODB 部署完成..."
@@ -413,16 +470,17 @@ deploy_k8s() {
     log_info "  gRPC API: $node_ip:30090"
 }
 
-# Swarm 集群部署
+# Swarm 集群部署（client/server 分离）
 deploy_swarm() {
     local data_path=${DATA_PATH:-./data}
 
-    log_info "开始 Docker Swarm 集群部署..."
+    log_info "开始 Docker Swarm 集群部署（client/server 分离）..."
     log_info "数据路径: $data_path"
 
-    cd "$(dirname "$0")/ansible"
-
     build_docker_image
+    build_dashboard_image
+
+    cd "$(dirname "$0")/ansible"
 
     if [[ $DRY_RUN == "true" ]]; then
         log_info "干运行模式 - 将要执行的命令:"
@@ -439,6 +497,7 @@ deploy_swarm() {
     ansible-playbook -i inventory/swarm.ini swarm-deploy.yml
 
     log_success "Swarm 集群部署完成!"
+    log_info "服务架构: client(dashboard) + server(miniodb)"
     log_info "请检查各个节点的服务状态:"
     log_info "  节点1 (miniodb+redis): docker service ps miniodb_swarm_miniodb"
     log_info "  节点2 (minio): docker service ps miniodb_swarm_minio"
@@ -454,21 +513,21 @@ cleanup_deployment() {
             log_info "清理开发模式部署..."
             cd "$(dirname "$0")/docker"
             if command -v docker-compose &> /dev/null; then
-                docker-compose -f docker-compose.dev.yml down -v
-            else
-                docker compose -f docker-compose.dev.yml down -v
-            fi
-            log_success "开发模式部署已清理"
-            ;;
-        "test")
-            log_info "清理集成测试模式部署..."
-            cd "$(dirname "$0")/docker"
-            if command -v docker-compose &> /dev/null; then
                 docker-compose down -v
             else
                 docker compose down -v
             fi
-            log_success "集成测试模式部署已清理"
+            log_success "开发模式部署已清理"
+            ;;
+        "ansible")
+            log_info "清理 Ansible 部署..."
+            cd "$(dirname "$0")/ansible"
+            if [[ ! -f "inventory/hosts.ini" ]]; then
+                log_warning "清单文件不存在，请手动清理"
+                return
+            fi
+            ansible-playbook -i inventory/hosts.ini site.yml --tags cleanup || log_warning "清理 playbook 执行失败，请手动清理"
+            log_success "Ansible 部署已清理（或请手动清理）"
             ;;
         "swarm")
             log_info "清理 Swarm 集群部署..."
@@ -495,7 +554,7 @@ main() {
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case $1 in
-            dev|test|swarm|k8s)
+            dev|ansible|swarm|k8s)
                 deploy_mode=$1
                 shift
                 ;;
@@ -526,6 +585,10 @@ main() {
                 ;;
             --dry-run)
                 DRY_RUN=true
+                shift
+                ;;
+            --no-cache|--force-rebuild)
+                FORCE_REBUILD=true
                 shift
                 ;;
             --cleanup)
@@ -575,7 +638,7 @@ main() {
 
     # 检查部署模式
     if [[ -z "$deploy_mode" ]]; then
-        log_error "请指定部署模式: dev, test, swarm, 或 k8s"
+        log_error "请指定部署模式: dev, ansible, swarm, 或 k8s"
         show_help
         exit 1
     fi
@@ -600,8 +663,8 @@ main() {
             "dev")
                 deploy_dev
                 ;;
-            "test")
-                deploy_test
+            "ansible")
+                deploy_ansible
                 ;;
             "swarm")
                 deploy_swarm
@@ -619,6 +682,8 @@ NAMESPACE=${MINIODB_NAMESPACE:-miniodb-system}
 REPLICAS=${MINIODB_REPLICAS:-2}
 DRY_RUN=${DRY_RUN:-false}
 FORCE=${FORCE:-false}
+FORCE_REBUILD=${FORCE_REBUILD:-false}
 
 # 执行主函数
 main "$@"
+exit 0

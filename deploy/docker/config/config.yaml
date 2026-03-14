@@ -2,7 +2,13 @@ server:
   grpc_port: ":8080"
   rest_port: ":8081"
   node_id: "test-node-1"
-  
+
+# Dashboard（allinone 模式下启用，监听 9090）
+dashboard:
+  enabled: true
+  port: ":9090"
+  base_path: "/"
+
 # 网络和连接池配置 - 统一管理所有网络连接
 network:
   # 服务器网络配置

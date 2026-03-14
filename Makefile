@@ -26,10 +26,10 @@ clean:
 	rm -rf bin/ coverage.out coverage.html
 
 docker:
-	docker build -t miniodb:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile -t miniodb:$(VERSION) .
 
 docker-arm:
-	docker build -f Dockerfile.arm -t miniodb:$(VERSION)-arm .
+	docker build -f deploy/docker/Dockerfile.arm -t miniodb:$(VERSION)-arm .
 
 swagger:
 	swag init -g cmd/main.go -o docs
@@ -50,7 +50,7 @@ build-with-dashboard: dashboard-ui
 	go build -tags dashboard $(LDFLAGS) -o bin/miniodb ./cmd/
 
 docker-dashboard:
-	docker build -f Dockerfile.dashboard -t miniodb-dashboard:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile.dashboard -t miniodb-dashboard:$(VERSION) .
 
 docker-allinone: 
-	docker build -f Dockerfile --build-arg BUILD_TAGS=dashboard -t miniodb:$(VERSION)-allinone .
+	docker build -f deploy/docker/Dockerfile --build-arg BUILD_TAGS=dashboard -t miniodb:$(VERSION)-allinone .

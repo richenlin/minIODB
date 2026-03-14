@@ -1,0 +1,42 @@
+# 运行时数据与日志（避免构建时无权限读取容器创建的文件）
+deploy/docker/data
+logs
+data
+*.log
+
+# 版本控制与 IDE
+.git
+.gitignore
+.cursor
+.vscode
+*.swp
+*~
+
+# 构建产物与临时文件
+bin
+miniodb
+minIODB
+dashboard
+.opencode
+coverage.out
+coverage.html
+
+# 测试与性能
+test/performance/results
+test/performance/test_results
+test/performance/tools/data_generator
+test/performance/tools/jwt_generator
+miniodb-test
+
+# 前端开发依赖（镜像内会重新 npm ci）
+dashboard-ui/node_modules
+dashboard-ui/.next
+dashboard-ui/out
+
+# 其他
+*.md
+!README.md
+Dockerfile*
+docker-compose*.yml
+.env
+.env.*

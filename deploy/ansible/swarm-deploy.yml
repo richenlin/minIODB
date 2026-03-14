@@ -159,6 +159,31 @@
                 - minio
                 - minio-backup
 
+            # Dashboard - Web UI (client 端，在 miniodb 节点)
+            dashboard:
+              image: miniodb-dashboard:latest
+              deploy:
+                mode: replicated
+                replicas: 1
+                placement:
+                  constraints:
+                    - node.labels.miniodb_role == miniodb_redis
+                restart_policy:
+                  condition: on-failure
+                  delay: 5s
+                  max_attempts: 3
+              ports:
+                - "9091:9090"
+              environment:
+                - DASHBOARD_PORT=:9090
+                - DASHBOARD_CORE_ENDPOINT=http://miniodb:8081
+                - DASHBOARD_CORE_GRPC_ENDPOINT=miniodb:8080
+                - LOG_LEVEL=info
+                - LOG_FORMAT=json
+              networks:
+                - miniodb-network
+              # 注意：Docker Swarm stack 不支持 depends_on，服务启动顺序由 restart_policy 保障
+
           networks:
             miniodb-network:
               driver: overlay
@@ -200,3 +225,4 @@
           - MinIO Console:     http://{{ ansible_default_ipv4.address }}:9001
           - MinIO Backup:      http://{{ ansible_default_ipv4.address }}:9003
           - Prometheus:       http://{{ ansible_default_ipv4.address }}:9090/metrics
+          - Dashboard UI:      http://{{ ansible_default_ipv4.address }}:9091

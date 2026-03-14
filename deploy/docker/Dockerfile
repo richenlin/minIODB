@@ -42,14 +42,18 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 复制前端构建产物（用于 embed.FS 嵌入）
+# 复制前端构建产物到 internal/dashboard/static（供 embed.FS 嵌入）
 COPY --from=ui-builder /app/dashboard-ui/out /app/dashboard-ui/out
+RUN rm -rf internal/dashboard/static && cp -r dashboard-ui/out internal/dashboard/static
 
 # 构建应用（带 dashboard build tag，支持 Dashboard UI）
 RUN go build -tags dashboard -o miniodb cmd/main.go
 
 # Stage 3: Runtime
 FROM ubuntu:24.04
+
+# 避免 apt/tzdata 交互式提示
+ENV DEBIAN_FRONTEND=noninteractive
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y \

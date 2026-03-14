@@ -3,6 +3,8 @@
 package rest
 
 import (
+	"net/http"
+
 	"minIODB/config"
 	"minIODB/internal/dashboard"
 	"minIODB/internal/dashboard/client"
@@ -43,4 +45,32 @@ func MountDashboardToRouter(router *gin.Engine, cfg *config.Config, logger *zap.
 
 func NewDashboardServer(coreClient client.CoreClient, cfg *config.Config, logger *zap.Logger) *dashboard.Server {
 	return dashboard.NewServer(coreClient, cfg, logger)
+}
+
+// startStandaloneDashboardServer 在 Dashboard.Port（如 9090）上启动仅含 Dashboard 与 /metrics 的 HTTP 服务
+func startStandaloneDashboardServer(s *Server, metricsHandler http.HandlerFunc, serviceRegistry *discovery.ServiceRegistry, redisPool *pool.RedisPool) {
+	if !s.cfg.Dashboard.Enabled || s.cfg.Dashboard.Port == "" {
+		return
+	}
+	gin.SetMode(gin.ReleaseMode)
+	engine := gin.New()
+	engine.Use(gin.Recovery())
+	// /metrics 由 allinone 与 Prometheus 共用
+	if metricsHandler != nil {
+		engine.Any("/metrics", gin.WrapF(metricsHandler))
+	}
+	params := DashboardParams{
+		Service:         s.miniodbService,
+		MetadataManager: s.metadataManager,
+		ServiceRegistry: serviceRegistry,
+		RedisPool:       redisPool,
+	}
+	MountDashboardToRouter(engine, s.cfg, s.logger, params)
+	srv := &http.Server{Addr: s.cfg.Dashboard.Port, Handler: engine}
+	go func() {
+		s.logger.Info("Standalone dashboard server starting", zap.String("port", s.cfg.Dashboard.Port))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Fatal("Standalone dashboard server failed", zap.Error(err))
+		}
+	}()
 }

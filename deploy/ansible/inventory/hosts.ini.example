@@ -1,0 +1,34 @@
+# MinIODB Ansible 直接部署 Inventory
+# 用于 deploy.sh ansible 模式（client/server 分离）
+#
+# 使用方法：
+#   1. 替换下方的 IP 地址为实际主机地址
+#   2. 配置 SSH 密钥路径
+#   3. 运行: ./deploy/deploy.sh ansible
+
+[miniodb_nodes]
+# MinIODB Server 节点（可以是多台）
+node1 ansible_host=192.168.1.10 ansible_user=root
+
+[dashboard_nodes]
+# Dashboard Client 节点（可以与 miniodb_nodes 分离，也可以是同一台）
+node1 ansible_host=192.168.1.10 ansible_user=root
+
+[all:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_python_interpreter=/usr/bin/python3
+
+# MinIODB 服务配置
+miniodb_api_host=192.168.1.10       # miniodb server 的 IP（dashboard 连接此地址）
+redis_host=192.168.1.10
+redis_password=redis123
+minio_endpoint=192.168.1.10:9000
+minio_access_key=minioadmin
+minio_secret_key=minioadmin123
+minio_backup_endpoint=192.168.1.10:9002
+minio_backup_access_key=minioadmin
+minio_backup_secret_key=minioadmin123
+auth_jwt_secret=change-this-in-production
+
+# 自动部署基础设施（Redis、MinIO）
+auto_deploy_services=true

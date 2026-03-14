@@ -1390,6 +1390,9 @@ func (c *Config) overrideWithEnv() {
 		}
 		c.Server.RestPort = restPort
 	}
+	if v := os.Getenv("DASHBOARD_ENABLED"); v == "true" || v == "1" {
+		c.Dashboard.Enabled = true
+	}
 
 	// 备份MinIO配置环境变量覆盖
 	if minioBackupEndpoint := os.Getenv("MINIO_BACKUP_ENDPOINT"); minioBackupEndpoint != "" {

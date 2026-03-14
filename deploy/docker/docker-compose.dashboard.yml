@@ -12,8 +12,8 @@ version: '3.8'
 services:
   dashboard:
     build:
-      context: .
-      dockerfile: Dockerfile.dashboard
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.dashboard
     image: miniodb-dashboard:latest
     container_name: miniodb-dashboard
     restart: unless-stopped
@@ -30,13 +30,10 @@ services:
       - LOG_LEVEL=info
       - LOG_FORMAT=json
     volumes:
-      - ./config:/app/config:ro
+      - ../../config:/app/config:ro
       - dashboard_logs:/app/logs
     networks:
       - miniodb-network
-    depends_on:
-      miniodb:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 30s

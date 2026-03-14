@@ -244,10 +244,10 @@ func main() {
 		}
 	}
 
-	// 启动指标服务器和告警管理器
+	// 启动指标服务器和告警管理器（Dashboard 启用时由 9090 上的 dashboard 服务一并提供 /metrics）
 	var metricsServer *http.Server
 	var systemMonitor *metrics.SystemMonitor
-	if cfg.Metrics.Enabled {
+	if cfg.Metrics.Enabled && !cfg.Dashboard.Enabled {
 		metricsServer = startMetricsServer(cfg)
 		systemMonitor = metrics.NewSystemMonitor()
 		systemMonitor.Start()
@@ -365,6 +365,10 @@ func main() {
 
 	// 挂载 Dashboard (All-in-One 模式)
 	restServer.EnableDashboard(serviceRegistry, redisPool)
+	// 若启用 Dashboard，在 9090 上启动独立 HTTP 服务（Dashboard UI + /metrics）
+	if cfg.Dashboard.Enabled {
+		restServer.StartStandaloneDashboardServer(getMetricsHandler(cfg), serviceRegistry, redisPool)
+	}
 
 	go func() {
 		if err := restServer.Start(cfg.Server.RestPort); err != nil {
@@ -490,39 +494,37 @@ func startBackupRoutine(ctx context.Context, primaryMinio, backupMinio storage.U
 	}
 }
 
-func startMetricsServer(cfg *config.Config) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+func getMetricsHandler(cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.WriteHeader(http.StatusOK)
-
-		var metrics []string
-		metrics = append(metrics, "# HELP miniodb_info MinIODB service information")
-		metrics = append(metrics, "# TYPE miniodb_info gauge")
-		metrics = append(metrics, fmt.Sprintf(`miniodb_info{version="%s",node_id="%s"} 1`, version.Get(), cfg.Server.NodeID))
-		metrics = append(metrics, "# HELP miniodb_start_time_seconds MinIODB start time in unix timestamp")
-		metrics = append(metrics, "# TYPE miniodb_start_time_seconds gauge")
-		metrics = append(metrics, fmt.Sprintf("miniodb_start_time_seconds %d", time.Now().Unix()))
-
-		for _, metric := range metrics {
-			w.Write([]byte(metric + "\n"))
+		var lines []string
+		lines = append(lines, "# HELP miniodb_info MinIODB service information")
+		lines = append(lines, "# TYPE miniodb_info gauge")
+		lines = append(lines, fmt.Sprintf(`miniodb_info{version="%s",node_id="%s"} 1`, version.Get(), cfg.Server.NodeID))
+		lines = append(lines, "# HELP miniodb_start_time_seconds MinIODB start time in unix timestamp")
+		lines = append(lines, "# TYPE miniodb_start_time_seconds gauge")
+		lines = append(lines, fmt.Sprintf("miniodb_start_time_seconds %d", time.Now().Unix()))
+		for _, line := range lines {
+			w.Write([]byte(line + "\n"))
 		}
+		logger.Sugar.Debugf("Metrics endpoint accessed - metric_lines: %d", len(lines))
+	}
+}
 
-		logger.Sugar.Debugf("Metrics endpoint accessed - metric_lines: %d", len(metrics))
-	})
-
+func startMetricsServer(cfg *config.Config) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", getMetricsHandler(cfg))
 	metricsServer := &http.Server{
 		Addr:    fmt.Sprintf(":%s", cfg.Metrics.Port),
 		Handler: mux,
 	}
-
 	go func() {
 		logger.Sugar.Infof("Starting metrics server"+": %s", "port", cfg.Metrics.Port)
 		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Sugar.Fatalf("Failed to start metrics server: %v", err)
 		}
 	}()
-
 	return metricsServer
 }
 

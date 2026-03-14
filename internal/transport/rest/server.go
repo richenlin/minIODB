@@ -472,6 +472,11 @@ func (s *Server) EnableDashboard(serviceRegistry *discovery.ServiceRegistry, red
 	MountDashboardToRouter(s.router, s.cfg, s.logger, params)
 }
 
+// StartStandaloneDashboardServer 在 Dashboard.Port（如 9090）上启动仅含 Dashboard 与 /metrics 的 HTTP 服务（allinone 时与 REST 分离）
+func (s *Server) StartStandaloneDashboardServer(metricsHandler http.HandlerFunc, serviceRegistry *discovery.ServiceRegistry, redisPool *pool.RedisPool) {
+	startStandaloneDashboardServer(s, metricsHandler, serviceRegistry, redisPool)
+}
+
 // setupRoutes 设置路由
 func (s *Server) setupRoutes() {
 	// Swagger API文档路由（根据配置决定是否启用）

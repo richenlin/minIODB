@@ -3,6 +3,8 @@
 package rest
 
 import (
+	"net/http"
+
 	"minIODB/config"
 	"minIODB/internal/discovery"
 	"minIODB/internal/metadata"
@@ -25,3 +27,5 @@ func MountDashboardToRouter(_ *gin.Engine, cfg *config.Config, logger *zap.Logge
 		logger.Warn("Dashboard enabled but binary was built without dashboard support. Rebuild with -tags dashboard")
 	}
 }
+
+func startStandaloneDashboardServer(_ *Server, _ http.HandlerFunc, _ *discovery.ServiceRegistry, _ *pool.RedisPool) {}

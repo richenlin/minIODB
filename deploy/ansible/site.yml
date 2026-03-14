@@ -81,6 +81,11 @@
     # 部署MinIODB应用
     - role: miniodb
       tags: miniodb
+
+    # 部署 Dashboard（client 端，连接 miniodb server）
+    - role: dashboard
+      when: "'dashboard' in services | default(['redis', 'minio', 'miniodb', 'dashboard'])"
+      tags: dashboard
       
     # 配置监控（可选）
     - role: monitoring
@@ -120,6 +125,11 @@
           - MinIO Backup API: http://{{ ansible_default_ipv4.address }}:{{ minio.backup_api_port | default(9002) }}
           - MinIO Backup Console: http://{{ ansible_default_ipv4.address }}:{{ minio.backup_console_port | default(9003) }}
           {% endif %}
+          {% endif %}
+          
+          {% if 'dashboard' in services | default(['redis', 'minio', 'miniodb', 'dashboard']) %}
+          Dashboard:
+          - Dashboard UI: http://{{ ansible_default_ipv4.address }}:{{ dashboard.port | default(9090) }}
           {% endif %}
           
           Configuration:
