@@ -38,6 +38,18 @@ type Config struct {
 	SLA               SLAConfig               `yaml:"sla"`           // SLA监控配置
 	Benchmark         BenchmarkConfig         `yaml:"benchmark"`     // 基准测试配置
 	Swagger           SwaggerConfig           `yaml:"swagger"`       // Swagger文档配置
+	Dashboard         DashboardConfig         `yaml:"dashboard"`     // Dashboard配置
+}
+
+type DashboardConfig struct {
+	Enabled               bool          `yaml:"enabled"`
+	Port                  string        `yaml:"port"`
+	BasePath              string        `yaml:"base_path"`
+	CoreEndpoint          string        `yaml:"core_endpoint"`
+	CoreGRPCEndpoint      string        `yaml:"core_grpc_endpoint"`
+	MetricsScrapeInterval time.Duration `yaml:"metrics_scrape_interval"`
+	LogDir                string        `yaml:"log_dir"`
+	BackupDir             string        `yaml:"backup_dir"`
 }
 
 // TableConfig 表级配置
@@ -446,8 +458,10 @@ type LogConfig struct {
 
 // APIKeyPair API凭证对（包含Key和Secret）
 type APIKeyPair struct {
-	Key    string `yaml:"key"`
-	Secret string `yaml:"secret"`
+	Key         string `yaml:"key"`
+	Secret      string `yaml:"secret"`
+	Role        string `yaml:"role" json:"role"`                   // 预留字段，当前默认 "root"（全部权限）
+	DisplayName string `yaml:"display_name" json:"display_name"` // 显示名称
 }
 
 // AuthConfig 认证配置
@@ -1304,6 +1318,16 @@ func (c *Config) setDefaults() {
 		BasePath:    "/v1",            // API基础路径
 		Title:       "MinIODB API",    // API标题
 		Description: "基于MinIO+DuckDB+Redis的分布式OLAP系统API",
+	}
+
+	// Dashboard配置默认值
+	c.Dashboard = DashboardConfig{
+		Enabled:               false,
+		Port:                  ":9090",
+		BasePath:              "/dashboard",
+		CoreEndpoint:          "http://localhost:8081",
+		CoreGRPCEndpoint:      "localhost:8080",
+		MetricsScrapeInterval: 5 * time.Second,
 	}
 }
 

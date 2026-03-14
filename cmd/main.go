@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
+	"golang.org/x/crypto/bcrypt"
 
 	"minIODB/config"
 	"minIODB/pkg/version"
@@ -68,6 +69,21 @@ import (
 )
 
 func main() {
+	// 处理 --hash-password 命令行参数（用于生成密码哈希）
+	if len(os.Args) > 1 && os.Args[1] == "--hash-password" {
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: miniodb --hash-password <password>")
+			os.Exit(1)
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(os.Args[2]), bcrypt.DefaultCost)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(hash))
+		os.Exit(0)
+	}
+
 	// 创建全局WaitGroup用于等待所有goroutine
 	var wg sync.WaitGroup
 
@@ -346,6 +362,9 @@ func main() {
 		logger.Sugar.Fatalf("Failed to create REST server: %v", err)
 	}
 	restServer.SetCoordinators(writeCoord, queryCoord)
+
+	// 挂载 Dashboard (All-in-One 模式)
+	restServer.EnableDashboard(serviceRegistry, redisPool)
 
 	go func() {
 		if err := restServer.Start(cfg.Server.RestPort); err != nil {

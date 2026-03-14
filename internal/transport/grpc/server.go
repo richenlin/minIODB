@@ -678,7 +678,7 @@ func (s *Server) GetToken(ctx context.Context, req *miniodb.GetTokenRequest) (*m
 	}
 
 	// 验证凭证有效性
-	if !s.authManager.ValidateCredentials(req.ApiKey, req.Secret) {
+	if matched, _, _ := s.authManager.ValidateCredentials(req.ApiKey, req.Secret); !matched {
 		s.logger.Sugar().Infof("WARN: Invalid credentials for API key: %s", req.ApiKey)
 		return nil, fmt.Errorf("invalid credentials")
 	}

@@ -19,3 +19,5 @@ data/wal/*.log
 .gitignore
 logs/minIODB.log
 .opencode/
+miniodb
+dashboard

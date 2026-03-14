@@ -1,4 +1,5 @@
-.PHONY: build test lint vet clean docker docker-arm swagger proto test-coverage
+.PHONY: build test lint vet clean docker docker-arm swagger proto test-coverage \
+	dashboard-ui dashboard build-with-dashboard docker-dashboard docker-allinone
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -35,3 +36,21 @@ swagger:
 
 proto:
 	protoc --go_out=. --go-grpc_out=. api/proto/miniodb/v1/miniodb.proto
+
+# Dashboard targets
+dashboard-ui:
+	cd dashboard-ui && npm ci && npm run build
+	rm -rf internal/dashboard/static
+	cp -r dashboard-ui/out internal/dashboard/static
+
+dashboard: dashboard-ui
+	go build -tags dashboard $(LDFLAGS) -o bin/miniodb-dashboard ./cmd/dashboard/
+
+build-with-dashboard: dashboard-ui
+	go build -tags dashboard $(LDFLAGS) -o bin/miniodb ./cmd/
+
+docker-dashboard:
+	docker build -f Dockerfile.dashboard -t miniodb-dashboard:$(VERSION) .
+
+docker-allinone: 
+	docker build -f Dockerfile --build-arg BUILD_TAGS=dashboard -t miniodb:$(VERSION)-allinone .

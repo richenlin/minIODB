@@ -28,6 +28,56 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// BackupResult 备份结果
+type BackupResult struct {
+	BackupID      string            `json:"backup_id"`
+	BackupType    string            `json:"backup_type"`     // "full" 或 "table"
+	TableName     string            `json:"table_name"`      // 表级备份时有效
+	Timestamp     time.Time         `json:"timestamp"`
+	Duration      time.Duration     `json:"duration"`
+	FilesCount    int               `json:"files_count"`
+	TotalSize     int64             `json:"total_size"`
+	MetadataSaved bool              `json:"metadata_saved"`
+	DataSaved     bool              `json:"data_saved"`
+	ObjectName    string            `json:"object_name"`     // MinIO 对象名
+	Details       map[string]string `json:"details,omitempty"`
+}
+
+// TableBackupManifest 表备份清单
+type TableBackupManifest struct {
+	BackupID      string                 `json:"backup_id"`
+	BackupType    string                 `json:"backup_type"`
+	TableName     string                 `json:"table_name"`
+	SourceTable   string                 `json:"source_table"`   // 恢复时原始表名
+	TargetTable   string                 `json:"target_table"`   // 恢复时目标表名
+	Timestamp     time.Time              `json:"timestamp"`
+	NodeID        string                 `json:"node_id"`
+	TableConfig   *config.TableConfig    `json:"table_config"`
+	Files         []TableBackupFileInfo  `json:"files"`
+	MetadataKeys  []string               `json:"metadata_keys"`  // 相关的 Redis 键
+	TotalSize     int64                  `json:"total_size"`
+	Version       string                 `json:"version"`
+}
+
+// TableBackupFileInfo 表备份文件信息
+type TableBackupFileInfo struct {
+	OriginalPath string `json:"original_path"` // 原始对象路径
+	BackupPath   string `json:"backup_path"`   // 备份对象路径
+	Size         int64  `json:"size"`
+}
+
+// FullBackupManifest 全量备份清单
+type FullBackupManifest struct {
+	BackupID     string                        `json:"backup_id"`
+	BackupType   string                        `json:"backup_type"` // "full"
+	Timestamp    time.Time                     `json:"timestamp"`
+	NodeID       string                        `json:"node_id"`
+	Tables       []TableBackupManifest         `json:"tables"`
+	MetadataFile string                        `json:"metadata_file"` // 元数据备份文件
+	TotalSize    int64                         `json:"total_size"`
+	Version      string                        `json:"version"`
+}
+
 // MinIODBService 实现MinIODBServiceServer接口
 type MinIODBService struct {
 	miniodb.UnimplementedMinIODBServiceServer

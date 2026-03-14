@@ -13,8 +13,10 @@ import (
 
 // APIKeyPair API凭证对（包含Key和Secret）
 type APIKeyPair struct {
-	Key    string `yaml:"key" json:"key"`
-	Secret string `yaml:"secret" json:"secret"`
+	Key         string `yaml:"key" json:"key"`
+	Secret      string `yaml:"secret" json:"secret"`
+	Role        string `yaml:"role" json:"role"`                   // 预留字段，当前默认 "root"（全部权限）
+	DisplayName string `yaml:"display_name" json:"display_name"` // 显示名称
 }
 
 // AuthConfig 认证配置
@@ -53,11 +55,18 @@ type User struct {
 	Username string `json:"username"`
 }
 
+// credentialInfo 存储凭证的完整信息
+type credentialInfo struct {
+	hashedSecret string
+	role         string
+	displayName  string
+}
+
 // AuthManager 认证管理器
 type AuthManager struct {
 	config      *AuthConfig
-	credentials map[string]string // apiKey -> bcrypt hash of apiSecret
-	mu          sync.RWMutex      // 保护 credentials 的并发访问
+	credentials map[string]credentialInfo // apiKey -> credentialInfo
+	mu          sync.RWMutex              // 保护 credentials 的并发访问
 }
 
 // NewAuthManager 创建认证管理器
@@ -77,13 +86,25 @@ func NewAuthManager(config *AuthConfig) (*AuthManager, error) {
 
 	am := &AuthManager{
 		config:      config,
-		credentials: make(map[string]string),
+		credentials: make(map[string]credentialInfo),
 	}
 
 	// 从配置加载凭证
 	for _, keyPair := range config.APIKeyPairs {
 		if keyPair.Key != "" && keyPair.Secret != "" {
-			am.credentials[keyPair.Key] = hashPassword(keyPair.Secret)
+			role := keyPair.Role
+			if role == "" {
+				role = "root" // 默认角色为 root（全部权限）
+			}
+			hashedSecret, err := hashPassword(keyPair.Secret)
+			if err != nil {
+				return nil, fmt.Errorf("failed to hash secret for key %s: %w", keyPair.Key, err)
+			}
+			am.credentials[keyPair.Key] = credentialInfo{
+				hashedSecret: hashedSecret,
+				role:         role,
+				displayName:  keyPair.DisplayName,
+			}
 		}
 	}
 
@@ -169,34 +190,64 @@ func (am *AuthManager) GenerateToken(userID, username string) (string, error) {
 	return tokenString, nil
 }
 
-// ValidateCredentials 验证API凭证
-// 返回 true 表示凭证有效，false 表示无效
-func (am *AuthManager) ValidateCredentials(apiKey, apiSecret string) bool {
+// ValidateCredentials 验证API凭证并返回角色信息
+// 返回 matched=true 表示凭证有效，同时返回角色和显示名称
+// 用于统一 Dashboard 登录和核心 API 认证
+func (am *AuthManager) ValidateCredentials(apiKey, apiSecret string) (matched bool, role string, displayName string) {
 	if apiKey == "" || apiSecret == "" {
-		return false
+		return false, "", ""
 	}
 
 	am.mu.RLock()
 	defer am.mu.RUnlock()
 
-	hashedSecret, exists := am.credentials[apiKey]
+	credInfo, exists := am.credentials[apiKey]
 	if !exists {
-		return false
+		return false, "", ""
 	}
 
-	return verifyPassword(apiSecret, hashedSecret)
+	if verifyPassword(apiSecret, credInfo.hashedSecret) {
+		return true, credInfo.role, credInfo.displayName
+	}
+	return false, "", ""
+}
+
+// ValidateCredentialsWithRole 验证凭证并返回角色信息（Dashboard 登录使用）
+// Deprecated: 请使用 ValidateCredentials，两者功能相同
+func (am *AuthManager) ValidateCredentialsWithRole(apiKey, apiSecret string) (matched bool, role string, displayName string) {
+	return am.ValidateCredentials(apiKey, apiSecret)
 }
 
 // AddCredential 添加或更新API凭证（用于动态管理）
-func (am *AuthManager) AddCredential(apiKey, apiSecret string) {
+func (am *AuthManager) AddCredential(apiKey, apiSecret string) error {
+	return am.AddCredentialWithRole(apiKey, apiSecret, "root", "")
+}
+
+// AddCredentialWithRole 添加或更新API凭证（包含角色信息）
+func (am *AuthManager) AddCredentialWithRole(apiKey, apiSecret, role, displayName string) error {
 	if apiKey == "" || apiSecret == "" {
-		return
+		return nil
+	}
+
+	if role == "" {
+		role = "root"
+	}
+
+	hashedSecret, err := hashPassword(apiSecret)
+	if err != nil {
+		return fmt.Errorf("failed to hash secret: %w", err)
 	}
 
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
-	am.credentials[apiKey] = hashPassword(apiSecret)
+	am.credentials[apiKey] = credentialInfo{
+		hashedSecret: hashedSecret,
+		role:         role,
+		displayName:  displayName,
+	}
+
+	return nil
 }
 
 // RemoveCredential 移除API凭证
@@ -238,9 +289,12 @@ func generateRandomString(length int) (string, error) {
 }
 
 // hashPassword 哈希密码
-func hashPassword(password string) string {
-	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	return string(hashedPassword)
+func hashPassword(password string) (string, error) {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash password: %w", err)
+	}
+	return string(hashedPassword), nil
 }
 
 // verifyPassword 验证密码

@@ -11,9 +11,11 @@ import (
 	miniodbv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
 	"minIODB/internal/coordinator"
+	"minIODB/internal/discovery"
 	"minIODB/internal/metadata"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
+	"minIODB/pkg/pool"
 	"minIODB/pkg/version"
 
 	_ "minIODB/docs"
@@ -28,6 +30,12 @@ import (
 )
 
 // Server RESTful API服务器
+type MountDashboardParams struct {
+	MetadataManager *metadata.Manager
+	ServiceRegistry *discovery.ServiceRegistry
+	RedisPool       interface{}
+}
+
 type Server struct {
 	miniodbService   *service.MinIODBService
 	writeCoordinator *coordinator.WriteCoordinator
@@ -331,8 +339,10 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config, logge
 	apiKeyPairs := make([]security.APIKeyPair, len(cfg.Auth.APIKeyPairs))
 	for i, kp := range cfg.Auth.APIKeyPairs {
 		apiKeyPairs[i] = security.APIKeyPair{
-			Key:    kp.Key,
-			Secret: kp.Secret,
+			Key:         kp.Key,
+			Secret:      kp.Secret,
+			Role:        kp.Role,
+			DisplayName: kp.DisplayName,
 		}
 	}
 
@@ -449,6 +459,17 @@ func (s *Server) SetCoordinators(writeCoord *coordinator.WriteCoordinator, query
 // SetMetadataManager 设置元数据管理器
 func (s *Server) SetMetadataManager(manager *metadata.Manager) {
 	s.metadataManager = manager
+}
+
+// EnableDashboard 挂载 Dashboard 到 REST server
+func (s *Server) EnableDashboard(serviceRegistry *discovery.ServiceRegistry, redisPool *pool.RedisPool) {
+	params := DashboardParams{
+		Service:         s.miniodbService,
+		MetadataManager: s.metadataManager,
+		ServiceRegistry: serviceRegistry,
+		RedisPool:       redisPool,
+	}
+	MountDashboardToRouter(s.router, s.cfg, s.logger, params)
 }
 
 // setupRoutes 设置路由
@@ -892,7 +913,7 @@ func (s *Server) getToken(c *gin.Context) {
 	}
 
 	// 验证凭证有效性
-	if !s.authManager.ValidateCredentials(req.APIKey, req.APISecret) {
+	if matched, _, _ := s.authManager.ValidateCredentials(req.APIKey, req.APISecret); !matched {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
