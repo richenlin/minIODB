@@ -2,13 +2,14 @@ package security
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // APIKeyPair API凭证对（包含Key和Secret）
@@ -22,24 +23,19 @@ type APIKeyPair struct {
 // AuthConfig 认证配置
 type AuthConfig struct {
 	Mode            string        `yaml:"mode" json:"mode"`                         // "none" 或 "token"
-	JWTSecret       string        `yaml:"jwt_secret" json:"jwt_secret"`
 	TokenExpiration time.Duration `yaml:"token_expiration" json:"token_expiration"`
 	Issuer          string        `yaml:"issuer" json:"issuer"`
 	Audience        string        `yaml:"audience" json:"audience"`
-	// 预设的token列表，用于简单的token验证
-	ValidTokens []string `yaml:"valid_tokens" json:"valid_tokens"`
-	// API凭证对列表（推荐使用）
+	// API凭证对：key 作为 JWT payload 的 user_id，secret 作为该用户专属的 HMAC 签名密钥
 	APIKeyPairs []APIKeyPair `yaml:"api_key_pairs" json:"api_key_pairs"`
 }
 
 // DefaultAuthConfig 默认认证配置
 var DefaultAuthConfig = AuthConfig{
-	Mode:            "none",
-	JWTSecret:       "",
+	Mode:            "token",
 	TokenExpiration: 24 * time.Hour,
 	Issuer:          "miniodb",
 	Audience:        "miniodb-api",
-	ValidTokens:     []string{},
 }
 
 // Claims JWT声明
@@ -55,18 +51,18 @@ type User struct {
 	Username string `json:"username"`
 }
 
-// credentialInfo 存储凭证的完整信息
+// credentialInfo 存储凭证信息（secret 明文保存，用作 JWT 签名密钥）
 type credentialInfo struct {
-	hashedSecret string
-	role         string
-	displayName  string
+	secret      string // 明文 secret，作为 JWT 签名/验证密钥
+	role        string
+	displayName string
 }
 
 // AuthManager 认证管理器
 type AuthManager struct {
 	config      *AuthConfig
 	credentials map[string]credentialInfo // apiKey -> credentialInfo
-	mu          sync.RWMutex              // 保护 credentials 的并发访问
+	mu          sync.RWMutex
 }
 
 // NewAuthManager 创建认证管理器
@@ -75,35 +71,22 @@ func NewAuthManager(config *AuthConfig) (*AuthManager, error) {
 		config = &DefaultAuthConfig
 	}
 
-	// 如果是token模式但没有配置JWT密钥，生成一个
-	if config.Mode == "token" && config.JWTSecret == "" {
-		secret, err := generateRandomString(32)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate JWT secret: %w", err)
-		}
-		config.JWTSecret = secret
-	}
-
 	am := &AuthManager{
 		config:      config,
 		credentials: make(map[string]credentialInfo),
 	}
 
-	// 从配置加载凭证
+	// 从配置加载凭证（secret 直接存储，不做哈希处理）
 	for _, keyPair := range config.APIKeyPairs {
 		if keyPair.Key != "" && keyPair.Secret != "" {
 			role := keyPair.Role
 			if role == "" {
-				role = "root" // 默认角色为 root（全部权限）
-			}
-			hashedSecret, err := hashPassword(keyPair.Secret)
-			if err != nil {
-				return nil, fmt.Errorf("failed to hash secret for key %s: %w", keyPair.Key, err)
+				role = "root"
 			}
 			am.credentials[keyPair.Key] = credentialInfo{
-				hashedSecret: hashedSecret,
-				role:         role,
-				displayName:  keyPair.DisplayName,
+				secret:      keyPair.Secret,
+				role:        role,
+				displayName: keyPair.DisplayName,
 			}
 		}
 	}
@@ -116,145 +99,151 @@ func (am *AuthManager) IsEnabled() bool {
 	return am.config.Mode == "token"
 }
 
-// ValidateToken 验证token
+// ValidateToken 验证 JWT token
+//
+// 验证流程：
+//  1. 不验证签名地解析 JWT，取出 payload 中的 user_id
+//  2. 根据 user_id 查找该用户的 secret（作为签名密钥）
+//  3. 用该 secret 完整验证 JWT 签名及有效期
 func (am *AuthManager) ValidateToken(tokenString string) (*Claims, error) {
 	if am.config.Mode == "none" {
 		return nil, fmt.Errorf("authentication is disabled")
 	}
 
-	// 如果配置了预设token列表，先检查静态token
-	if len(am.config.ValidTokens) > 0 {
-		for _, validToken := range am.config.ValidTokens {
-			if tokenString == validToken {
-				// 返回默认用户信息
-				return &Claims{
-					UserID:   "static-user",
-					Username: "static-user",
-				}, nil
-			}
-		}
-	}
-
-	// 如果没有JWT密钥，只能使用静态token
-	if am.config.JWTSecret == "" {
-		return nil, fmt.Errorf("invalid token")
-	}
-
-	// 验证JWT token
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(am.config.JWTSecret), nil
-	})
-
+	// Step 1：不验证签名，解析出 payload 取 user_id
+	p := jwt.NewParser()
+	unverified, _, err := p.ParseUnverified(tokenString, &Claims{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}
 
-	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+	unverifiedClaims, ok := unverified.Claims.(*Claims)
+	if !ok || unverifiedClaims.UserID == "" {
+		return nil, fmt.Errorf("invalid token: missing user_id in payload")
+	}
+
+	// Step 2：根据 user_id 查找该用户的签名密钥
+	am.mu.RLock()
+	cred, exists := am.credentials[unverifiedClaims.UserID]
+	am.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("invalid token: unknown user")
+	}
+
+	// Step 3：用用户自己的 secret 完整验证 JWT
+	verified, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(cred.secret), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("token verification failed: %w", err)
+	}
+
+	if claims, ok := verified.Claims.(*Claims); ok && verified.Valid {
 		return claims, nil
 	}
 
 	return nil, fmt.Errorf("invalid token")
 }
 
-// GenerateToken 生成JWT token
+// GenerateToken 为指定用户生成 JWT，使用该用户自己的 secret 作为签名密钥
 func (am *AuthManager) GenerateToken(userID, username string) (string, error) {
 	if am.config.Mode == "none" {
 		return "", fmt.Errorf("authentication is disabled")
 	}
 
-	if am.config.JWTSecret == "" {
-		return "", fmt.Errorf("JWT secret not configured")
+	am.mu.RLock()
+	cred, exists := am.credentials[userID]
+	am.mu.RUnlock()
+
+	if !exists {
+		return "", fmt.Errorf("user not found: %s", userID)
+	}
+	if cred.secret == "" {
+		return "", fmt.Errorf("no secret configured for user: %s", userID)
+	}
+
+	expiration := am.config.TokenExpiration
+	if expiration == 0 {
+		expiration = 24 * time.Hour
 	}
 
 	claims := &Claims{
 		UserID:   userID,
 		Username: username,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(am.config.TokenExpiration)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    am.config.Issuer,
-			Audience:  []string{am.config.Audience},
+			Audience:  jwt.ClaimStrings{am.config.Audience},
 		},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(am.config.JWTSecret))
-	if err != nil {
-		return "", fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	return tokenString, nil
+	return token.SignedString([]byte(cred.secret))
 }
 
-// ValidateCredentials 验证API凭证并返回角色信息
+// ValidateCredentials 验证 API 凭证，使用 constant-time 比对防止时序攻击
 // 返回 matched=true 表示凭证有效，同时返回角色和显示名称
-// 用于统一 Dashboard 登录和核心 API 认证
 func (am *AuthManager) ValidateCredentials(apiKey, apiSecret string) (matched bool, role string, displayName string) {
 	if apiKey == "" || apiSecret == "" {
 		return false, "", ""
 	}
 
 	am.mu.RLock()
-	defer am.mu.RUnlock()
+	cred, exists := am.credentials[apiKey]
+	am.mu.RUnlock()
 
-	credInfo, exists := am.credentials[apiKey]
 	if !exists {
 		return false, "", ""
 	}
 
-	if verifyPassword(apiSecret, credInfo.hashedSecret) {
-		return true, credInfo.role, credInfo.displayName
+	// constant-time 比对，防止时序攻击
+	if subtle.ConstantTimeCompare([]byte(cred.secret), []byte(apiSecret)) == 1 {
+		return true, cred.role, cred.displayName
 	}
 	return false, "", ""
 }
 
-// ValidateCredentialsWithRole 验证凭证并返回角色信息（Dashboard 登录使用）
+// ValidateCredentialsWithRole 验证凭证并返回角色信息
 // Deprecated: 请使用 ValidateCredentials，两者功能相同
 func (am *AuthManager) ValidateCredentialsWithRole(apiKey, apiSecret string) (matched bool, role string, displayName string) {
 	return am.ValidateCredentials(apiKey, apiSecret)
 }
 
-// AddCredential 添加或更新API凭证（用于动态管理）
+// AddCredential 添加或更新 API 凭证
 func (am *AuthManager) AddCredential(apiKey, apiSecret string) error {
 	return am.AddCredentialWithRole(apiKey, apiSecret, "root", "")
 }
 
-// AddCredentialWithRole 添加或更新API凭证（包含角色信息）
+// AddCredentialWithRole 添加或更新 API 凭证（含角色信息）
 func (am *AuthManager) AddCredentialWithRole(apiKey, apiSecret, role, displayName string) error {
 	if apiKey == "" || apiSecret == "" {
 		return nil
 	}
-
 	if role == "" {
 		role = "root"
-	}
-
-	hashedSecret, err := hashPassword(apiSecret)
-	if err != nil {
-		return fmt.Errorf("failed to hash secret: %w", err)
 	}
 
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
 	am.credentials[apiKey] = credentialInfo{
-		hashedSecret: hashedSecret,
-		role:         role,
-		displayName:  displayName,
+		secret:      apiSecret,
+		role:        role,
+		displayName: displayName,
 	}
-
 	return nil
 }
 
-// RemoveCredential 移除API凭证
+// RemoveCredential 移除 API 凭证
 func (am *AuthManager) RemoveCredential(apiKey string) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
-
 	delete(am.credentials, apiKey)
 }
 
@@ -262,43 +251,53 @@ func (am *AuthManager) RemoveCredential(apiKey string) {
 func (am *AuthManager) HasCredentials() bool {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
-
 	return len(am.credentials) > 0
 }
 
-// ExtractUserFromToken 从token中提取用户信息
+// GetUserRole 获取指定用户的角色
+func (am *AuthManager) GetUserRole(userID string) (string, bool) {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	if cred, ok := am.credentials[userID]; ok {
+		return cred.role, true
+	}
+	return "", false
+}
+
+// ExtractUserFromToken 从 token 中提取用户信息
 func (am *AuthManager) ExtractUserFromToken(tokenString string) (*User, error) {
 	claims, err := am.ValidateToken(tokenString)
 	if err != nil {
 		return nil, err
 	}
-
 	return &User{
 		ID:       claims.UserID,
 		Username: claims.Username,
 	}, nil
 }
 
-// generateRandomString 生成随机字符串
+// TokenExpiration 返回 token 过期时间配置
+func (am *AuthManager) TokenExpiration() time.Duration {
+	if am.config.TokenExpiration == 0 {
+		return 24 * time.Hour
+	}
+	return am.config.TokenExpiration
+}
+
+// generateRandomString 生成随机十六进制字符串
 func generateRandomString(length int) (string, error) {
-	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(bytes), nil
+	return hex.EncodeToString(b), nil
 }
 
-// hashPassword 哈希密码
-func hashPassword(password string) (string, error) {
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", fmt.Errorf("failed to hash password: %w", err)
+// extractBearerToken 从 Authorization header 中提取 Bearer token
+func extractBearerToken(authHeader string) string {
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+		return strings.TrimSpace(parts[1])
 	}
-	return string(hashedPassword), nil
+	return ""
 }
-
-// verifyPassword 验证密码
-func verifyPassword(password, hashedPassword string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
-	return err == nil
-} 

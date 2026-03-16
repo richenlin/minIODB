@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuthStore } from '@/stores/auth-store'
 import { apiClient } from '@/lib/api/client'
-import { LayersIcon } from '@radix-ui/react-icons'
+import { LayersIcon, InfoCircledIcon } from '@radix-ui/react-icons'
 
 export default function LoginPage() {
   const [apiKey, setApiKey] = useState('')
@@ -29,7 +29,7 @@ export default function LoginPage() {
     setLoading(true)
     setError('')
     try {
-      const response = await apiClient.login(apiKey.trim(), apiSecret)
+      const response = await apiClient.login(apiKey.trim(), apiSecret.trim())
       setAuth(response.token, response.user)
       router.push('/')
     } catch (err) {
@@ -41,7 +41,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-md px-4">
         <div className="rounded-xl border border-border bg-card p-8 shadow-sm">
           {/* Logo */}
           <div className="flex flex-col items-center mb-8">
@@ -54,30 +54,47 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">API Key</label>
+              <label className="text-sm font-medium text-foreground">
+                API Key
+                <span className="ml-1 text-xs text-destructive">*</span>
+              </label>
               <input
                 type="text"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="api-key-..."
+                placeholder="api-key-1234567890abcdef"
                 required
                 autoFocus
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
+                autoComplete="username"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors font-mono"
               />
             </div>
 
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-foreground">
                 API Secret
-                <span className="ml-1 text-xs text-muted-foreground font-normal">（可选）</span>
+                <span className="ml-1 text-xs text-destructive">*</span>
               </label>
               <input
                 type="password"
                 value={apiSecret}
                 onChange={(e) => setApiSecret(e.target.value)}
                 placeholder="••••••••"
+                required
+                autoComplete="current-password"
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
               />
+            </div>
+
+            {/* 凭证来源说明 */}
+            <div className="rounded-md bg-muted/50 border border-border px-3 py-2.5 text-xs text-muted-foreground">
+              <div className="flex items-start gap-1.5">
+                <InfoCircledIcon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <p>
+                  凭证来自 <code className="bg-muted rounded px-1">config.yaml → auth.api_key_pairs</code> 的 <code className="bg-muted rounded px-1">key</code> 和 <code className="bg-muted rounded px-1">secret</code>。
+                  Secret 同时作为 JWT 的签名密钥。
+                </p>
+              </div>
             </div>
 
             {error && (

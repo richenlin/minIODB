@@ -347,12 +347,10 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config, logge
 	}
 
 	authConfig := &security.AuthConfig{
-		Mode:            cfg.Security.Mode,
-		JWTSecret:       cfg.Security.JWTSecret,
+		Mode:            "token",
 		TokenExpiration: 24 * time.Hour,
 		Issuer:          "miniodb",
 		Audience:        "miniodb-api",
-		ValidTokens:     cfg.Security.ValidTokens,
 		APIKeyPairs:     apiKeyPairs,
 	}
 

@@ -61,12 +61,16 @@ network:
 # 认证
 # ──────────────────────────────────────────────────────────────────────────────
 auth:
-  enable_jwt: true
-  jwt_secret: "5Umj+4uj1HCHXhIVqg+8oes2KM+SvwAAmqWgxBwf3FE="   # 生产环境请替换
   token_expiry: "24h"
-  enable_api_key: true
-  api_keys:
-    - "api-key-1234567890abcdef"    # 生产环境请替换为强随机值
+
+  # API 凭证对：key 为 JWT payload 中的 user_id，secret 为该用户专属的 HMAC 签名密钥。
+  # Dashboard 登录与 REST API 均使用此处的 key / secret 进行认证。
+  # 生产环境请将 secret 替换为高强度随机字符串（建议 32 字符以上）。
+  api_key_pairs:
+    - key: "admin"
+      secret: "miniodb-admin-secret"   # 生产环境必须替换
+      role: "root"
+      display_name: "管理员"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 日志

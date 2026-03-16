@@ -466,12 +466,8 @@ type APIKeyPair struct {
 
 // AuthConfig 认证配置
 type AuthConfig struct {
-	EnableJWT        bool         `yaml:"enable_jwt"`
-	JWTSecret        string       `yaml:"jwt_secret"`
 	TokenExpiry      string       `yaml:"token_expiry"`
-	EnableAPIKey     bool         `yaml:"enable_api_key"`
-	APIKeys          []string     `yaml:"api_keys"`           // 保留向后兼容，但建议使用 APIKeyPairs
-	APIKeyPairs      []APIKeyPair `yaml:"api_key_pairs"`      // 结构化凭证配置
+	APIKeyPairs      []APIKeyPair `yaml:"api_key_pairs"` // key 为 JWT payload user_id，secret 为该用户的 HMAC 签名密钥
 	SkipAuthPaths    []string     `yaml:"skip_auth_paths"`
 	RequireAuthPaths []string     `yaml:"require_auth_paths"`
 }
@@ -1108,14 +1104,10 @@ func (c *Config) setDefaults() {
 	}
 
 	// 认证配置默认值
-	// 安全警告：默认不提供任何 API Key，生产环境必须通过配置文件或环境变量配置凭证
+	// 安全警告：默认不提供任何凭证，生产环境必须通过配置文件或环境变量配置 api_key_pairs
 	c.Auth = AuthConfig{
-		EnableJWT:        false,
-		JWTSecret:        "",
 		TokenExpiry:      "24h",
-		EnableAPIKey:     true,
-		APIKeys:          []string{},   // 默认不提供任何 API Key，避免安全风险
-		APIKeyPairs:      []APIKeyPair{}, // 默认不提供任何凭证对
+		APIKeyPairs:      []APIKeyPair{},
 		SkipAuthPaths:    DefaultSkipAuthPaths,
 		RequireAuthPaths: DefaultRequireAuthPaths,
 	}
@@ -1407,9 +1399,6 @@ func (c *Config) overrideWithEnv() {
 	if authMode := os.Getenv("AUTH_MODE"); authMode != "" {
 		c.Security.Mode = authMode
 	}
-	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
-		c.Auth.JWTSecret = jwtSecret
-	}
 }
 
 // validate 验证配置
@@ -1529,13 +1518,6 @@ func (c *Config) validate() error {
 		}
 		if c.Buffer.FlushInterval > 0 {
 			c.Tables.DefaultConfig.FlushInterval = c.Buffer.FlushInterval
-		}
-	}
-
-	// 验证认证配置
-	if c.Auth.EnableJWT {
-		if err := validateJWTSecret(c.Auth.JWTSecret); err != nil {
-			return fmt.Errorf("JWT secret validation failed: %w", err)
 		}
 	}
 
