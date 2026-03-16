@@ -35,6 +35,8 @@ export interface NodeResult {
   status: string
   last_seen: string
   metadata: Record<string, string>
+  /** True for synthetic infrastructure nodes (e.g. Redis coordinator) */
+  virtual?: boolean
 }
 
 export interface TableResult {
@@ -223,6 +225,102 @@ export interface LoginResponse {
 export interface ClusterTopology {
   nodes: NodeResult[]
   edges: { source: string; target: string; type: string }[]
+  redis_addr?: string
+  redis_mode?: string
+}
+
+/** Structured, editable configuration returned by GET /cluster/config/full */
+export interface FullConfig {
+  // server
+  node_id: string
+  grpc_port: string
+  rest_port: string
+  // redis
+  redis_mode: string
+  redis_addr: string
+  redis_password: string
+  redis_db: number
+  redis_master_name?: string
+  sentinel_addrs?: string[]
+  cluster_addrs?: string[]
+  // minio
+  minio_endpoint: string
+  minio_access_key_id: string
+  minio_secret_access_key: string
+  minio_use_ssl: boolean
+  minio_region: string
+  minio_bucket: string
+  // dashboard
+  core_endpoint: string
+  dashboard_port: string
+  // log
+  log_level: string
+  log_format: string
+  log_output: string
+  log_filename: string
+  // buffer
+  buffer_size: number
+  flush_interval: string
+  // read-only
+  mode: string
+  version: string
+  /**
+   * Maps config field keys to the environment variable name that is currently
+   * overriding them.  These values are correct for the running process but will
+   * be re-applied on every restart regardless of config.yaml.
+   * Example: { "redis_addr": "REDIS_HOST / REDIS_PORT" }
+   */
+  env_overrides?: Record<string, string>
+}
+
+export interface ConfigUpdateRequest {
+  node_id?: string
+  grpc_port?: string
+  rest_port?: string
+  redis_mode?: string
+  redis_addr?: string
+  redis_password?: string
+  redis_db?: number
+  redis_master_name?: string
+  sentinel_addrs?: string[]
+  cluster_addrs?: string[]
+  minio_endpoint?: string
+  minio_access_key_id?: string
+  minio_secret_access_key?: string
+  minio_use_ssl?: boolean
+  minio_region?: string
+  minio_bucket?: string
+  core_endpoint?: string
+  dashboard_port?: string
+  log_level?: string
+  log_format?: string
+  log_output?: string
+  log_filename?: string
+  buffer_size?: number
+  flush_interval?: string
+}
+
+export interface ConfigUpdateResult {
+  config_snippet: string
+  restart_required: boolean
+  message: string
+}
+
+export interface EnableDistributedRequest {
+  redis_mode: 'standalone' | 'sentinel' | 'cluster'
+  redis_addr?: string
+  redis_password?: string
+  redis_db?: number
+  master_name?: string
+  sentinel_addrs?: string[]
+  sentinel_password?: string
+  cluster_addrs?: string[]
+}
+
+export interface EnableDistributedResult {
+  config_snippet: string
+  restart_required: boolean
+  message: string
 }
 
 export interface ClusterInfo {
