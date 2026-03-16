@@ -90,8 +90,7 @@ export default function ClusterPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">集群管理</h1>
-            <p className="text-sm text-muted-foreground mt-1">查看集群整体状态与配置</p>
+            <p className="text-sm text-muted-foreground">查看集群整体状态与配置</p>
           </div>
           {!loading && (
             <Badge variant={isHealthy ? 'success' : 'error'}>

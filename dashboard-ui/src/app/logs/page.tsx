@@ -144,8 +144,7 @@ export default function LogsPage() {
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">日志</h1>
-            <p className="text-sm text-muted-foreground mt-1">系统运行日志记录与实时尾随</p>
+            <p className="text-sm text-muted-foreground">系统运行日志记录与实时尾随</p>
           </div>
           <div className="flex items-center gap-2">
             {sseEnabled && (

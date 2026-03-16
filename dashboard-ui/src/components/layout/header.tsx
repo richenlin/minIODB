@@ -1,14 +1,30 @@
 'use client'
 
 import { useAuthStore } from '@/stores/auth-store'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import { PersonIcon, ExitIcon, MoonIcon, SunIcon } from '@radix-ui/react-icons'
 import { useState, useEffect } from 'react'
+
+const PAGE_TITLES: Record<string, string> = {
+  '/': '总览',
+  '/cluster': '集群管理',
+  '/nodes': '节点管理',
+  '/monitor': '监控',
+  '/analytics': '分析',
+  '/data': '数据管理',
+  '/logs': '日志',
+  '/backup': '备份管理',
+  '/settings': '设置',
+}
 
 export function Header() {
   const { isAuthenticated, logout } = useAuthStore()
   const router = useRouter()
+  const pathname = usePathname()
   const [isDark, setIsDark] = useState(false)
+
+  const normalizedPath = pathname.length > 1 ? pathname.replace(/\/$/, '') : pathname
+  const pageTitle = PAGE_TITLES[normalizedPath] ?? 'Dashboard'
 
   useEffect(() => {
     // Check initial dark mode state
@@ -34,7 +50,7 @@ export function Header() {
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="flex items-center gap-4">
-        <h1 className="text-lg font-semibold">Dashboard</h1>
+        <h1 className="text-lg font-semibold">{pageTitle}</h1>
       </div>
 
       <div className="flex items-center gap-4">

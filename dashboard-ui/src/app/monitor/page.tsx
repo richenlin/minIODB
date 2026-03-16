@@ -41,8 +41,7 @@ export default function MonitorPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">监控</h1>
-            <p className="text-sm text-muted-foreground mt-1">实时性能指标</p>
+            <p className="text-sm text-muted-foreground">实时性能指标</p>
           </div>
           <Badge variant={connected ? 'success' : 'secondary'}>
             {connected ? 'SSE 已连接' : 'SSE 断开'}

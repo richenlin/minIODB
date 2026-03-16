@@ -60,8 +60,7 @@ export default function OverviewPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">总览</h1>
-            <p className="text-sm text-muted-foreground mt-1">MinIODB 集群整体状态</p>
+            <p className="text-sm text-muted-foreground">MinIODB 集群整体状态</p>
           </div>
           {!loading && (
             <Badge variant={isHealthy ? 'success' : 'error'}>

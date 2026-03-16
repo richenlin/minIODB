@@ -146,8 +146,7 @@ export default function AnalyticsPage() {
     <DashboardLayout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">分析</h1>
-          <p className="text-sm text-muted-foreground mt-1">SQL 查询与数据分析</p>
+          <p className="text-sm text-muted-foreground">SQL 查询与数据分析</p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

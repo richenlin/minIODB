@@ -113,8 +113,7 @@ export default function BackupPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">备份管理</h1>
-            <p className="text-sm text-muted-foreground mt-1">数据备份状态与管理</p>
+            <p className="text-sm text-muted-foreground">数据备份状态与管理</p>
           </div>
           <Button variant="outline" size="sm" onClick={fetchData} disabled={loading}>
             <ReloadIcon className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
