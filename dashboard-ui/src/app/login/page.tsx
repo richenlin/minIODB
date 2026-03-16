@@ -62,7 +62,7 @@ export default function LoginPage() {
                 type="text"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="api-key-1234567890abcdef"
+                placeholder="来自 config.yaml auth.api_key_pairs 的 key"
                 required
                 autoFocus
                 autoComplete="username"
@@ -79,7 +79,7 @@ export default function LoginPage() {
                 type="password"
                 value={apiSecret}
                 onChange={(e) => setApiSecret(e.target.value)}
-                placeholder="••••••••"
+                placeholder="来自 config.yaml auth.api_key_pairs 的 secret"
                 required
                 autoComplete="current-password"
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors"

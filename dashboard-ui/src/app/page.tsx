@@ -95,9 +95,13 @@ export default function OverviewPage() {
               description="数据表总数"
             />
             <StatCard
-              title="数据量"
-              value="--"
-              description="总数据量"
+              title="总记录数"
+              value={formatCount((clusterInfo?.total_records ?? 0) + (clusterInfo?.pending_writes ?? 0))}
+              description={
+                clusterInfo
+                  ? `落盘 ${formatCount(clusterInfo.total_records)} · buffer ${formatCount(clusterInfo.pending_writes)} · 统计${clusterInfo.stats_age_s >= 0 ? formatAge(clusterInfo.stats_age_s) + '前' : '加载中'}`
+                  : '统计加载中…'
+              }
             />
             <StatCard
               title="运行时间"
@@ -168,6 +172,20 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
       <span className={`font-medium ${mono ? 'font-mono text-xs' : ''}`}>{value}</span>
     </div>
   )
+}
+
+function formatAge(s: number): string {
+  if (s < 0) return '加载中'
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  return `${Math.floor(s / 3600)}h`
+}
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
 }
 
 function formatUptime(seconds: number): string {

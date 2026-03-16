@@ -1,5 +1,5 @@
-# Dockerfile.dashboard - 独立 Dashboard 镜像
-# 用于独立部署 Dashboard 服务，通过 HTTP/gRPC 连接核心服务
+# Dockerfile.dashboard.arm (ARM64)
+# 独立 Dashboard 镜像 —— ARM64 架构
 
 # Stage 1: Build Next.js SPA
 FROM node:22-alpine AS ui-builder
@@ -9,7 +9,7 @@ RUN npm ci --registry=https://registry.npmmirror.com
 COPY dashboard-ui/ ./
 RUN npm run build
 
-# Stage 2: Build Go binary (standalone dashboard)
+# Stage 2: Build Go binary (standalone dashboard, ARM64)
 FROM golang:1.24 AS builder
 
 WORKDIR /app
@@ -41,43 +41,32 @@ RUN go build -tags dashboard -ldflags="-s -w" -o dashboard ./cmd/dashboard/
 # Stage 3: Runtime
 FROM ubuntu:24.04
 
-# 安装运行时依赖
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     tzdata \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 设置时区
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 创建非 root 用户
 RUN groupadd -g 1001 miniodb && \
     useradd -r -u 1001 -g miniodb miniodb
 
-# 设置工作目录
 WORKDIR /app
 
-# 创建必要的目录
 RUN mkdir -p /app/logs /app/config && \
     chown -R miniodb:miniodb /app
 
-# 从构建阶段复制二进制文件
 COPY --from=builder /app/dashboard /app/dashboard
 
-# 设置权限
 RUN chmod +x /app/dashboard
 
-# 切换到非 root 用户
 USER miniodb
 
-# 暴露 Dashboard 端口
 EXPOSE 9090
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:9090/health || exit 1
 
-# 设置启动命令
 ENTRYPOINT ["/app/dashboard"]

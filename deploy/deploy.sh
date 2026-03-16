@@ -278,7 +278,14 @@ build_dashboard_image() {
     fi
     cd "$(dirname "$0")/docker"
 
-    local build_opts="-f Dockerfile.dashboard -t miniodb-dashboard:latest ../.."
+    local arch=$(uname -m)
+    local dockerfile="Dockerfile.dashboard"
+    if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
+        dockerfile="Dockerfile.dashboard.arm"
+        log_info "检测到 ARM64 架构，使用 $dockerfile"
+    fi
+
+    local build_opts="-f $dockerfile -t miniodb-dashboard:latest ../.."
     [[ "${FORCE_REBUILD}" == "true" ]] && build_opts="--no-cache $build_opts"
 
     if [[ $DRY_RUN == "true" ]]; then
@@ -313,14 +320,16 @@ deploy_dev() {
     mkdir -p "$data_path"/{redis,minio,minio-backup,logs}
     export DATA_PATH=$data_path
 
-    # 根据架构选择 Dockerfile（core 版本，不含 Dashboard 嵌入）
+    # 根据架构选择 Dockerfile（core 和 dashboard 均有 ARM64 专版）
     local arch=$(uname -m)
     if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
         export DOCKERFILE=deploy/docker/Dockerfile.core.arm
-        log_info "检测到 ARM64 架构，使用 Dockerfile.core.arm"
+        export DASHBOARD_DOCKERFILE=deploy/docker/Dockerfile.dashboard.arm
+        log_info "检测到 ARM64 架构，使用 Dockerfile.core.arm + Dockerfile.dashboard.arm"
     else
         export DOCKERFILE=deploy/docker/Dockerfile.core
-        log_info "检测到 AMD64 架构，使用 Dockerfile.core"
+        export DASHBOARD_DOCKERFILE=deploy/docker/Dockerfile.dashboard
+        log_info "检测到 AMD64 架构，使用 Dockerfile.core + Dockerfile.dashboard"
     fi
 
     if [[ $DRY_RUN == "true" ]]; then
@@ -336,9 +345,10 @@ deploy_dev() {
         use_compose_v2=true
     fi
 
-    # --no-cache 时先强制重新构建镜像
+    # --no-cache 时先删除旧镜像（避免 BuildKit "already exists" 覆盖冲突），再重新构建
     if [[ "${FORCE_REBUILD}" == "true" ]]; then
         log_info "强制重新构建镜像（--no-cache）..."
+        docker rmi miniodb:latest miniodb-dashboard:latest 2>/dev/null || true
         if $use_compose_v2; then
             docker compose build --no-cache
         else

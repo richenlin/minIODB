@@ -179,7 +179,7 @@ services:
   dashboard:
     build:
       context: ../../
-      dockerfile: deploy/docker/Dockerfile.dashboard
+      dockerfile: ${DASHBOARD_DOCKERFILE:-deploy/docker/Dockerfile.dashboard}
     image: miniodb-dashboard:${PLATFORM_TAG:-latest}
     container_name: miniodb-dashboard
     restart: unless-stopped

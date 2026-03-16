@@ -1,3 +1,6 @@
+/* Inter Variable — bundled via npm, no network needed at build time */
+@import '@fontsource-variable/inter';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -55,5 +58,6 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: 'Inter Variable', 'Inter', sans-serif;
   }
 }

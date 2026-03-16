@@ -232,4 +232,7 @@ export interface ClusterInfo {
   tables_count: number
   uptime: number
   version: string
+  total_records: number
+  pending_writes: number
+  stats_age_s: number   // seconds since last background stats refresh
 }

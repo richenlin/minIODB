@@ -15,12 +15,15 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  // In dev, proxy all /dashboard/api/* requests to the running Go backend
-  // so the browser doesn't hit CORS/404 errors.
+  // In dev, proxy all /dashboard/api/* requests to the running Go backend.
+  // basePath: false is required — without it Next.js prepends the basePath
+  // (/dashboard/ui) to the source, making it never match the absolute
+  // /dashboard/api/... URLs that client.ts sends.
   ...(isDev && {
     async rewrites() {
       return [
         {
+          basePath: false,
           source: '/dashboard/api/:path*',
           destination: `${backendOrigin}/dashboard/api/:path*`,
         },

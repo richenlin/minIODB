@@ -1414,6 +1414,9 @@ func (c *Config) overrideWithEnv() {
 	if authMode := os.Getenv("AUTH_MODE"); authMode != "" {
 		c.Security.Mode = authMode
 	}
+	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
+		c.Security.JWTSecret = jwtSecret
+	}
 }
 
 // validate 验证配置

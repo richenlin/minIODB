@@ -46,7 +46,7 @@ class ApiClient {
         error: 'Unknown',
         message: 'An unknown error occurred',
       }))
-      throw new Error(error.message || `HTTP ${response.status}`)
+      throw new Error(error.message || error.error || `HTTP ${response.status}`)
     }
 
     return response.json()
