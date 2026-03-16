@@ -44,7 +44,7 @@ MinIODB 统一部署脚本
     $0 [部署模式] [选项]
 
 部署模式:
-    dev         单机 allinone 模式 (miniodb + dashboard 一体化，含所有基础设施)
+    dev         单机解耦模式 (miniodb core + dashboard 独立容器，含所有基础设施)
     ansible     Ansible 直接部署 (client/server 分离，需要目标主机可 SSH 访问)
     swarm       Docker Swarm 集群模式 (client/server 分离，基于 Swarm 3节点部署)
     k8s         Kubernetes 集群模式 (client/server 分离，4个pod部署)
@@ -63,7 +63,7 @@ MinIODB 统一部署脚本
     -h, --help             显示此帮助信息
 
 示例:
-    # allinone 模式部署（开发/单机）
+    # 单机解耦模式部署（开发/单机）
     $0 dev
 
     # Ansible 直接部署
@@ -295,7 +295,7 @@ build_dashboard_image() {
 deploy_dev() {
     local data_path=${DATA_PATH:-./data}
 
-    log_info "开始单机 allinone 模式部署（miniodb + dashboard 一体化）..."
+    log_info "开始单机解耦模式部署（miniodb core + dashboard 独立容器）..."
     log_info "数据路径: $data_path"
 
     cd "$(dirname "$0")/docker"
@@ -313,14 +313,14 @@ deploy_dev() {
     mkdir -p "$data_path"/{redis,minio,minio-backup,logs}
     export DATA_PATH=$data_path
 
-    # 根据架构选择 Dockerfile
+    # 根据架构选择 Dockerfile（core 版本，不含 Dashboard 嵌入）
     local arch=$(uname -m)
     if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
-        export DOCKERFILE=deploy/docker/Dockerfile.arm
-        log_info "检测到 ARM64 架构，使用 Dockerfile.arm"
+        export DOCKERFILE=deploy/docker/Dockerfile.core.arm
+        log_info "检测到 ARM64 架构，使用 Dockerfile.core.arm"
     else
-        export DOCKERFILE=deploy/docker/Dockerfile
-        log_info "检测到 AMD64 架构，使用 Dockerfile"
+        export DOCKERFILE=deploy/docker/Dockerfile.core
+        log_info "检测到 AMD64 架构，使用 Dockerfile.core"
     fi
 
     if [[ $DRY_RUN == "true" ]]; then
@@ -359,14 +359,16 @@ deploy_dev() {
     log_info "等待服务启动..."
     sleep 30
 
-    log_success "allinone 模式部署完成!"
+    log_success "单机解耦模式部署完成!"
     log_info "访问地址:"
-    log_info "  REST API:      http://localhost:8081"
-    log_info "  gRPC API:      localhost:8080"
-    log_info "  Dashboard UI:  http://localhost:9090/dashboard/ui/"
-    log_info "  监控指标:      http://localhost:9090/metrics"
-    log_info "  MinIO Console: http://localhost:9001"
+    log_info "  REST API:             http://localhost:8081"
+    log_info "  gRPC API:             localhost:8080"
+    log_info "  Dashboard UI:         http://localhost:9090/dashboard/ui/"
+    log_info "  Prometheus metrics:   http://localhost:8082/metrics"
+    log_info "  MinIO Console:        http://localhost:9001"
     log_info "  MinIO Backup Console: http://localhost:9003"
+    log_info ""
+    log_info "服务架构: miniodb core (8080/8081/8082) + dashboard 独立容器 (9090)"
 }
 
 # Ansible 直接部署（client/server 分离）

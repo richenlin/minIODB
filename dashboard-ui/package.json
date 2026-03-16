@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:3001": "next dev -p 3001",
+    "dev:backend": "MINIODB_DASHBOARD_BACKEND=http://localhost:9090 next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

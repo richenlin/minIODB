@@ -30,7 +30,7 @@ services:
       - LOG_LEVEL=info
       - LOG_FORMAT=json
     volumes:
-      - ../../config:/app/config:ro
+      - ../../config/config.yaml:/app/config/config.yaml:ro
       - dashboard_logs:/app/logs
     networks:
       - miniodb-network

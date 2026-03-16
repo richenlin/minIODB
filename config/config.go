@@ -1337,6 +1337,21 @@ func (c *Config) overrideWithEnv() {
 	if v := os.Getenv("DASHBOARD_ENABLED"); v == "true" || v == "1" {
 		c.Dashboard.Enabled = true
 	}
+	if v := os.Getenv("DASHBOARD_PORT"); v != "" {
+		if v[0] != ':' {
+			v = ":" + v
+		}
+		c.Dashboard.Port = v
+	}
+	if v := os.Getenv("DASHBOARD_BASE_PATH"); v != "" {
+		c.Dashboard.BasePath = v
+	}
+	if v := os.Getenv("DASHBOARD_CORE_ENDPOINT"); v != "" {
+		c.Dashboard.CoreEndpoint = v
+	}
+	if v := os.Getenv("DASHBOARD_CORE_GRPC_ENDPOINT"); v != "" {
+		c.Dashboard.CoreGRPCEndpoint = v
+	}
 
 	// 备份MinIO配置环境变量覆盖
 	if minioBackupEndpoint := os.Getenv("MINIO_BACKUP_ENDPOINT"); minioBackupEndpoint != "" {

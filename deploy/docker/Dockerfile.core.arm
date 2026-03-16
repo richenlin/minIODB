@@ -1,0 +1,70 @@
+# Dockerfile.core.arm (ARM64)
+# MinIODB 核心服务 —— 不含 Dashboard 前端，不使用 -tags dashboard
+# Dashboard 作为独立容器部署（Dockerfile.dashboard）
+
+FROM golang:1.24 AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    git \
+    ca-certificates \
+    tzdata \
+    gcc \
+    g++ \
+    libc6-dev \
+    pkg-config \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CGO_ENABLED=1
+ENV GOOS=linux
+ENV GOARCH=arm64
+ENV GOPROXY='https://goproxy.cn,direct'
+ENV CC=gcc
+ENV CXX=g++
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# 纯核心编译，不带 dashboard tag，不嵌入任何静态资源
+RUN go build -ldflags="-s -w" -o miniodb cmd/main.go
+
+# ──── Runtime ────
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    tzdata \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN groupadd -g 1001 miniodb && \
+    useradd -r -u 1001 -g miniodb miniodb
+
+WORKDIR /app
+
+RUN mkdir -p /app/logs /app/config /app/certs && \
+    chown -R miniodb:miniodb /app
+
+COPY --from=builder /app/miniodb /app/miniodb
+COPY --from=builder --chown=miniodb:miniodb /app/config/config.yaml /app/config/config.yaml
+
+RUN chmod +x /app/miniodb
+
+USER miniodb
+
+# 8080: gRPC API  8081: REST API  8082: Prometheus metrics
+EXPOSE 8080 8081 8082
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8081/v1/health || exit 1
+
+ENTRYPOINT ["/app/miniodb"]
