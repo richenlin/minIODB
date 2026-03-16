@@ -832,28 +832,28 @@ func (c *Config) setDefaults() {
 		NodeID:   "node-1",
 	}
 
-	// 网络配置默认值 - 性能优化
+	// 网络配置默认值
 	c.Network = NetworkConfig{
 		Server: ServerNetworkConfig{
 			GRPC: GRPCNetworkConfig{
-				MaxConnections:        1000,
-				ConnectionTimeout:     30 * time.Second,
-				StreamTimeout:         60 * time.Second,
-				KeepAliveTime:         30 * time.Second,
-				KeepAliveTimeout:      5 * time.Second,
-				MaxConnectionIdle:     15 * time.Minute,
-				MaxConnectionAge:      30 * time.Minute,
-				MaxConnectionAgeGrace: 5 * time.Second,
-				MaxSendMsgSize:        4194304, // 4MB
-				MaxRecvMsgSize:        4194304, // 4MB
+				MaxConnections:        DefaultGRPCMaxConnections,
+				ConnectionTimeout:     DefaultGRPCConnectionTimeout,
+				StreamTimeout:         DefaultGRPCStreamTimeout,
+				KeepAliveTime:         DefaultGRPCKeepAliveTime,
+				KeepAliveTimeout:      DefaultGRPCKeepAliveTimeout,
+				MaxConnectionIdle:     DefaultGRPCMaxConnectionIdle,
+				MaxConnectionAge:      DefaultGRPCMaxConnectionAge,
+				MaxConnectionAgeGrace: DefaultGRPCMaxConnectionAgeGrace,
+				MaxSendMsgSize:        DefaultGRPCMaxSendMsgSize,
+				MaxRecvMsgSize:        DefaultGRPCMaxRecvMsgSize,
 			},
 			REST: RESTNetworkConfig{
-				ReadTimeout:       30 * time.Second,
-				WriteTimeout:      30 * time.Second,
-				IdleTimeout:       60 * time.Second,
-				ReadHeaderTimeout: 10 * time.Second,
-				MaxHeaderBytes:    1048576, // 1MB
-				ShutdownTimeout:   30 * time.Second,
+				ReadTimeout:       DefaultRESTReadTimeout,
+				WriteTimeout:      DefaultRESTWriteTimeout,
+				IdleTimeout:       DefaultRESTIdleTimeout,
+				ReadHeaderTimeout: DefaultRESTReadHeaderTimeout,
+				MaxHeaderBytes:    DefaultRESTMaxHeaderBytes,
+				ShutdownTimeout:   DefaultRESTShutdownTimeout,
 			},
 		},
 		Pools: PoolsConfig{
@@ -863,22 +863,22 @@ func (c *Config) setDefaults() {
 				Addr:            "localhost:6379",
 				Password:        "",
 				DB:              0,
-				PoolSize:        250,
-				MinIdleConns:    25,
-				MaxConnAge:      30 * time.Minute,
-				PoolTimeout:     3 * time.Second,
-				IdleTimeout:     5 * time.Minute,
-				DialTimeout:     3 * time.Second,
-				ReadTimeout:     2 * time.Second,
-				WriteTimeout:    2 * time.Second,
-				IdleCheckFreq:   time.Minute,
-				MaxRetries:      3,
-				MinRetryBackoff: 8 * time.Millisecond,
-				MaxRetryBackoff: 512 * time.Millisecond,
-				MaxRedirects:    8,
-				ReadOnly:        false,
-				RouteByLatency:  true,
-				RouteRandomly:   false,
+				PoolSize:        DefaultRedisPoolSize,
+				MinIdleConns:    DefaultRedisMinIdleConns,
+				MaxConnAge:      DefaultRedisMaxConnAge,
+				PoolTimeout:     DefaultRedisPoolTimeout,
+				IdleTimeout:     DefaultRedisIdleTimeout,
+				DialTimeout:     DefaultRedisDialTimeout,
+				ReadTimeout:     DefaultRedisReadTimeout,
+				WriteTimeout:    DefaultRedisWriteTimeout,
+				IdleCheckFreq:   DefaultRedisIdleCheckFreq,
+				MaxRetries:      DefaultRedisMaxRetries,
+				MinRetryBackoff: DefaultRedisMinRetryBackoff,
+				MaxRetryBackoff: DefaultRedisMaxRetryBackoff,
+				MaxRedirects:    DefaultRedisMaxRedirects,
+				ReadOnly:        DefaultRedisReadOnly,
+				RouteByLatency:  DefaultRedisRouteByLatency,
+				RouteRandomly:   DefaultRedisRouteRandomly,
 			},
 			MinIO: EnhancedMinIOConfig{
 				Endpoint:              "localhost:9000",
@@ -887,33 +887,33 @@ func (c *Config) setDefaults() {
 				UseSSL:                false,
 				Region:                "us-east-1",
 				Bucket:                "olap-data",
-				MaxIdleConns:          300,
-				MaxIdleConnsPerHost:   150,
-				MaxConnsPerHost:       300,
-				IdleConnTimeout:       90 * time.Second,
-				DialTimeout:           5 * time.Second,
-				TLSHandshakeTimeout:   5 * time.Second,
-				ResponseHeaderTimeout: 15 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-				MaxRetries:            3,
-				RetryDelay:            100 * time.Millisecond,
-				RequestTimeout:        60 * time.Second,
-				KeepAlive:             30 * time.Second,
-				DisableKeepAlive:      false,
-				DisableCompression:    false,
+				MaxIdleConns:          DefaultMinIOMaxIdleConns,
+				MaxIdleConnsPerHost:   DefaultMinIOMaxIdleConnsPerHost,
+				MaxConnsPerHost:       DefaultMinIOMaxConnsPerHost,
+				IdleConnTimeout:       DefaultMinIOIdleConnTimeout,
+				DialTimeout:           DefaultMinIODialTimeout,
+				TLSHandshakeTimeout:   DefaultMinIOTLSHandshakeTimeout,
+				ResponseHeaderTimeout: DefaultMinIOResponseHeaderTimeout,
+				ExpectContinueTimeout: DefaultMinIOExpectContinueTimeout,
+				MaxRetries:            DefaultMinIOMaxRetries,
+				RetryDelay:            DefaultMinIORetryDelay,
+				RequestTimeout:        DefaultMinIORequestTimeout,
+				KeepAlive:             DefaultMinIOKeepAlive,
+				DisableKeepAlive:      DefaultMinIODisableKeepAlive,
+				DisableCompression:    DefaultMinIODisableCompression,
 			},
 			Failover: FailoverConfig{
 				Enabled:             true,
-				HealthCheckInterval: 15 * time.Second,
+				HealthCheckInterval: DefaultFailoverHealthCheckInterval,
 				AsyncSync: AsyncSyncConfig{
-					QueueSize:     1000,
-					WorkerCount:   3,
-					RetryTimes:    3,
-					RetryInterval: time.Second,
-					SyncTimeout:   60 * time.Second,
+					QueueSize:     DefaultAsyncSyncQueueSize,
+					WorkerCount:   DefaultAsyncSyncWorkerCount,
+					RetryTimes:    DefaultAsyncSyncRetryTimes,
+					RetryInterval: DefaultAsyncSyncRetryInterval,
+					SyncTimeout:   DefaultAsyncSyncTimeout,
 				},
 			},
-			HealthCheckInterval: 15 * time.Second,
+			HealthCheckInterval: DefaultPoolsHealthCheckInterval,
 		},
 	}
 
@@ -944,20 +944,20 @@ func (c *Config) setDefaults() {
 	c.Buffer = BufferConfig{
 		BufferSize:      1000,
 		FlushInterval:   30 * time.Second,
-		WorkerPoolSize:  10,
-		TaskQueueSize:   100,
-		BatchFlushSize:  5,
-		EnableBatching:  true,
-		FlushTimeout:    60 * time.Second,
-		MaxRetries:      3,
-		RetryDelay:      1 * time.Second,
-		TempDir:         "/tmp/miniodb_buffer",
-		ParquetRowGroup: 10000,
-		DefaultBucket:   "miniodb-data",
+		WorkerPoolSize:  DefaultBufferWorkerPoolSize,
+		TaskQueueSize:   DefaultBufferTaskQueueSize,
+		BatchFlushSize:  DefaultBufferBatchFlushSize,
+		EnableBatching:  DefaultBufferEnableBatching,
+		FlushTimeout:    DefaultBufferFlushTimeout,
+		MaxRetries:      DefaultBufferMaxRetries,
+		RetryDelay:      DefaultBufferRetryDelay,
+		TempDir:         DefaultBufferTempDir,
+		ParquetRowGroup: DefaultBufferParquetRowGroup,
+		DefaultBucket:   DefaultBufferDefaultBucket,
 		WAL: WALConfig{
 			Enabled:     true,
-			Dir:         "data/wal",
-			SyncOnWrite: true,
+			Dir:         DefaultWALDir,
+			SyncOnWrite: DefaultWALSyncOnWrite,
 		},
 	}
 
@@ -1033,87 +1033,47 @@ func (c *Config) setDefaults() {
 		Tables: make(map[string]TableConfig),
 	}
 
-	// 智能限流配置默认值（覆盖旧的配置）
+	// 智能限流配置默认值（PathRules 与 Response 作为常量固定，Tiers 可在配置文件中覆盖）
 	c.RateLimiting = SmartRateLimitConfig{
 		Enabled: true,
 		Tiers: map[string]RateLimitingTier{
-			"health": {
-				RequestsPerSecond: 200,
-				BurstSize:         50,
-				WindowSize:        time.Second,
-			},
-			"query": {
-				RequestsPerSecond: 100,
-				BurstSize:         30,
-				WindowSize:        time.Second,
-			},
-			"write": {
-				RequestsPerSecond: 80,
-				BurstSize:         20,
-				WindowSize:        time.Second,
-			},
-			"standard": {
-				RequestsPerSecond: 50,
-				BurstSize:         15,
-				WindowSize:        time.Second,
-			},
-			"strict": {
-				RequestsPerSecond: 20,
-				BurstSize:         5,
-				WindowSize:        time.Second,
-			},
+			"health":   {RequestsPerSecond: 200, BurstSize: 50, WindowSize: time.Second},
+			"query":    {RequestsPerSecond: 100, BurstSize: 30, WindowSize: time.Second},
+			"write":    {RequestsPerSecond: 80, BurstSize: 20, WindowSize: time.Second},
+			"standard": {RequestsPerSecond: 50, BurstSize: 15, WindowSize: time.Second},
+			"strict":   {RequestsPerSecond: 20, BurstSize: 5, WindowSize: time.Second},
 		},
-		PathRules: []RateLimitingPathRule{
-			{Path: "/health", Method: "GET", Tier: "health"},
-			{Path: "/v1/health", Method: "GET", Tier: "health"},
-			{Path: "/metrics", Method: "GET", Tier: "health"},
-			{Path: "/v1/query", Method: "POST", Tier: "query"},
-			{Path: "/v1/write", Method: "POST", Tier: "write"},
-			{Path: "/v1/backup/trigger", Method: "POST", Tier: "strict"},
-			{Path: "/v1/recover", Method: "POST", Tier: "strict"},
-		},
+		PathRules:   DefaultRateLimitPathRules,
 		DefaultTier: "standard",
-		Response: RateLimitingResponse{
-			IncludeTier:       true,
-			IncludeLimit:      true,
-			IncludeBurst:      true,
-			IncludeWindow:     true,
-			IncludeRetryAfter: true,
-		},
+		Response:    DefaultRateLimitResponse,
 	}
 
 	// 查询优化配置默认值
 	c.QueryOptimization = QueryOptimizationConfig{
 		QueryCache: QueryCacheConfig{
-			Enabled:        true,
-			RedisKeyPrefix: "qcache:",
-			DefaultTTL:     time.Hour,
-			MaxCacheSize:   209715200, // 200MB
-			EvictionPolicy: "lru",
-			CacheStrategies: map[string]time.Duration{
-				"simple_select": 2 * time.Hour,
-				"count_query":   time.Hour,
-				"aggregation":   30 * time.Minute,
-				"join_query":    15 * time.Minute,
-				"complex_query": 10 * time.Minute,
-			},
+			Enabled:         true,
+			RedisKeyPrefix:  DefaultQueryCacheRedisKeyPrefix,
+			DefaultTTL:      time.Hour,
+			MaxCacheSize:    200 * 1024 * 1024, // 200MB
+			EvictionPolicy:  DefaultQueryCacheEvictionPolicy,
+			CacheStrategies: DefaultQueryCacheStrategies,
 			TableInvalidation: TableInvalidationConfig{
 				Enabled:           true,
-				InvalidationDelay: 5 * time.Second,
+				InvalidationDelay: DefaultQueryCacheInvalidationDelay,
 			},
 			EnableStats:   true,
-			StatsInterval: time.Minute,
+			StatsInterval: DefaultQueryCacheStatsInterval,
 		},
 		FileCache: FileCacheConfig{
 			Enabled:         true,
 			CacheDir:        "/tmp/miniodb_cache",
-			MaxCacheSize:    1073741824, // 1GB
+			MaxCacheSize:    1024 * 1024 * 1024, // 1GB
 			MaxFileAge:      4 * time.Hour,
-			CleanupInterval: 15 * time.Minute,
+			CleanupInterval: DefaultFileCacheCleanupInterval,
 			RedisIndex: FileCacheRedisConfig{
 				Enabled:   true,
-				KeyPrefix: "fcache:",
-				IndexTTL:  24 * time.Hour,
+				KeyPrefix: DefaultFileCacheRedisKeyPrefix,
+				IndexTTL:  DefaultFileCacheRedisIndexTTL,
 			},
 			Metadata: FileCacheMetadataConfig{
 				TrackAccessCount:       true,
@@ -1121,28 +1081,28 @@ func (c *Config) setDefaults() {
 				EnableHashVerification: true,
 			},
 			EnableStats:   true,
-			StatsInterval: time.Minute,
+			StatsInterval: DefaultFileCacheStatsInterval,
 		},
 		DuckDB: DuckDBConfig{
 			Enabled:           true,
 			PoolSize:          5,
-			MaxIdleTime:       30 * time.Minute,
-			ConnectionTimeout: 30 * time.Second,
+			MaxIdleTime:       DefaultDuckDBMaxIdleTime,
+			ConnectionTimeout: DefaultDuckDBConnectionTimeout,
 			Performance: DuckDBPerformanceConfig{
 				MemoryLimit:       "1GB",
 				Threads:           4,
-				EnableObjectCache: true,
-				TempDirectory:     "/tmp/duckdb",
+				EnableObjectCache: DefaultDuckDBEnableObjectCache,
+				TempDirectory:     DefaultDuckDBTempDirectory,
 			},
 			PreparedStatements: DuckDBPreparedStmtsConfig{
 				Enabled:                 true,
-				CacheSize:               100,
-				AutoPrepareAggregations: true,
+				CacheSize:               DefaultDuckDBPreparedStmtCacheSize,
+				AutoPrepareAggregations: DefaultDuckDBAutoPrepareAggregations,
 			},
 			ConnectionReuse: DuckDBConnectionReuseConfig{
-				Enabled:             true,
-				MaxReuseCount:       1000,
-				HealthCheckInterval: 5 * time.Minute,
+				Enabled:             DefaultDuckDBConnectionReuseEnabled,
+				MaxReuseCount:       DefaultDuckDBMaxReuseCount,
+				HealthCheckInterval: DefaultDuckDBConnHealthCheckInterval,
 			},
 		},
 	}
@@ -1150,23 +1110,14 @@ func (c *Config) setDefaults() {
 	// 认证配置默认值
 	// 安全警告：默认不提供任何 API Key，生产环境必须通过配置文件或环境变量配置凭证
 	c.Auth = AuthConfig{
-		EnableJWT:    false,
-		JWTSecret:    "",
-		TokenExpiry:  "24h",
-		EnableAPIKey: true,
-		APIKeys:      []string{},      // 默认不提供任何 API Key，避免安全风险
-		APIKeyPairs:  []APIKeyPair{},  // 默认不提供任何凭证对
-		SkipAuthPaths: []string{
-			"/health",
-			"/metrics",
-			"/v1/health",
-		},
-		RequireAuthPaths: []string{
-			"/v1/write",
-			"/v1/query",
-			"/v1/backup/trigger",
-			"/v1/recover",
-		},
+		EnableJWT:        false,
+		JWTSecret:        "",
+		TokenExpiry:      "24h",
+		EnableAPIKey:     true,
+		APIKeys:          []string{},   // 默认不提供任何 API Key，避免安全风险
+		APIKeyPairs:      []APIKeyPair{}, // 默认不提供任何凭证对
+		SkipAuthPaths:    DefaultSkipAuthPaths,
+		RequireAuthPaths: DefaultRequireAuthPaths,
 	}
 
 	// 监控配置默认值
@@ -1193,12 +1144,13 @@ func (c *Config) setDefaults() {
 	c.Compaction = CompactionConfig{
 		Enabled:           true,
 		TargetFileSize:    128 * 1024 * 1024, // 128MB
-		MinFilesToCompact: 5,
-		MaxFilesToCompact: 20,
-		CooldownPeriod:    5 * time.Minute,
-		CheckInterval:     10 * time.Minute,
-		TempDir:           "/tmp/miniodb_compaction",
-		CompressionType:   "snappy",
+		MinFilesToCompact: DefaultCompactionMinFilesToCompact,
+		MaxFilesToCompact: DefaultCompactionMaxFilesToCompact,
+		CooldownPeriod:    DefaultCompactionCooldownPeriod,
+		CheckInterval:     DefaultCompactionCheckInterval,
+		TempDir:           DefaultCompactionTempDir,
+		CompressionType:   DefaultCompactionCompressionType,
+		MaxRowsPerFile:    DefaultCompactionMaxRowsPerFile,
 	}
 
 	// 存储引擎优化配置默认值 - 当前禁用以保持系统简单性
@@ -1261,19 +1213,19 @@ func (c *Config) setDefaults() {
 
 	// 文件元数据配置默认值
 	c.FileMetadata = FileMetadataConfig{
-		KeyPrefix:        "file_meta:",
-		TTL:              30 * 24 * time.Hour, // 30天
-		EnableSidecar:    true,
-		RedisPingTimeout: 2 * time.Second,
+		KeyPrefix:        DefaultFileMetaKeyPrefix,
+		TTL:              DefaultFileMetaTTL,
+		EnableSidecar:    DefaultFileMetaEnableSidecar,
+		RedisPingTimeout: DefaultFileMetaRedisPingTimeout,
 	}
 
 	// 协调器配置默认值
 	c.Coordinator = CoordinatorConfig{
-		HashRingReplicas:        150,
-		WriteTimeout:            10 * time.Second,
-		DistributedQueryTimeout: 30 * time.Second,
-		RemoteQueryTimeout:      10 * time.Second,
-		NodeMonitorInterval:     30 * time.Second,
+		HashRingReplicas:        DefaultCoordinatorHashRingReplicas,
+		WriteTimeout:            DefaultCoordinatorWriteTimeout,
+		DistributedQueryTimeout: DefaultCoordinatorDistributedQueryTimeout,
+		RemoteQueryTimeout:      DefaultCoordinatorRemoteQueryTimeout,
+		NodeMonitorInterval:     DefaultCoordinatorNodeMonitorInterval,
 	}
 
 	// 数据订阅配置默认值
@@ -1281,43 +1233,43 @@ func (c *Config) setDefaults() {
 		Enabled: false, // 默认不启用
 		Redis: RedisSubscriptionConfig{
 			Enabled:       false,
-			StreamPrefix:  "miniodb:stream:",
-			ConsumerGroup: "miniodb-workers",
+			StreamPrefix:  DefaultRedisSubStreamPrefix,
+			ConsumerGroup: DefaultRedisSubConsumerGroup,
 			ConsumerName:  "", // 空表示自动生成
-			BatchSize:     100,
-			BlockTimeout:  5 * time.Second,
-			MaxRetries:    3,
-			RetryDelay:    1 * time.Second,
-			MaxLen:        0, // 不限制
-			AutoAck:       true,
+			BatchSize:     DefaultRedisSubBatchSize,
+			BlockTimeout:  DefaultRedisSubBlockTimeout,
+			MaxRetries:    DefaultRedisSubMaxRetries,
+			RetryDelay:    DefaultRedisSubRetryDelay,
+			MaxLen:        DefaultRedisSubMaxLen,
+			AutoAck:       DefaultRedisSubAutoAck,
 		},
 		Kafka: KafkaSubscriptionConfig{
 			Enabled:         false,
 			Brokers:         []string{"localhost:9092"},
-			TopicPrefix:     "miniodb-",
-			ConsumerGroup:   "miniodb-workers",
-			BatchSize:       100,
-			BatchTimeout:    1 * time.Second,
-			MaxRetries:      3,
-			RetryBackoff:    100 * time.Millisecond,
-			SessionTimeout:  30 * time.Second,
-			HeartbeatPeriod: 3 * time.Second,
-			AutoCommit:      true,
-			CommitInterval:  1 * time.Second,
-			StartOffset:     "latest",
+			TopicPrefix:     DefaultKafkaTopicPrefix,
+			ConsumerGroup:   DefaultKafkaConsumerGroup,
+			BatchSize:       DefaultKafkaBatchSize,
+			BatchTimeout:    DefaultKafkaBatchTimeout,
+			MaxRetries:      DefaultKafkaMaxRetries,
+			RetryBackoff:    DefaultKafkaRetryBackoff,
+			SessionTimeout:  DefaultKafkaSessionTimeout,
+			HeartbeatPeriod: DefaultKafkaHeartbeatPeriod,
+			AutoCommit:      DefaultKafkaAutoCommit,
+			CommitInterval:  DefaultKafkaCommitInterval,
+			StartOffset:     DefaultKafkaStartOffset,
 			UseTLS:          false,
 			UseSASL:         false,
-			SASLMechanism:   "plain",
+			SASLMechanism:   DefaultKafkaSASLMechanism,
 		},
 	}
 
 	// Swagger配置默认值
 	c.Swagger = SwaggerConfig{
-		Enabled:     true,             // 开发环境默认启用
-		Host:        "localhost:8081", // API主机地址
-		BasePath:    "/v1",            // API基础路径
-		Title:       "MinIODB API",    // API标题
-		Description: "基于MinIO+DuckDB+Redis的分布式OLAP系统API",
+		Enabled:     true,
+		Host:        "localhost:8081",
+		BasePath:    DefaultSwaggerBasePath,
+		Title:       DefaultSwaggerTitle,
+		Description: DefaultSwaggerDescription,
 	}
 
 	// Dashboard配置默认值
