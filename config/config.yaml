@@ -20,7 +20,7 @@ network:
     redis:
       mode: "standalone"              # standalone | sentinel | cluster
       addr: "localhost:6379"          # standalone 模式地址
-      password: ""
+      password: "redis123"
       db: 0
 
       # 哨兵模式（mode: sentinel 时取消注释）
@@ -238,8 +238,8 @@ swagger:
 # ──────────────────────────────────────────────────────────────────────────────
 # Dashboard（可选）
 # ──────────────────────────────────────────────────────────────────────────────
-# dashboard:
-#   enabled: false
-#   port: ":9090"
-#   core_endpoint: "http://localhost:8081"
-#   core_grpc_endpoint: "localhost:8080"
+dashboard:
+  enabled: true
+  port: ":9090"
+  core_endpoint: "http://localhost:8081"
+  core_grpc_endpoint: "localhost:8080"

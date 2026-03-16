@@ -14,10 +14,12 @@ import (
 	"go.uber.org/zap"
 )
 
+// GenericRecord is the canonical parquet schema used by both the buffer flush path
+// and the compaction write path. The payload column name matches buffer.DataRow.Payload.
 type GenericRecord struct {
 	ID        string `parquet:"name=id, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
 	Timestamp int64  `parquet:"name=timestamp, type=INT64"`
-	Data      string `parquet:"name=data, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
+	Payload   string `parquet:"name=payload, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
 	Table     string `parquet:"name=table, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
 }
 
@@ -177,20 +179,33 @@ func (p *ParquetWriterImpl) convertToGenericRecord(record map[string]interface{}
 		gr.Table = table
 	}
 
-	if data, ok := record["data"]; ok {
-		switch v := data.(type) {
+	// "payload" is canonical; fall back to legacy "data" key for backward compatibility,
+	// then serialize the whole record as a last resort.
+	if raw, ok := record["payload"]; ok {
+		switch v := raw.(type) {
 		case []byte:
-			gr.Data = string(v)
+			gr.Payload = string(v)
 		case string:
-			gr.Data = v
+			gr.Payload = v
 		default:
 			if jsonData, err := json.Marshal(v); err == nil {
-				gr.Data = string(jsonData)
+				gr.Payload = string(jsonData)
+			}
+		}
+	} else if raw, ok := record["data"]; ok {
+		switch v := raw.(type) {
+		case []byte:
+			gr.Payload = string(v)
+		case string:
+			gr.Payload = v
+		default:
+			if jsonData, err := json.Marshal(v); err == nil {
+				gr.Payload = string(jsonData)
 			}
 		}
 	} else {
 		if jsonData, err := json.Marshal(record); err == nil {
-			gr.Data = string(jsonData)
+			gr.Payload = string(jsonData)
 		}
 	}
 

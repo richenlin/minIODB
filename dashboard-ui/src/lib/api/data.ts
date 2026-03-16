@@ -12,8 +12,14 @@ import {
   WriteRecordRequest,
 } from './types'
 
+interface ListTablesResponse {
+  tables: TableResult[]
+  total: number
+}
+
 export const dataApi = {
-  listTables: () => apiClient.get<TableResult[]>('/tables'),
+  listTables: () =>
+    apiClient.get<ListTablesResponse>('/tables').then(r => r.tables ?? []),
   
   getTable: (name: string) =>
     apiClient.get<TableDetailResult>(`/tables/${encodeURIComponent(name)}`),

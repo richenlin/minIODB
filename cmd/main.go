@@ -363,12 +363,7 @@ func main() {
 	}
 	restServer.SetCoordinators(writeCoord, queryCoord)
 
-	// 挂载 Dashboard (All-in-One 模式)
-	restServer.EnableDashboard(serviceRegistry, redisPool)
-	// 若启用 Dashboard，在 9090 上启动独立 HTTP 服务（Dashboard UI + /metrics）
-	if cfg.Dashboard.Enabled {
-		restServer.StartStandaloneDashboardServer(getMetricsHandler(cfg), serviceRegistry, redisPool)
-	}
+	// Dashboard 已完全分离：仅通过 cmd/dashboard 独立部署，使用 HTTP 访问 MinIODB /v1/* API
 
 	go func() {
 		if err := restServer.Start(cfg.Server.RestPort); err != nil {

@@ -39,7 +39,6 @@ type Server struct {
 	grpcInterceptor *security.GRPCInterceptor
 	grpcServer      *grpc.Server
 	tokenManager    *security.TokenManager
-	jwtManager      *security.JWTManager
 
 	// 智能限流相关
 	smartRateLimiter     *security.SmartRateLimiter
@@ -119,20 +118,8 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 		logger.Info("gRPC smart rate limiter disabled")
 	}
 
-	// 创建JWT管理器
-	jwtManager, err := security.NewJWTManager(cfg.Security.JWTSecret, 24*time.Hour)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create JWT manager: %w", err)
-	}
-
-	// 创建令牌管理器 (假设有Redis客户端可用)
-	var tokenManager *security.TokenManager
-	if miniodbService != nil {
-		// 从服务中获取Redis客户端
-		tokenManager = security.NewTokenManager(nil) // 暂时使用本地存储
-	} else {
-		tokenManager = security.NewTokenManager(nil)
-	}
+	// 创建令牌管理器（用于 refresh token 存储，暂时使用本地存储）
+	tokenManager := security.NewTokenManager(nil)
 
 	server := &Server{
 		miniodbService:       miniodbService,
@@ -142,7 +129,6 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 		smartRateLimiter:     smartRateLimiter,
 		grpcSmartRateLimiter: grpcSmartRateLimiter,
 		tokenManager:         tokenManager,
-		jwtManager:           jwtManager,
 		logger:               logger,
 	}
 
@@ -720,8 +706,8 @@ func (s *Server) RefreshToken(ctx context.Context, req *miniodb.RefreshTokenRequ
 		return nil, fmt.Errorf("invalid refresh token: %w", err)
 	}
 
-	// 生成新的访问令牌
-	accessToken, err := s.jwtManager.GenerateToken(userID)
+	// 使用与 GetToken 相同的 authManager（api_key_pairs）生成新的访问令牌
+	accessToken, err := s.authManager.GenerateToken(userID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}

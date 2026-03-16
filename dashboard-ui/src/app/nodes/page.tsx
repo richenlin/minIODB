@@ -8,6 +8,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '
 import { apiClient } from '@/lib/api/client'
 import { NodeInfo } from '@/types/api'
 
+function formatLastSeen(lastSeen: string): string {
+  if (!lastSeen) return '-'
+  const d = new Date(lastSeen)
+  if (isNaN(d.getTime()) || d.getFullYear() < 2000) return '-'
+  return d.toLocaleString('zh-CN')
+}
+
 interface NodesData {
   nodes: NodeInfo[]
   total: number
@@ -79,7 +86,7 @@ export default function NodesPage() {
                           <StatusBadge status={node.status} />
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">
-                          {node.last_seen ? new Date(node.last_seen * 1000).toLocaleString('zh-CN') : '-'}
+                          {formatLastSeen(node.last_seen)}
                         </td>
                       </tr>
                     ))}
@@ -99,9 +106,9 @@ export default function NodesPage() {
             </SheetHeader>
             {selectedNode && (
               <div className="mt-6 space-y-6">
-                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3">
                   <div className={`w-3 h-3 rounded-full ${
-                    selectedNode.status === 'online' || selectedNode.status === 'active'
+                    selectedNode.status === 'healthy' || selectedNode.status === 'online' || selectedNode.status === 'running' || selectedNode.status === 'active'
                       ? 'bg-green-500'
                       : 'bg-red-500'
                   }`} />
@@ -119,13 +126,10 @@ export default function NodesPage() {
                     <div className="space-y-3 text-sm">
                       <DetailRow label="地址" value={selectedNode.address} />
                       <DetailRow label="端口" value={selectedNode.port} />
-                      <DetailRow label="状态" value={selectedNode.status} highlight={selectedNode.status === 'online'} />
+                      <DetailRow label="状态" value={selectedNode.status === 'healthy' || selectedNode.status === 'online' || selectedNode.status === 'running' || selectedNode.status === 'active' ? 'running' : 'error'} highlight={selectedNode.status === 'healthy' || selectedNode.status === 'online' || selectedNode.status === 'running' || selectedNode.status === 'active'} />
                       <DetailRow
                         label="最后心跳"
-                        value={selectedNode.last_seen
-                          ? new Date(selectedNode.last_seen * 1000).toLocaleString('zh-CN')
-                          : '-'
-                        }
+                        value={formatLastSeen(selectedNode.last_seen)}
                       />
                     </div>
                   </CardContent>
@@ -155,10 +159,10 @@ export default function NodesPage() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const isOnline = status === 'online' || status === 'active'
+  const isOnline = status === 'healthy' || status === 'online' || status === 'running' || status === 'active'
   return (
-    <Badge variant={isOnline ? 'success' : 'secondary'}>
-      {status}
+    <Badge variant={isOnline ? 'success' : 'error'}>
+      {isOnline ? 'running' : 'error'}
     </Badge>
   )
 }

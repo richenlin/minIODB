@@ -561,7 +561,7 @@ export default function ClusterPage() {
                           className="flex items-center justify-between rounded-md px-3 py-2 text-xs bg-muted/40 border border-border/60">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className={`w-2 h-2 rounded-full flex-shrink-0 bg-green-500`} />
-                            <span className="font-mono text-foreground truncate">Redis 协调器</span>
+                            <span className="font-mono text-foreground truncate">Redis</span>
                           </div>
                           <div className="flex items-center gap-3 flex-shrink-0 ml-3">
                             <span className="text-muted-foreground">{topology.redis_addr}</span>

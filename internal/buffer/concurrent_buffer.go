@@ -97,10 +97,11 @@ type ConcurrentBuffer struct {
 	mutex  sync.RWMutex
 
 	// WAL 持久化
-	wal            *wal.WAL
-	walEnabled     bool
-	lastFlushedSeq map[string]uint64 // bufferKey -> lastSeqNum
-	walSeqMutex    sync.RWMutex
+	wal                 *wal.WAL
+	walEnabled          bool
+	lastFlushedSeq      map[string]uint64 // bufferKey -> lastSeqNum
+	walSeqMutex         sync.RWMutex
+	recoveryMaxSeqNum   uint64 // WAL 恢复时的最大 seqNum，恢复完成后用于全量截断
 
 	// 工作池相关
 	taskQueue    chan *FlushTask
@@ -192,6 +193,11 @@ func NewConcurrentBuffer(poolManager *pool.PoolManager, appConfig *config.Config
 	// 启动定期刷新
 	go cb.periodicFlush()
 
+	// WAL 恢复后，等待 buffer 排空，再做一次全量 WAL 截断
+	if cb.walEnabled && cb.wal != nil && cb.recoveryMaxSeqNum > 0 {
+		go cb.waitAndTruncateRecoveryWAL()
+	}
+
 	cb.logger.Info("Concurrent buffer initialized",
 		zap.Int("worker_pool_size", config.WorkerPoolSize),
 		zap.Int("task_queue_size", config.TaskQueueSize),
@@ -246,6 +252,7 @@ func (cb *ConcurrentBuffer) recoverFromWAL() error {
 	}
 
 	if recoveredCount > 0 {
+		cb.recoveryMaxSeqNum = maxSeqNum
 		cb.logger.Info("Recovered data from WAL",
 			zap.Int("records", recoveredCount),
 			zap.Int("buffer_keys", len(cb.buffer)),
@@ -366,7 +373,7 @@ func (w *Worker) processTask(task *FlushTask) {
 			})
 		}
 	} else {
-		w.buffer.logger.Info("Worker successfully flushed rows", zap.Int("id", w.id), zap.Int("rows", len(task.Rows)), zap.String("buffer_key", task.BufferKey))
+		w.buffer.logger.Debug("Worker successfully flushed rows", zap.Int("id", w.id), zap.Int("rows", len(task.Rows)), zap.String("buffer_key", task.BufferKey))
 
 		// Flush 成功后，截断 WAL
 		if w.buffer.walEnabled && w.buffer.wal != nil && task.MaxSeqNum > 0 {
@@ -852,6 +859,38 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 			cb.updateStats(func(stats *ConcurrentBufferStats) {
 				stats.FailedTasks++
 			})
+		}
+	}
+}
+
+// waitAndTruncateRecoveryWAL 等待 WAL 恢复数据全部 flush 完成后，截断历史 WAL 文件。
+// 避免下次重启时重复 replay 已经落盘的数据。
+func (cb *ConcurrentBuffer) waitAndTruncateRecoveryWAL() {
+	maxSeq := cb.recoveryMaxSeqNum
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-cb.shutdown:
+			return
+		case <-ticker.C:
+			cb.mutex.RLock()
+			pendingKeys := len(cb.buffer)
+			cb.mutex.RUnlock()
+
+			queueLen := len(cb.taskQueue)
+			if pendingKeys == 0 && queueLen == 0 {
+				if err := cb.wal.Truncate(maxSeq + 1); err != nil {
+					cb.logger.Warn("Post-recovery WAL truncation failed", zap.Error(err))
+				} else {
+					cb.logger.Info("Post-recovery WAL truncation complete",
+						zap.Uint64("truncated_up_to", maxSeq))
+				}
+				// 重置，避免重复触发
+				cb.recoveryMaxSeqNum = 0
+				return
+			}
 		}
 	}
 }

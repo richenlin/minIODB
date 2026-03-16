@@ -34,7 +34,7 @@ export interface NodeInfo {
   address: string
   port: string
   status: string
-  last_seen: number
+  last_seen: string
   metadata?: Record<string, string>
 }
 

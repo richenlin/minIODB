@@ -12,6 +12,11 @@ const nextConfig = {
   ...(!isDev && { output: 'export' }),
   basePath: '/dashboard/ui',
   trailingSlash: true,
+  // trailingSlash controls the static-export file layout (page → page/index.html).
+  // skipTrailingSlashRedirect prevents Next.js from auto-redirecting
+  // /dashboard/api/v1/tables → /dashboard/api/v1/tables/ in dev mode,
+  // which would cause 404s on the Go backend (Gin routes have no trailing slash).
+  skipTrailingSlashRedirect: true,
   images: {
     unoptimized: true,
   },

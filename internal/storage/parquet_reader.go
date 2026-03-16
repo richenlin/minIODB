@@ -76,12 +76,12 @@ func (p *ParquetReaderImpl) ReadFile(filePath string) ([]map[string]interface{},
 			"table":     rec.Table,
 		}
 
-		if rec.Data != "" {
-			var data interface{}
-			if err := json.Unmarshal([]byte(rec.Data), &data); err == nil {
-				m["data"] = data
+		if rec.Payload != "" {
+			var payload interface{}
+			if err := json.Unmarshal([]byte(rec.Payload), &payload); err == nil {
+				m["payload"] = payload
 			} else {
-				m["data"] = rec.Data
+				m["payload"] = rec.Payload
 			}
 		}
 
@@ -134,11 +134,13 @@ func (p *ParquetReaderImpl) GetFileMetadata(filePath string) (*FileMetadata, err
 	}
 	defer fr.Close()
 
-	pr, err := reader.NewParquetReader(fr, new(GenericRecord), 1)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create parquet reader: %w", err)
+	// 直接读取 Parquet footer，不进行 schema 匹配。
+	// 使用 reader.NewParquetReader(fr, schemaStruct, n) 会因 schema 不匹配报错，
+	// 而 footer 统计信息（min/max/null count）无需 schema 即可读取。
+	pr := &reader.ParquetReader{PFile: fr}
+	if err := pr.ReadFooter(); err != nil {
+		return nil, fmt.Errorf("failed to read parquet footer: %w", err)
 	}
-	defer pr.ReadStop()
 
 	info, err := os.Stat(filePath)
 	if err != nil {

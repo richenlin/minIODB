@@ -11,11 +11,9 @@ import (
 	miniodbv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
 	"minIODB/internal/coordinator"
-	"minIODB/internal/discovery"
 	"minIODB/internal/metadata"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
-	"minIODB/pkg/pool"
 	"minIODB/pkg/version"
 
 	_ "minIODB/docs"
@@ -30,12 +28,6 @@ import (
 )
 
 // Server RESTful API服务器
-type MountDashboardParams struct {
-	MetadataManager *metadata.Manager
-	ServiceRegistry *discovery.ServiceRegistry
-	RedisPool       interface{}
-}
-
 type Server struct {
 	miniodbService   *service.MinIODBService
 	writeCoordinator *coordinator.WriteCoordinator
@@ -457,22 +449,6 @@ func (s *Server) SetCoordinators(writeCoord *coordinator.WriteCoordinator, query
 // SetMetadataManager 设置元数据管理器
 func (s *Server) SetMetadataManager(manager *metadata.Manager) {
 	s.metadataManager = manager
-}
-
-// EnableDashboard 挂载 Dashboard 到 REST server
-func (s *Server) EnableDashboard(serviceRegistry *discovery.ServiceRegistry, redisPool *pool.RedisPool) {
-	params := DashboardParams{
-		Service:         s.miniodbService,
-		MetadataManager: s.metadataManager,
-		ServiceRegistry: serviceRegistry,
-		RedisPool:       redisPool,
-	}
-	MountDashboardToRouter(s.router, s.cfg, s.logger, params)
-}
-
-// StartStandaloneDashboardServer 在 Dashboard.Port（如 9090）上启动仅含 Dashboard 与 /metrics 的 HTTP 服务（allinone 时与 REST 分离）
-func (s *Server) StartStandaloneDashboardServer(metricsHandler http.HandlerFunc, serviceRegistry *discovery.ServiceRegistry, redisPool *pool.RedisPool) {
-	startStandaloneDashboardServer(s, metricsHandler, serviceRegistry, redisPool)
 }
 
 // setupRoutes 设置路由

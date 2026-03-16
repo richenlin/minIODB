@@ -295,6 +295,9 @@ func (w *WAL) readRecord(reader *bufio.Reader) (*Record, error) {
 	}, nil
 }
 
+// Truncate deletes all closed WAL files whose maximum sequence number is ≤ beforeSeqNum.
+// This is safe because all records up to beforeSeqNum have been durably flushed
+// to the backing store and no longer need WAL protection.
 func (w *WAL) Truncate(beforeSeqNum uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -304,17 +307,28 @@ func (w *WAL) Truncate(beforeSeqNum uint64) error {
 		return err
 	}
 
+	// Skip the currently-open file — it may still be receiving new appends.
+	currentFile := ""
+	if w.file != nil {
+		currentFile = w.file.Name()
+	}
+
 	for _, filename := range files {
+		if filename == currentFile {
+			continue
+		}
+
 		maxSeq, err := w.getFileMaxSequence(filename)
 		if err != nil {
 			continue
 		}
 
-		if maxSeq < beforeSeqNum {
+		// Use <= so a file whose last record exactly equals beforeSeqNum is also removed.
+		if maxSeq <= beforeSeqNum {
 			if err := os.Remove(filename); err != nil {
 				w.logger.Warn("Failed to remove old WAL file",
 					zap.String("file", filename),
-					zap.Error(err))
+					zap.Uint64("maxSeq", maxSeq))
 			} else {
 				w.logger.Info("Removed old WAL file",
 					zap.String("file", filename),

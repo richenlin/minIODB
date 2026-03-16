@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -1043,4 +1044,132 @@ func (c *RemoteClient) EnableDistributedMode(_ context.Context, req *EnableDistr
 		RestartRequired: true,
 		Message:         "将以上配置片段写入 config.yaml 的 network.pools.redis 节点后重启服务，即可开启分布式模式。",
 	}, nil
+}
+
+func detectEnvOverrides() map[string]string {
+	ov := make(map[string]string)
+	if os.Getenv("REDIS_HOST") != "" {
+		ov["redis_addr"] = "REDIS_HOST / REDIS_PORT"
+	}
+	if os.Getenv("REDIS_PASSWORD") != "" {
+		ov["redis_password"] = "REDIS_PASSWORD"
+	}
+	if os.Getenv("REDIS_DB") != "" {
+		ov["redis_db"] = "REDIS_DB"
+	}
+	if os.Getenv("MINIO_ENDPOINT") != "" {
+		ov["minio_endpoint"] = "MINIO_ENDPOINT"
+	}
+	if os.Getenv("MINIO_ACCESS_KEY") != "" {
+		ov["minio_access_key_id"] = "MINIO_ACCESS_KEY"
+	}
+	if os.Getenv("MINIO_SECRET_KEY") != "" {
+		ov["minio_secret_access_key"] = "MINIO_SECRET_KEY"
+	}
+	if os.Getenv("MINIO_BUCKET") != "" {
+		ov["minio_bucket"] = "MINIO_BUCKET"
+	}
+	if os.Getenv("MINIO_USE_SSL") != "" {
+		ov["minio_use_ssl"] = "MINIO_USE_SSL"
+	}
+	if os.Getenv("GRPC_PORT") != "" {
+		ov["grpc_port"] = "GRPC_PORT"
+	}
+	if os.Getenv("REST_PORT") != "" {
+		ov["rest_port"] = "REST_PORT"
+	}
+	if os.Getenv("DASHBOARD_CORE_ENDPOINT") != "" {
+		ov["core_endpoint"] = "DASHBOARD_CORE_ENDPOINT"
+	}
+	if os.Getenv("DASHBOARD_PORT") != "" {
+		ov["dashboard_port"] = "DASHBOARD_PORT"
+	}
+	if len(ov) == 0 {
+		return nil
+	}
+	return ov
+}
+
+func generateConfigYAML(cfg *config.Config, req *ConfigUpdateRequest) string {
+	var sb strings.Builder
+
+	if req.NodeID != "" || req.GrpcPort != "" || req.RestPort != "" {
+		sb.WriteString("server:\n")
+		sb.WriteString(fmt.Sprintf("  node_id: %q\n", cfg.Server.NodeID))
+		sb.WriteString(fmt.Sprintf("  grpc_port: %q\n", cfg.Server.GrpcPort))
+		sb.WriteString(fmt.Sprintf("  rest_port: %q\n", cfg.Server.RestPort))
+		sb.WriteString("\n")
+	}
+
+	redisChanged := req.RedisMode != "" || req.RedisAddr != "" || req.RedisPassword != "" ||
+		req.RedisDB != nil || req.RedisMasterName != "" || len(req.SentinelAddrs) > 0 || len(req.ClusterAddrs) > 0
+	if redisChanged {
+		r := cfg.Network.Pools.Redis
+		sb.WriteString("network:\n  pools:\n    redis:\n")
+		sb.WriteString(fmt.Sprintf("      mode: %q\n", r.Mode))
+		switch r.Mode {
+		case "sentinel":
+			sb.WriteString(fmt.Sprintf("      master_name: %q\n", r.MasterName))
+			sb.WriteString("      sentinel_addrs:\n")
+			for _, a := range r.SentinelAddrs {
+				sb.WriteString(fmt.Sprintf("        - %q\n", a))
+			}
+		case "cluster":
+			sb.WriteString("      cluster_addrs:\n")
+			for _, a := range r.ClusterAddrs {
+				sb.WriteString(fmt.Sprintf("        - %q\n", a))
+			}
+		default:
+			sb.WriteString(fmt.Sprintf("      addr: %q\n", r.Addr))
+			if r.DB > 0 {
+				sb.WriteString(fmt.Sprintf("      db: %d\n", r.DB))
+			}
+		}
+		if r.Password != "" {
+			sb.WriteString(fmt.Sprintf("      password: %q\n", r.Password))
+		}
+		sb.WriteString("\n")
+	}
+
+	minioChanged := req.MinioEndpoint != "" || req.MinioAccessKeyID != "" || req.MinioSecretAccessKey != "" ||
+		req.MinioUseSSL != nil || req.MinioRegion != "" || req.MinioBucket != ""
+	if minioChanged {
+		m := cfg.Network.Pools.MinIO
+		sb.WriteString("    minio:\n")
+		sb.WriteString(fmt.Sprintf("      endpoint: %q\n", m.Endpoint))
+		sb.WriteString(fmt.Sprintf("      access_key_id: %q\n", m.AccessKeyID))
+		sb.WriteString(fmt.Sprintf("      secret_access_key: %q\n", m.SecretAccessKey))
+		sb.WriteString(fmt.Sprintf("      use_ssl: %v\n", m.UseSSL))
+		sb.WriteString(fmt.Sprintf("      region: %q\n", m.Region))
+		sb.WriteString(fmt.Sprintf("      bucket: %q\n", m.Bucket))
+		sb.WriteString("\n")
+	}
+
+	if req.CoreEndpoint != "" || req.DashboardPort != "" {
+		sb.WriteString("dashboard:\n")
+		sb.WriteString(fmt.Sprintf("  core_endpoint: %q\n", cfg.Dashboard.CoreEndpoint))
+		sb.WriteString(fmt.Sprintf("  port: %q\n", cfg.Dashboard.Port))
+		sb.WriteString("\n")
+	}
+
+	if req.LogLevel != "" || req.LogFormat != "" || req.LogOutput != "" || req.LogFilename != "" {
+		l := cfg.Log
+		sb.WriteString("log:\n")
+		sb.WriteString(fmt.Sprintf("  level: %q\n", l.Level))
+		sb.WriteString(fmt.Sprintf("  format: %q\n", l.Format))
+		sb.WriteString(fmt.Sprintf("  output: %q\n", l.Output))
+		if l.Filename != "" {
+			sb.WriteString(fmt.Sprintf("  filename: %q\n", l.Filename))
+		}
+		sb.WriteString("\n")
+	}
+
+	if req.BufferSize != nil || req.FlushInterval != "" {
+		sb.WriteString("buffer:\n")
+		sb.WriteString(fmt.Sprintf("  buffer_size: %d\n", cfg.Buffer.BufferSize))
+		sb.WriteString(fmt.Sprintf("  flush_interval: %s\n", cfg.Buffer.FlushInterval))
+		sb.WriteString("\n")
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
 }

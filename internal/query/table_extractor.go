@@ -95,15 +95,21 @@ func (e *TableExtractor) cleanSQL(sql string) string {
 	// 移除单行注释
 	singleLineComment := regexp.MustCompile(`--.*$`)
 	sql = singleLineComment.ReplaceAllString(sql, "")
-	
+
 	// 移除多行注释
 	multiLineComment := regexp.MustCompile(`/\*[\s\S]*?\*/`)
 	sql = multiLineComment.ReplaceAllString(sql, "")
-	
+
+	// 规范化引用标识符，便于表名提取（仅影响提取逻辑，不影响发往 DuckDB 的原始 SQL）
+	// "tablename" → tablename（SQL 标准双引号，DuckDB / QuoteIdentifier 输出）
+	sql = regexp.MustCompile(`"(\w+)"`).ReplaceAllString(sql, "$1")
+	// `tablename` → tablename（MySQL 反引号风格）
+	sql = regexp.MustCompile("`(\\w+)`").ReplaceAllString(sql, "$1")
+
 	// 标准化空白字符
 	sql = strings.TrimSpace(sql)
 	sql = regexp.MustCompile(`\s+`).ReplaceAllString(sql, " ")
-	
+
 	return sql
 }
 

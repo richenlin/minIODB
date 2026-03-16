@@ -43,11 +43,12 @@ dashboard-ui:
 	rm -rf internal/dashboard/static
 	cp -r dashboard-ui/out internal/dashboard/static
 
+# Dashboard 已完全分离，仅独立部署
 dashboard: dashboard-ui
 	go build -tags dashboard $(LDFLAGS) -o bin/miniodb-dashboard ./cmd/dashboard/
 
-build-with-dashboard: dashboard-ui
-	go build -tags dashboard $(LDFLAGS) -o bin/miniodb ./cmd/
+# 兼容旧 target 名称，等同于 dashboard
+build-with-dashboard: dashboard
 
 docker-dashboard:
 	docker build -f deploy/docker/Dockerfile.dashboard -t miniodb-dashboard:$(VERSION) .
