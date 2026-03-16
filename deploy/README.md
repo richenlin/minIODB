@@ -697,6 +697,39 @@ kubectl logs <pod-name> -n miniodb-system --previous
 kubectl describe nodes
 ```
 
+#### 6. Docker 拉取镜像超时 (i/o timeout)
+
+若出现 `failed to do request: Head "https://registry-1.docker.io/...": dial tcp ...:443: i/o timeout`，说明无法连接 Docker Hub，常见于网络受限环境。
+
+**方案 A：配置 Docker 镜像加速（推荐）**
+
+- **Colima**：编辑 `~/.colima/default/colima.yaml`，在 `docker` 下增加 `registry-mirrors`，然后重启：
+  ```yaml
+  docker:
+    registry-mirrors:
+      - https://docker.1ms.run
+  ```
+  保存后执行 `colima stop` 再 `colima start`。
+
+- **Docker Desktop / 系统 Docker**：在 `~/.docker/daemon.json`（Linux 为 `/etc/docker/daemon.json`）中配置：
+  ```json
+  {
+    "registry-mirrors": ["https://docker.1ms.run"]
+  }
+  ```
+  然后重启 Docker。
+
+**方案 B：网络恢复后重试**
+
+- 使用 VPN 或更换网络后再次执行 `./deploy/deploy.sh dev`。
+- 或先手动拉取镜像再部署：
+  ```bash
+  docker pull redis:7-alpine
+  docker pull minio/minio:RELEASE.2025-04-22T22-12-26Z
+  docker pull minio/mc:latest
+  ./deploy/deploy.sh dev
+  ```
+
 ### 日志收集
 
 ```bash

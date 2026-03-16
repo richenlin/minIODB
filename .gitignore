@@ -22,3 +22,5 @@ logs/minIODB.log
 .opencode/
 miniodb
 dashboard
+dashboard-ui/.next/
+dashboard-ui/out/

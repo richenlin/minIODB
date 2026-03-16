@@ -1,15 +1,11 @@
 import { useAuthStore } from '@/stores/auth-store'
+import type { LoginResponse } from './types'
 
 const API_BASE = '/dashboard/api/v1'
 
 interface LoginRequest {
   api_key: string
   api_secret: string
-}
-
-interface LoginResponse {
-  token: string
-  expires_at: string
 }
 
 interface ApiError {

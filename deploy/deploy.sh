@@ -363,7 +363,8 @@ deploy_dev() {
     log_info "访问地址:"
     log_info "  REST API:      http://localhost:8081"
     log_info "  gRPC API:      localhost:8080"
-    log_info "  Dashboard UI:  http://localhost:9090"
+    log_info "  Dashboard UI:  http://localhost:9090/dashboard/ui/"
+    log_info "  监控指标:      http://localhost:9090/metrics"
     log_info "  MinIO Console: http://localhost:9001"
     log_info "  MinIO Backup Console: http://localhost:9003"
 }

@@ -38,12 +38,16 @@ func MountDashboardToRouter(router *gin.Engine, cfg *config.Config, logger *zap.
 		logger,
 	)
 
-	srv := NewDashboardServer(coreClient, cfg, logger)
+	srv, err := NewDashboardServer(coreClient, cfg, logger)
+	if err != nil {
+		logger.Fatal("Failed to create dashboard server", zap.Error(err))
+		return
+	}
 	srv.MountRoutes(router.Group(cfg.Dashboard.BasePath))
 	logger.Info("Dashboard mounted in All-in-One mode", zap.String("base_path", cfg.Dashboard.BasePath))
 }
 
-func NewDashboardServer(coreClient client.CoreClient, cfg *config.Config, logger *zap.Logger) *dashboard.Server {
+func NewDashboardServer(coreClient client.CoreClient, cfg *config.Config, logger *zap.Logger) (*dashboard.Server, error) {
 	return dashboard.NewServer(coreClient, cfg, logger)
 }
 

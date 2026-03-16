@@ -22,14 +22,14 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { name: '总览', href: '/dashboard/ui', icon: <DashboardIcon /> },
-  { name: '集群', href: '/dashboard/ui/cluster', icon: <CubeIcon /> },
-  { name: '节点', href: '/dashboard/ui/nodes', icon: <PersonIcon /> },
-  { name: '数据', href: '/dashboard/ui/data', icon: <LayersIcon /> },
-  { name: '日志', href: '/dashboard/ui/logs', icon: <FileTextIcon /> },
-  { name: '备份', href: '/dashboard/ui/backup', icon: <ArchiveIcon /> },
-  { name: '监控', href: '/dashboard/ui/monitor', icon: <ActivityLogIcon /> },
-  { name: '分析', href: '/dashboard/ui/analytics', icon: <BarChartIcon /> },
+  { name: '总览', href: '/', icon: <DashboardIcon /> },
+  { name: '集群', href: '/cluster', icon: <CubeIcon /> },
+  { name: '节点', href: '/nodes', icon: <PersonIcon /> },
+  { name: '数据', href: '/data', icon: <LayersIcon /> },
+  { name: '日志', href: '/logs', icon: <FileTextIcon /> },
+  { name: '备份', href: '/backup', icon: <ArchiveIcon /> },
+  { name: '监控', href: '/monitor', icon: <ActivityLogIcon /> },
+  { name: '分析', href: '/analytics', icon: <BarChartIcon /> },
 ]
 
 export function Sidebar() {
@@ -50,8 +50,8 @@ export function Sidebar() {
         <nav className="flex-1 space-y-1 p-4">
           {navItems.map((item) => {
             const isActive =
-              item.href === '/dashboard/ui'
-                ? pathname === '/dashboard/ui' || pathname === '/dashboard/ui/'
+              item.href === '/'
+                ? pathname === '/' || pathname === ''
                 : pathname.startsWith(item.href)
 
             return (
@@ -75,10 +75,10 @@ export function Sidebar() {
         {/* Settings */}
         <div className="border-t border-border p-4">
           <Link
-            href="/dashboard/ui/settings"
+            href="/settings"
             className={cn(
               'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground',
-              pathname.startsWith('/dashboard/ui/settings') &&
+              pathname.startsWith('/settings') &&
                 'bg-accent text-accent-foreground'
             )}
           >

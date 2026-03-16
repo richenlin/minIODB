@@ -417,7 +417,7 @@ table_management:
     backup_enabled: true
     properties: {}
     # ID生成配置（默认要求用户提供ID，向后兼容）
-    id_strategy: "user_provided"      # 策略: uuid, snowflake, custom, user_provided
+    id_strategy: "snowflake"      # 策略: uuid, snowflake, custom, user_provided
     id_prefix: ""                     # ID前缀（用于custom和snowflake策略）
     auto_generate_id: false           # 是否自动生成ID（默认false以保持向后兼容）
     id_validation:

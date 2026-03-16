@@ -4,10 +4,11 @@ server:
   node_id: "test-node-1"
 
 # Dashboard（allinone 模式下启用，监听 9090）
+# base_path 必须与前端 next.config.mjs 的 basePath ('/dashboard/ui') 上级路径一致
 dashboard:
   enabled: true
   port: ":9090"
-  base_path: "/"
+  base_path: "/dashboard"
 
 # 网络和连接池配置 - 统一管理所有网络连接
 network:
