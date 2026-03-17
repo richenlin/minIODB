@@ -250,6 +250,13 @@ export interface FullConfig {
   minio_use_ssl: boolean
   minio_region: string
   minio_bucket: string
+  // minio_backup (network.pools.minio_backup)
+  minio_backup_endpoint: string
+  minio_backup_access_key_id: string
+  minio_backup_secret_access_key: string
+  minio_backup_use_ssl: boolean
+  minio_backup_region: string
+  minio_backup_bucket: string
   // dashboard
   core_endpoint: string
   dashboard_port: string
@@ -290,6 +297,12 @@ export interface ConfigUpdateRequest {
   minio_use_ssl?: boolean
   minio_region?: string
   minio_bucket?: string
+  minio_backup_endpoint?: string
+  minio_backup_access_key_id?: string
+  minio_backup_secret_access_key?: string
+  minio_backup_use_ssl?: boolean
+  minio_backup_region?: string
+  minio_backup_bucket?: string
   core_endpoint?: string
   dashboard_port?: string
   log_level?: string

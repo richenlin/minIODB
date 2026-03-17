@@ -63,11 +63,7 @@ func NewStorageFactory(cfg *config.Config, logger *zap.Logger) (StorageFactory, 
 	}
 
 	// 如果配置了备份MinIO，添加到配置中
-	if cfg.Backup.Enabled && cfg.Backup.MinIO.Endpoint != "" {
-		poolConfig.BackupMinIO = getBackupMinIOPoolConfig(cfg)
-	}
-	// 或者如果Network.Pools.BackupMinIO配置了，也添加
-	if cfg.Network.Pools.BackupMinIO != nil && cfg.Network.Pools.BackupMinIO.Endpoint != "" {
+	if cfg.Backup.Enabled && cfg.GetBackupMinIO().Endpoint != "" {
 		poolConfig.BackupMinIO = getBackupMinIOPoolConfig(cfg)
 	}
 
@@ -302,11 +298,11 @@ func getEnhancedRedisConfig(cfg *config.Config) *config.EnhancedRedisConfig {
 	}
 }
 
-// getEnhancedMinIOPoolConfig 获取增强的MinIO池配置
+// getEnhancedMinIOPoolConfig 获取增强的MinIO池配置（统一使用 Network.Pools.MinIO）
 func getEnhancedMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
-	// 检查是否有新的网络配置
-	if cfg.Network.Pools.MinIO.MaxIdleConns > 0 {
-		minioConfig := &cfg.Network.Pools.MinIO
+	minioConfig := &cfg.Network.Pools.MinIO
+	// 若 Pools 中已配置连接池参数则使用，否则用统一配置 + 池默认值
+	if minioConfig.Endpoint != "" {
 		return &pool.MinIOPoolConfig{
 			Endpoint:              minioConfig.Endpoint,
 			AccessKeyID:           minioConfig.AccessKeyID,
@@ -329,13 +325,13 @@ func getEnhancedMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
 			DisableCompression:    minioConfig.DisableCompression,
 		}
 	}
-
-	// 回退到旧配置，使用优化的默认值
+	// 仅当 Pools 未配置时回退到统一配置（GetMinIO）+ 池默认值
+	m := cfg.GetMinIO()
 	return &pool.MinIOPoolConfig{
-		Endpoint:              cfg.MinIO.Endpoint,
-		AccessKeyID:           cfg.MinIO.AccessKeyID,
-		SecretAccessKey:       cfg.MinIO.SecretAccessKey,
-		UseSSL:                cfg.MinIO.UseSSL,
+		Endpoint:              m.Endpoint,
+		AccessKeyID:           m.AccessKeyID,
+		SecretAccessKey:       m.SecretAccessKey,
+		UseSSL:                m.UseSSL,
 		Region:                "us-east-1",            // 默认值
 		MaxIdleConns:          300,                    // 优化默认值
 		MaxIdleConnsPerHost:   150,                    // 优化默认值
@@ -354,10 +350,9 @@ func getEnhancedMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
 	}
 }
 
-// getBackupMinIOPoolConfig 获取备份MinIO池配置
+// getBackupMinIOPoolConfig 获取备份MinIO池配置（统一使用 Network.Pools.BackupMinIO / GetBackupMinIO）
 func getBackupMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
-	// 检查是否有新的网络配置
-	if cfg.Network.Pools.BackupMinIO != nil && cfg.Network.Pools.BackupMinIO.MaxIdleConns > 0 {
+	if cfg.Network.Pools.BackupMinIO != nil && cfg.Network.Pools.BackupMinIO.Endpoint != "" {
 		backupConfig := cfg.Network.Pools.BackupMinIO
 		return &pool.MinIOPoolConfig{
 			Endpoint:              backupConfig.Endpoint,
@@ -381,13 +376,12 @@ func getBackupMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
 			DisableCompression:    backupConfig.DisableCompression,
 		}
 	}
-
-	// 回退到旧配置，使用优化的默认值
+	m := cfg.GetBackupMinIO()
 	return &pool.MinIOPoolConfig{
-		Endpoint:              cfg.Backup.MinIO.Endpoint,
-		AccessKeyID:           cfg.Backup.MinIO.AccessKeyID,
-		SecretAccessKey:       cfg.Backup.MinIO.SecretAccessKey,
-		UseSSL:                cfg.Backup.MinIO.UseSSL,
+		Endpoint:              m.Endpoint,
+		AccessKeyID:           m.AccessKeyID,
+		SecretAccessKey:       m.SecretAccessKey,
+		UseSSL:                m.UseSSL,
 		Region:                "us-east-1",            // 默认值
 		MaxIdleConns:          200,                    // 备份可以少一些连接
 		MaxIdleConnsPerHost:   100,                    // 备份可以少一些连接

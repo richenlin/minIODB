@@ -725,38 +725,109 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
 
       {/* 编辑/新增对话框 */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>
               {editingRow ? '编辑记录' : '新增记录'}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
-            {Object.entries(editFormData).map(([key, value]) => (
-              key !== 'id' && key !== 'timestamp' && (
-                <div key={key} className="space-y-2">
+          {editingRow ? (
+            // 编辑模式：显示各字段输入框
+            <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
+              {Object.entries(editFormData).map(([key, value]) => (
+                key !== 'id' && key !== 'timestamp' && (
+                  <div key={key} className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">
+                      {key}
+                    </label>
+                    <input
+                      type="text"
+                      value={value}
+                      onChange={(e) => setEditFormData(prev => ({
+                        ...prev,
+                        [key]: e.target.value
+                      }))}
+                      className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                  </div>
+                )
+              ))}
+            </div>
+          ) : (
+            // 新增模式：ID + JSON Payload 输入 + 预览
+            <div className="space-y-4 py-4">
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-2">
                   <label className="text-sm font-medium text-foreground">
-                    {key}
+                    表
                   </label>
                   <input
                     type="text"
-                    value={value}
-                    onChange={(e) => setEditFormData(prev => ({
-                      ...prev,
-                      [key]: e.target.value
-                    }))}
+                    value={selectedTable || ''}
+                    disabled
+                    className="w-full px-3 py-2 border border-input rounded-md bg-muted text-muted-foreground"
+                  />
+                </div>
+                <div className="space-y-2 col-span-2">
+                  <label className="text-sm font-medium text-foreground">
+                    ID（可选）
+                  </label>
+                  <input
+                    type="text"
+                    value={newRecordId}
+                    onChange={(e) => setNewRecordId(e.target.value)}
+                    placeholder="留空则自动生成..."
                     className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                   />
                 </div>
-              )
-            ))}
-          </div>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  Payload（JSON格式）
+                </label>
+                <textarea
+                  value={newRecordPayload}
+                  onChange={(e) => {
+                    setNewRecordPayload(e.target.value)
+                    setNewRecordError('')
+                  }}
+                  placeholder={'{\n  "name": "张三",\n  "age": 25\n}'}
+                  rows={6}
+                  className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+                />
+                {newRecordError && (
+                  <p className="text-sm text-destructive">{newRecordError}</p>
+                )}
+              </div>
+              
+              {/* 数据预览 */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  完整数据预览
+                </label>
+                <pre className="p-3 bg-muted rounded-md text-xs font-mono overflow-x-auto text-foreground">
+                  {JSON.stringify({
+                    table: selectedTable,
+                    ...(newRecordId.trim() ? { id: newRecordId.trim() } : {}),
+                    payload: (() => {
+                      try {
+                        return newRecordPayload ? JSON.parse(newRecordPayload) : {}
+                      } catch {
+                        return '(JSON 格式错误)'
+                      }
+                    })()
+                  }, null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
               取消
             </Button>
             <Button onClick={handleSaveEdit}>
-              保存
+              {editingRow ? '保存' : '提交'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -168,15 +168,15 @@ func main() {
 	// 相关文件保留在 internal/storage/ 目录下供未来使用
 	// 包括: engine.go, index_system.go, memory.go, shard.go 等
 
-	// 初始化MinIO客户端
-	primaryMinio, err := storage.NewMinioClientWrapper(cfg.MinIO, logger.Logger)
+	// 初始化MinIO客户端（使用统一配置 network.pools.minio）
+	primaryMinio, err := storage.NewMinioClientWrapper(cfg.GetMinIO(), logger.Logger)
 	if err != nil {
 		logger.Sugar.Fatalf("Failed to create primary MinIO client: %v", err)
 	}
 
 	var backupMinio storage.Uploader
-	if cfg.Backup.Enabled {
-		backupMinio, err = storage.NewMinioClientWrapper(cfg.Backup.MinIO, logger.Logger)
+	if cfg.Backup.Enabled && cfg.GetBackupMinIO().Endpoint != "" {
+		backupMinio, err = storage.NewMinioClientWrapper(cfg.GetBackupMinIO(), logger.Logger)
 		if err != nil {
 			logger.Sugar.Fatalf("Failed to create backup MinIO client: %v", err)
 		}
@@ -186,7 +186,7 @@ func main() {
 	concurrentBuffer := buffer.NewConcurrentBuffer(
 		poolManager,
 		cfg,
-		cfg.Backup.MinIO.Bucket,
+		cfg.GetBackupMinIO().Bucket,
 		cfg.Server.NodeID,
 		nil,
 		logger.Logger,
@@ -272,7 +272,7 @@ func main() {
 			}
 
 			var err error
-			compactionManager, err = compaction.NewManager(minioPool.GetClient(), cfg.MinIO.Bucket, compactionConfig, logger.Logger)
+			compactionManager, err = compaction.NewManager(minioPool.GetClient(), cfg.GetMinIO().Bucket, compactionConfig, logger.Logger)
 			if err != nil {
 				logger.Sugar.Warnf("Failed to create compaction manager: %v", err)
 			} else {
@@ -578,7 +578,7 @@ func performDataBackup(primaryMinio, backupMinio storage.Uploader, cfg config.Co
 func executeBackupWithRetry(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config) error {
 	backupStartTime := time.Now()
 
-	bucket := cfg.MinIO.Bucket
+	bucket := cfg.GetMinIO().Bucket
 
 	objectsCh := primaryMinio.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true})
 

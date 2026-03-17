@@ -35,7 +35,7 @@ network:
       #   - "redis-node-1:7000"
       #   - "redis-node-2:7001"
 
-    # MinIO 主实例
+    # MinIO 主实例（唯一配置来源，Querier/写入/连接池均由此读取）
     minio:
       endpoint: "localhost:9000"
       access_key_id: "minioadmin"
@@ -44,8 +44,8 @@ network:
       region: "us-east-1"
       bucket: "miniodb-data"
 
-    # 备份 MinIO（backup.enabled: true 时生效，取消注释并填写）
-    # backup_minio:
+    # 备份 MinIO（唯一配置来源；backup.enabled: true 时生效，取消注释并填写）
+    # minio_backup:
     #   endpoint: "localhost:9002"
     #   access_key_id: "minioadmin"
     #   secret_access_key: "minioadmin123"
@@ -108,17 +108,11 @@ sla:
   alert_on_violation: true
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 备份
+# 备份（MinIO 连接请配置到 network.pools.minio_backup）
 # ──────────────────────────────────────────────────────────────────────────────
 backup:
   enabled: false
-  interval: 3600          # 秒
-  minio:
-    endpoint: "localhost:9002"
-    access_key_id: "minioadmin"
-    secret_access_key: "minioadmin123"
-    use_ssl: false
-    bucket: "miniodb-backup"
+  interval: 3600          # 秒，备份计划间隔
   metadata:
     enabled: true
     interval: 30m
@@ -258,14 +252,3 @@ security:
 swagger:
   enabled: true              # 生产环境建议设为 false
   host: "localhost:8081"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Dashboard（可选）
-# ──────────────────────────────────────────────────────────────────────────────────────
-dashboard:
-  enabled: true
-  # port 字段在融合架构下不再使用（Dashboard 挂载到 REST Server 端口 8081）
-  # port: ":9090"
-  base_path: "/dashboard"
-  core_endpoint: "http://localhost:8081"
-  core_grpc_endpoint: "localhost:8080"

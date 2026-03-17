@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,6 +29,9 @@ import (
 
 // ErrNoDataFiles is returned when a table has no data files available for querying
 var ErrNoDataFiles = errors.New("no data files available for table")
+
+// ErrStorageUnavailable is returned when the table has file references but all failed to read (e.g. MinIO auth/signature error)
+var ErrStorageUnavailable = errors.New("storage unavailable: failed to read data files (check MinIO credentials and endpoint)")
 
 // stmtEntry 预编译语句缓存条目
 type stmtEntry struct {
@@ -285,10 +289,15 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 	// 5. 为每个表准备数据文件（使用同一个数据库连接，支持文件剪枝）
 	for _, tableName := range validTables {
 		if err := q.prepareTableDataWithPruning(ctx, db, tableName, sqlQuery); err != nil {
-			// 如果表没有数据文件，返回空结果而不是错误
+			// 如果表没有数据文件，返回空结果
 			if errors.Is(err, ErrNoDataFiles) {
 				q.logger.Sugar().Infof("Returning empty result for table with no data: %s", tableName)
 				return "[]", nil
+			}
+			// 有文件但全部读取失败（如 MinIO 签名/凭证错误），向用户返回明确错误
+			if errors.Is(err, ErrStorageUnavailable) {
+				q.updateErrorStats()
+				return "", err
 			}
 			q.updateErrorStats()
 			return "", fmt.Errorf("failed to prepare data for table %s: %w", tableName, err)
@@ -342,16 +351,19 @@ func (q *Querier) prepareTableData(tableName string) error {
 // getBufferFilesForTable 获取表的缓冲区文件
 func (q *Querier) getBufferFilesForTable(tableName string) []string {
 	if q.buffer == nil {
+		q.logger.Sugar().Infof("DEBUG: buffer is nil for table %s", tableName)
 		return nil
 	}
 
 	// 使用正确的方法获取表的缓冲区键
 	bufferKeys := q.buffer.GetTableKeys(tableName)
+	q.logger.Sugar().Infof("DEBUG: found %d buffer keys for table %s: %v", len(bufferKeys), tableName, bufferKeys)
 	var files []string
 
 	for _, bufferKey := range bufferKeys {
 		// 获取该键的数据
 		rows := q.buffer.Get(bufferKey)
+		q.logger.Sugar().Infof("DEBUG: got %d rows for buffer key %s", len(rows), bufferKey)
 		if len(rows) > 0 {
 			// 创建临时Parquet文件
 			tempFile := q.createTempFilePath(bufferKey)
@@ -452,7 +464,7 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 	q.logger.Sugar().Infof("Successfully created view for table %s", tableName)
 
 	// 使用安全的方式验证视图
-	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, nil, "")
+	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, nil, "", "")
 	if err != nil {
 		return fmt.Errorf("invalid table name for verification: %w", err)
 	}
@@ -502,7 +514,7 @@ func (q *Querier) createTableViewWithDBWithColumnPruning(db *sql.DB, tableName s
 	q.logger.Sugar().Infof("Successfully created optimized view for table %s with column pruning", tableName)
 
 	// 验证视图
-	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, requiredColumns, "LIMIT 0")
+	testSQL, err := security.DefaultSanitizer.BuildSafeSelectSQL(tableName, requiredColumns, "", "LIMIT 0")
 	if err != nil {
 		return fmt.Errorf("invalid table name for verification: %w", err)
 	}
@@ -526,7 +538,7 @@ func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string
 	}
 
 	// 使用正确的MinIO方法下载文件
-	data, err := q.minioClient.GetObject(ctx, q.config.MinIO.Bucket, objectName, minio.GetObjectOptions{})
+	data, err := q.minioClient.GetObject(ctx, q.config.GetMinIO().Bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to download %s: %w", objectName, err)
 	}
@@ -584,9 +596,10 @@ func (q *Querier) formatResults(results []map[string]interface{}) string {
 	return string(b)
 }
 
-// createTempFilePath 创建临时文件路径
+// createTempFilePath 创建临时文件路径，规范化 bufferKey 中的 "//" 避免路径非法（兼容历史/WAL 产生的 key）
 func (q *Querier) createTempFilePath(bufferKey string) string {
-	return filepath.Join(q.tempDir, fmt.Sprintf("buffer_%s.parquet", bufferKey))
+	normalized := path.Clean(bufferKey)
+	return filepath.Join(q.tempDir, fmt.Sprintf("buffer_%s.parquet", normalized))
 }
 
 // writeBufferToParquet 将缓冲区数据写入Parquet文件
@@ -806,7 +819,7 @@ func (q *Querier) getStorageFilesFromMinIO(ctx context.Context, tableName string
 	}
 
 	prefix := tableName + "/"
-	bucket := q.config.MinIO.Bucket
+	bucket := q.config.GetMinIO().Bucket
 
 	q.logger.Sugar().Debugf("Listing MinIO objects with prefix: %s/%s", bucket, prefix)
 
@@ -1149,6 +1162,11 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 	// 4. 创建或更新DuckDB视图（带列剪枝优化）
 	allFiles := append(bufferFiles, storageFiles...)
 	if len(allFiles) == 0 {
+		candidatesCount := len(bufferFiles) + len(storageFilesMetadata)
+		if candidatesCount > 0 {
+			q.logger.Sugar().Infof("Table %s has %d file(s) but all failed to read (e.g. MinIO auth error)", tableName, candidatesCount)
+			return ErrStorageUnavailable
+		}
 		q.logger.Sugar().Infof("No data files found for table: %s", tableName)
 		return ErrNoDataFiles
 	}
@@ -1308,7 +1326,7 @@ func (q *Querier) getStorageFilesMetadataFromMinIO(ctx context.Context, tableNam
 	}
 
 	prefix := tableName + "/"
-	bucket := q.config.MinIO.Bucket
+	bucket := q.config.GetMinIO().Bucket
 
 	// 获取 Redis 客户端（如果可用）
 	var redisClient redis.Cmdable

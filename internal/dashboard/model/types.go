@@ -1,4 +1,3 @@
-
 package model
 
 import (
@@ -82,12 +81,12 @@ type TableStatsResult struct {
 }
 
 type BrowseParams struct {
-	Page      int    `json:"page"`
-	PageSize  int    `json:"page_size"`
-	SortBy    string `json:"sort_by"`
-	SortOrder string `json:"sort_order"`
-	Filter    string `json:"filter"`
-	ID        string `json:"id"`
+	Page      int    `form:"page" json:"page"`
+	PageSize  int    `form:"page_size" json:"page_size"`
+	SortBy    string `form:"sort_by" json:"sort_by"`
+	SortOrder string `form:"sort_order" json:"sort_order"`
+	Filter    string `form:"filter" json:"filter"`
+	ID        string `form:"id" json:"id"`
 }
 
 type BrowseResult struct {
@@ -216,13 +215,13 @@ type FullConfig struct {
 	RestPort string `json:"rest_port"`
 
 	// network.pools.redis
-	RedisMode        string   `json:"redis_mode"`
-	RedisAddr        string   `json:"redis_addr"`
-	RedisPassword    string   `json:"redis_password"`
-	RedisDB          int      `json:"redis_db"`
-	RedisMasterName  string   `json:"redis_master_name,omitempty"`
-	SentinelAddrs    []string `json:"sentinel_addrs,omitempty"`
-	ClusterAddrs     []string `json:"cluster_addrs,omitempty"`
+	RedisMode       string   `json:"redis_mode"`
+	RedisAddr       string   `json:"redis_addr"`
+	RedisPassword   string   `json:"redis_password"`
+	RedisDB         int      `json:"redis_db"`
+	RedisMasterName string   `json:"redis_master_name,omitempty"`
+	SentinelAddrs   []string `json:"sentinel_addrs,omitempty"`
+	ClusterAddrs    []string `json:"cluster_addrs,omitempty"`
 
 	// network.pools.minio
 	MinioEndpoint        string `json:"minio_endpoint"`
@@ -232,8 +231,16 @@ type FullConfig struct {
 	MinioRegion          string `json:"minio_region"`
 	MinioBucket          string `json:"minio_bucket"`
 
+	// network.pools.minio_backup
+	MinioBackupEndpoint        string `json:"minio_backup_endpoint"`
+	MinioBackupAccessKeyID     string `json:"minio_backup_access_key_id"`
+	MinioBackupSecretAccessKey string `json:"minio_backup_secret_access_key"`
+	MinioBackupUseSSL          bool   `json:"minio_backup_use_ssl"`
+	MinioBackupRegion          string `json:"minio_backup_region"`
+	MinioBackupBucket          string `json:"minio_backup_bucket"`
+
 	// dashboard
-	CoreEndpoint string `json:"core_endpoint"`
+	CoreEndpoint  string `json:"core_endpoint"`
 	DashboardPort string `json:"dashboard_port"`
 
 	// log
@@ -265,13 +272,13 @@ type ConfigUpdateRequest struct {
 	GrpcPort string `json:"grpc_port,omitempty"`
 	RestPort string `json:"rest_port,omitempty"`
 
-	RedisMode        string   `json:"redis_mode,omitempty"`
-	RedisAddr        string   `json:"redis_addr,omitempty"`
-	RedisPassword    string   `json:"redis_password,omitempty"`
-	RedisDB          *int     `json:"redis_db,omitempty"`
-	RedisMasterName  string   `json:"redis_master_name,omitempty"`
-	SentinelAddrs    []string `json:"sentinel_addrs,omitempty"`
-	ClusterAddrs     []string `json:"cluster_addrs,omitempty"`
+	RedisMode       string   `json:"redis_mode,omitempty"`
+	RedisAddr       string   `json:"redis_addr,omitempty"`
+	RedisPassword   string   `json:"redis_password,omitempty"`
+	RedisDB         *int     `json:"redis_db,omitempty"`
+	RedisMasterName string   `json:"redis_master_name,omitempty"`
+	SentinelAddrs   []string `json:"sentinel_addrs,omitempty"`
+	ClusterAddrs    []string `json:"cluster_addrs,omitempty"`
 
 	MinioEndpoint        string `json:"minio_endpoint,omitempty"`
 	MinioAccessKeyID     string `json:"minio_access_key_id,omitempty"`
@@ -279,6 +286,13 @@ type ConfigUpdateRequest struct {
 	MinioUseSSL          *bool  `json:"minio_use_ssl,omitempty"`
 	MinioRegion          string `json:"minio_region,omitempty"`
 	MinioBucket          string `json:"minio_bucket,omitempty"`
+
+	MinioBackupEndpoint        string `json:"minio_backup_endpoint,omitempty"`
+	MinioBackupAccessKeyID     string `json:"minio_backup_access_key_id,omitempty"`
+	MinioBackupSecretAccessKey string `json:"minio_backup_secret_access_key,omitempty"`
+	MinioBackupUseSSL          *bool  `json:"minio_backup_use_ssl,omitempty"`
+	MinioBackupRegion          string `json:"minio_backup_region,omitempty"`
+	MinioBackupBucket          string `json:"minio_backup_bucket,omitempty"`
 
 	CoreEndpoint  string `json:"core_endpoint,omitempty"`
 	DashboardPort string `json:"dashboard_port,omitempty"`
@@ -304,13 +318,13 @@ type ConfigUpdateResult struct {
 type EnableDistributedRequest struct {
 	// RedisMode is one of: standalone | sentinel | cluster
 	RedisMode        string   `json:"redis_mode"`
-	RedisAddr        string   `json:"redis_addr"`         // standalone mode
+	RedisAddr        string   `json:"redis_addr"` // standalone mode
 	RedisPassword    string   `json:"redis_password"`
-	RedisDB          int      `json:"redis_db"`           // standalone mode
-	MasterName       string   `json:"master_name"`        // sentinel mode
-	SentinelAddrs    []string `json:"sentinel_addrs"`     // sentinel mode
-	SentinelPassword string   `json:"sentinel_password"`  // sentinel mode
-	ClusterAddrs     []string `json:"cluster_addrs"`      // cluster mode
+	RedisDB          int      `json:"redis_db"`          // standalone mode
+	MasterName       string   `json:"master_name"`       // sentinel mode
+	SentinelAddrs    []string `json:"sentinel_addrs"`    // sentinel mode
+	SentinelPassword string   `json:"sentinel_password"` // sentinel mode
+	ClusterAddrs     []string `json:"cluster_addrs"`     // cluster mode
 }
 
 // EnableDistributedResult is returned after processing an enable-distributed request.

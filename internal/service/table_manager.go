@@ -524,7 +524,7 @@ func (tm *TableManager) deleteTableData(ctx context.Context, tableName string) (
 
 		// 从MinIO删除文件
 		for _, file := range files {
-			if err := tm.primaryMinio.RemoveObject(ctx, tm.cfg.MinIO.Bucket, file, minio.RemoveObjectOptions{}); err != nil {
+			if err := tm.primaryMinio.RemoveObject(ctx, tm.cfg.GetMinIO().Bucket, file, minio.RemoveObjectOptions{}); err != nil {
 				tm.logger.Sugar().Infof("WARN: failed to delete file %s from primary MinIO: %v", file, err)
 			} else {
 				totalDeleted++
@@ -532,7 +532,7 @@ func (tm *TableManager) deleteTableData(ctx context.Context, tableName string) (
 
 			// 从备份MinIO删除文件（如果存在）
 			if tm.backupMinio != nil && tm.cfg.Backup.Enabled {
-				if err := tm.backupMinio.RemoveObject(ctx, tm.cfg.Backup.MinIO.Bucket, file, minio.RemoveObjectOptions{}); err != nil {
+				if err := tm.backupMinio.RemoveObject(ctx, tm.cfg.GetBackupMinIO().Bucket, file, minio.RemoveObjectOptions{}); err != nil {
 					tm.logger.Sugar().Infof("WARN: failed to delete file %s from backup MinIO: %v", file, err)
 				}
 			}

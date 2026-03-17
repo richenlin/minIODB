@@ -141,7 +141,7 @@ func (v *ConfigValidator) validateRedisConfig() *ValidationResult {
 
 // validateMinIOConfig 验证MinIO配置
 func (v *ConfigValidator) validateMinIOConfig() *ValidationResult {
-	cfg := v.cfg.MinIO
+	cfg := v.cfg.GetMinIO()
 	
 	if cfg.Endpoint == "" {
 		return &ValidationResult{

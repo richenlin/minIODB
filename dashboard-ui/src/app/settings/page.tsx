@@ -59,6 +59,20 @@ const SECTIONS: { title: string; fields: FieldDef[] }[] = [
     ],
   },
   {
+    title: '备份 MinIO',
+    fields: [
+      { key: 'minio_backup_endpoint', label: '地址', type: 'text', hint: 'host:port，留空则不使用备份存储' },
+      { key: 'minio_backup_access_key_id', label: 'Access Key ID', type: 'text' },
+      { key: 'minio_backup_secret_access_key', label: 'Secret Access Key', type: 'password' },
+      {
+        key: 'minio_backup_use_ssl', label: '启用 SSL', type: 'select',
+        options: ['false', 'true'],
+      },
+      { key: 'minio_backup_region', label: 'Region', type: 'text', hint: '例：us-east-1' },
+      { key: 'minio_backup_bucket', label: 'Bucket', type: 'text' },
+    ],
+  },
+  {
     title: 'Dashboard',
     fields: [
       { key: 'core_endpoint', label: 'Core API 地址', type: 'text', hint: 'http://host:8081' },
@@ -249,6 +263,12 @@ export default function SettingsPage() {
           minio_use_ssl: false,
           minio_region: '',
           minio_bucket: '',
+          minio_backup_endpoint: '',
+          minio_backup_access_key_id: '',
+          minio_backup_secret_access_key: '',
+          minio_backup_use_ssl: false,
+          minio_backup_region: '',
+          minio_backup_bucket: '',
           core_endpoint: String(legacy.core_endpoint ?? ''),
           dashboard_port: '',
           log_level: 'info',
@@ -305,7 +325,7 @@ export default function SettingsPage() {
       if (f.type === 'number') {
         const n = parseInt(raw, 10)
         if (!isNaN(n)) (req as Record<string, unknown>)[f.key] = n
-      } else if (f.type === 'boolean' || f.key === 'minio_use_ssl') {
+      } else if (f.type === 'boolean' || f.key === 'minio_use_ssl' || f.key === 'minio_backup_use_ssl') {
         (req as Record<string, unknown>)[f.key] = raw === 'true'
       } else {
         (req as Record<string, unknown>)[f.key] = raw

@@ -136,8 +136,9 @@ func (s *Server) refreshStats(ctx context.Context) {
 		ch := make(chan countVal, tablesCount)
 		for _, t := range resp.Tables {
 			go func(name string) {
+				quoted := security.DefaultSanitizer.QuoteIdentifier(name)
 				qr, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{
-					Sql: fmt.Sprintf("SELECT COUNT(*) AS cnt FROM `%s`", name),
+					Sql: fmt.Sprintf("SELECT COUNT(*) AS cnt FROM %s", quoted),
 				})
 				if err != nil || qr == nil || qr.ResultJson == "" {
 					ch <- countVal{0}
@@ -542,6 +543,13 @@ func (s *Server) clusterTopology(c *gin.Context) {
 func (s *Server) clusterFullConfig(c *gin.Context) {
 	s.cfgMu.RLock()
 	cfg := s.cfg
+	var backupEndpoint, backupAccessKey, backupSecret, backupRegion, backupBucket string
+	var backupUseSSL bool
+	if cfg.Network.Pools.BackupMinIO != nil {
+		p := cfg.Network.Pools.BackupMinIO
+		backupEndpoint, backupAccessKey, backupSecret = p.Endpoint, p.AccessKeyID, p.SecretAccessKey
+		backupUseSSL, backupRegion, backupBucket = p.UseSSL, p.Region, p.Bucket
+	}
 	full := &model.FullConfig{
 		// server
 		NodeID:   cfg.Server.NodeID,
@@ -564,6 +572,14 @@ func (s *Server) clusterFullConfig(c *gin.Context) {
 		MinioUseSSL:          cfg.Network.Pools.MinIO.UseSSL,
 		MinioRegion:          cfg.Network.Pools.MinIO.Region,
 		MinioBucket:          cfg.Network.Pools.MinIO.Bucket,
+
+		// network.pools.minio_backup
+		MinioBackupEndpoint:        backupEndpoint,
+		MinioBackupAccessKeyID:     backupAccessKey,
+		MinioBackupSecretAccessKey: maskSecret(backupSecret),
+		MinioBackupUseSSL:          backupUseSSL,
+		MinioBackupRegion:          backupRegion,
+		MinioBackupBucket:          backupBucket,
 
 		// dashboard
 		CoreEndpoint:  cfg.Dashboard.CoreEndpoint,
@@ -645,6 +661,35 @@ func (s *Server) updateClusterConfig(c *gin.Context) {
 	if req.MinioBucket != "" {
 		cfg.Network.Pools.MinIO.Bucket = req.MinioBucket
 	}
+	// network.pools.minio_backup
+	hasBackupMinIOReq := req.MinioBackupEndpoint != "" || req.MinioBackupAccessKeyID != "" || req.MinioBackupSecretAccessKey != "" ||
+		req.MinioBackupUseSSL != nil || req.MinioBackupRegion != "" || req.MinioBackupBucket != ""
+	if hasBackupMinIOReq {
+		if cfg.Network.Pools.BackupMinIO == nil {
+			cfg.Network.Pools.BackupMinIO = &config.EnhancedMinIOConfig{
+				UseSSL: false,
+				Region: "us-east-1",
+			}
+		}
+		if req.MinioBackupEndpoint != "" {
+			cfg.Network.Pools.BackupMinIO.Endpoint = req.MinioBackupEndpoint
+		}
+		if req.MinioBackupAccessKeyID != "" {
+			cfg.Network.Pools.BackupMinIO.AccessKeyID = req.MinioBackupAccessKeyID
+		}
+		if req.MinioBackupSecretAccessKey != "" {
+			cfg.Network.Pools.BackupMinIO.SecretAccessKey = req.MinioBackupSecretAccessKey
+		}
+		if req.MinioBackupUseSSL != nil {
+			cfg.Network.Pools.BackupMinIO.UseSSL = *req.MinioBackupUseSSL
+		}
+		if req.MinioBackupRegion != "" {
+			cfg.Network.Pools.BackupMinIO.Region = req.MinioBackupRegion
+		}
+		if req.MinioBackupBucket != "" {
+			cfg.Network.Pools.BackupMinIO.Bucket = req.MinioBackupBucket
+		}
+	}
 	if req.CoreEndpoint != "" {
 		cfg.Dashboard.CoreEndpoint = req.CoreEndpoint
 	}
@@ -673,7 +718,7 @@ func (s *Server) updateClusterConfig(c *gin.Context) {
 	}
 	s.cfgMu.Unlock()
 
-	// Generate YAML snippet for manual config update
+	// Generate YAML snippet for manual config update (matches unified config: network.pools.*)
 	snippet := "# Configuration updated in memory. Add to config.yaml:\n"
 	if req.RedisMode != "" || req.RedisAddr != "" {
 		snippet += "network:\n  pools:\n    redis:\n"
@@ -682,6 +727,64 @@ func (s *Server) updateClusterConfig(c *gin.Context) {
 		}
 		if req.RedisAddr != "" {
 			snippet += fmt.Sprintf("      addr: %s\n", req.RedisAddr)
+		}
+	}
+	hasMinio := req.MinioEndpoint != "" || req.MinioAccessKeyID != "" || req.MinioSecretAccessKey != "" ||
+		req.MinioUseSSL != nil || req.MinioRegion != "" || req.MinioBucket != ""
+	if hasMinio {
+		if !strings.Contains(snippet, "network:") {
+			snippet += "network:\n  pools:\n"
+		} else if !strings.Contains(snippet, "pools:") {
+			snippet += "  pools:\n"
+		}
+		if !strings.Contains(snippet, "minio:") {
+			snippet += "    minio:\n"
+		}
+		if req.MinioEndpoint != "" {
+			snippet += fmt.Sprintf("      endpoint: %s\n", req.MinioEndpoint)
+		}
+		if req.MinioAccessKeyID != "" {
+			snippet += fmt.Sprintf("      access_key_id: %s\n", req.MinioAccessKeyID)
+		}
+		if req.MinioSecretAccessKey != "" {
+			snippet += "      secret_access_key: <your-secret>\n"
+		}
+		if req.MinioUseSSL != nil {
+			snippet += fmt.Sprintf("      use_ssl: %v\n", *req.MinioUseSSL)
+		}
+		if req.MinioRegion != "" {
+			snippet += fmt.Sprintf("      region: %s\n", req.MinioRegion)
+		}
+		if req.MinioBucket != "" {
+			snippet += fmt.Sprintf("      bucket: %s\n", req.MinioBucket)
+		}
+	}
+	hasMinioBackup := req.MinioBackupEndpoint != "" || req.MinioBackupAccessKeyID != "" || req.MinioBackupSecretAccessKey != "" ||
+		req.MinioBackupUseSSL != nil || req.MinioBackupRegion != "" || req.MinioBackupBucket != ""
+	if hasMinioBackup {
+		if !strings.Contains(snippet, "network:") {
+			snippet += "network:\n  pools:\n"
+		} else if !strings.Contains(snippet, "pools:") {
+			snippet += "  pools:\n"
+		}
+		snippet += "    minio_backup:\n"
+		if req.MinioBackupEndpoint != "" {
+			snippet += fmt.Sprintf("      endpoint: %s\n", req.MinioBackupEndpoint)
+		}
+		if req.MinioBackupAccessKeyID != "" {
+			snippet += fmt.Sprintf("      access_key_id: %s\n", req.MinioBackupAccessKeyID)
+		}
+		if req.MinioBackupSecretAccessKey != "" {
+			snippet += "      secret_access_key: <your-secret>\n"
+		}
+		if req.MinioBackupUseSSL != nil {
+			snippet += fmt.Sprintf("      use_ssl: %v\n", *req.MinioBackupUseSSL)
+		}
+		if req.MinioBackupRegion != "" {
+			snippet += fmt.Sprintf("      region: %s\n", req.MinioBackupRegion)
+		}
+		if req.MinioBackupBucket != "" {
+			snippet += fmt.Sprintf("      bucket: %s\n", req.MinioBackupBucket)
 		}
 	}
 
@@ -989,7 +1092,8 @@ func (s *Server) browseData(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var total int64
-	countSQL := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM `%s`", name)
+	quotedTable := security.DefaultSanitizer.QuoteIdentifier(name)
+	countSQL := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM %s", quotedTable)
 	if params.Filter != "" {
 		countSQL += fmt.Sprintf(" WHERE %s", params.Filter)
 	}
@@ -1008,7 +1112,7 @@ func (s *Server) browseData(c *gin.Context) {
 		}
 	}
 
-	sql := fmt.Sprintf("SELECT * FROM `%s`", name)
+	sql := fmt.Sprintf("SELECT * FROM %s", quotedTable)
 	if params.Filter != "" {
 		sql += fmt.Sprintf(" WHERE %s", params.Filter)
 	}
@@ -1017,7 +1121,8 @@ func (s *Server) browseData(c *gin.Context) {
 		if strings.ToUpper(params.SortOrder) == "DESC" {
 			order = "DESC"
 		}
-		sql += fmt.Sprintf(" ORDER BY `%s` %s", params.SortBy, order)
+		quotedSortBy := security.DefaultSanitizer.QuoteIdentifier(params.SortBy)
+		sql += fmt.Sprintf(" ORDER BY %s %s", quotedSortBy, order)
 	}
 	sql += fmt.Sprintf(" LIMIT %d OFFSET %d", pageSize, offset)
 

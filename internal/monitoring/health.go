@@ -155,7 +155,7 @@ func (hc *HealthChecker) checkMinIOHealth(ctx context.Context) *HealthStatus {
 	}
 
 	// 检查存储桶是否存在
-	exists, err := hc.minioClient.BucketExists(ctx, hc.cfg.MinIO.Bucket)
+	exists, err := hc.minioClient.BucketExists(ctx, hc.cfg.GetMinIO().Bucket)
 	if err != nil {
 		return &HealthStatus{
 			Status:    "unhealthy",
@@ -168,14 +168,14 @@ func (hc *HealthChecker) checkMinIOHealth(ctx context.Context) *HealthStatus {
 		return &HealthStatus{
 			Status:    "unhealthy",
 			Timestamp: now,
-			Message:   fmt.Sprintf("MinIO bucket '%s' does not exist", hc.cfg.MinIO.Bucket),
+			Message:   fmt.Sprintf("MinIO bucket '%s' does not exist", hc.cfg.GetMinIO().Bucket),
 		}
 	}
 
 	return &HealthStatus{
 		Status:    "healthy",
 		Timestamp: now,
-		Message:   fmt.Sprintf("MinIO bucket '%s' is accessible", hc.cfg.MinIO.Bucket),
+		Message:   fmt.Sprintf("MinIO bucket '%s' is accessible", hc.cfg.GetMinIO().Bucket),
 	}
 }
 

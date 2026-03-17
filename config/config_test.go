@@ -198,12 +198,20 @@ func TestLoadConfig_WithBackupMinIO(t *testing.T) {
 backup:
   enabled: true
   interval: 3600
-  minio:
-    endpoint: backup.minio.local:9000
-    access_key_id: backupadmin
-    secret_access_key: backupadmin
-    use_ssl: false
-    region: us-west-1
+network:
+  pools:
+    minio:
+      endpoint: localhost:9000
+      access_key_id: minioadmin
+      secret_access_key: minioadmin
+      bucket: miniodb-data
+    minio_backup:
+      endpoint: backup.minio.local:9000
+      access_key_id: backupadmin
+      secret_access_key: backupadmin
+      use_ssl: false
+      region: us-west-1
+      bucket: miniodb-backup
 `
 
 	tmpFile, err := ioutil.TempFile("", "config-*.yaml")
@@ -219,8 +227,10 @@ backup:
 
 	assert.True(t, config.Backup.Enabled)
 	assert.Equal(t, 3600, config.Backup.Interval)
-	assert.Equal(t, "backup.minio.local:9000", config.Backup.MinIO.Endpoint)
-	assert.Equal(t, "backupadmin", config.Backup.MinIO.AccessKeyID)
+	assert.NotNil(t, config.Network.Pools.BackupMinIO)
+	assert.Equal(t, "backup.minio.local:9000", config.GetBackupMinIO().Endpoint)
+	assert.Equal(t, "backupadmin", config.GetBackupMinIO().AccessKeyID)
+	assert.Equal(t, "miniodb-backup", config.GetBackupMinIO().Bucket)
 }
 
 func TestLoadConfig_FileNotFound(t *testing.T) {

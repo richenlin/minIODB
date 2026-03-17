@@ -47,7 +47,20 @@ class ApiClient {
         error: 'Unknown',
         message: 'An unknown error occurred',
       }))
-      throw new Error(error.message || error.error || `HTTP ${response.status}`)
+      const message = error.message || error.error || `HTTP ${response.status}`
+
+      // Token 失效或过期时清除登录状态并跳转登录页（登录接口本身返回 401 时不跳转）
+      if (
+        (response.status === 401 || message.includes('Invalid or expired token')) &&
+        !endpoint.startsWith('/auth/login')
+      ) {
+        useAuthStore.getState().logout()
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+      }
+
+      throw new Error(message)
     }
 
     return response.json()

@@ -166,7 +166,8 @@ func (s *SQLSanitizer) BuildSafeDeleteSQL(tableName, id string) (string, error) 
 }
 
 // BuildSafeSelectSQL 构建安全的 SELECT SQL 语句（用于验证表存在性等）
-func (s *SQLSanitizer) BuildSafeSelectSQL(tableName string, columns []string, whereClause string) (string, error) {
+// whereClause 为 WHERE 子句内容（不含 WHERE 关键字）；suffix 为可选尾部子句，如 "LIMIT 0"（仅允许 "LIMIT" + 数字 的安全形式）。
+func (s *SQLSanitizer) BuildSafeSelectSQL(tableName string, columns []string, whereClause string, suffix string) (string, error) {
 	// 验证表名
 	if err := s.ValidateTableName(tableName); err != nil {
 		return "", fmt.Errorf("invalid table name: %w", err)
@@ -175,20 +176,30 @@ func (s *SQLSanitizer) BuildSafeSelectSQL(tableName string, columns []string, wh
 	// 构建列列表
 	columnList := "*"
 	if len(columns) > 0 {
-		var quotedColumns []string
-		for _, col := range columns {
-			if err := s.ValidateTableName(col); err != nil {
-				return "", fmt.Errorf("invalid column name %q: %w", col, err)
+		if len(columns) == 1 && columns[0] == "*" {
+			columnList = "*"
+		} else {
+			var quotedColumns []string
+			for _, col := range columns {
+				if err := s.ValidateTableName(col); err != nil {
+					return "", fmt.Errorf("invalid column name %q: %w", col, err)
+				}
+				quotedColumns = append(quotedColumns, s.QuoteIdentifier(col))
 			}
-			quotedColumns = append(quotedColumns, s.QuoteIdentifier(col))
+			columnList = strings.Join(quotedColumns, ", ")
 		}
-		columnList = strings.Join(quotedColumns, ", ")
 	}
 
 	sql := fmt.Sprintf("SELECT %s FROM %s", columnList, s.QuoteIdentifier(tableName))
 
 	if whereClause != "" {
 		sql += " WHERE " + whereClause
+	}
+	if suffix != "" {
+		// 只允许安全的 LIMIT n 形式，避免注入
+		if strings.TrimSpace(strings.ToUpper(suffix)) == "LIMIT 0" {
+			sql += " LIMIT 0"
+		}
 	}
 
 	return sql, nil

@@ -17,7 +17,7 @@ type Config struct {
 	Server            ServerConfig            `yaml:"server"`
 	Network           NetworkConfig           `yaml:"network"` // 新增网络配置
 	Redis             RedisConfig             `yaml:"redis"`   // 保持向后兼容，但优先使用Network.Pools.Redis
-	MinIO             MinioConfig             `yaml:"minio"`   // 保持向后兼容，但优先使用Network.Pools.MinIO
+	MinIO             MinioConfig             `yaml:"minio"`   // 已废弃：仅用于 yaml 兼容，加载后会同步到 Network.Pools.MinIO，业务请用 GetMinIO()
 	Buffer            BufferConfig            `yaml:"buffer"`
 	Backup            BackupConfig            `yaml:"backup"`
 	Security          SecurityConfig          `yaml:"security"`
@@ -134,7 +134,7 @@ type RESTNetworkConfig struct {
 type PoolsConfig struct {
 	Redis               EnhancedRedisConfig  `yaml:"redis"`                  // Redis连接池配置
 	MinIO               EnhancedMinIOConfig  `yaml:"minio"`                  // MinIO连接池配置
-	BackupMinIO         *EnhancedMinIOConfig `yaml:"backup_minio,omitempty"` // 备份MinIO连接池配置（可选）
+	BackupMinIO         *EnhancedMinIOConfig `yaml:"minio_backup,omitempty"` // 备份 MinIO（唯一配置来源，与 network.pools.minio 一致）
 	Failover            FailoverConfig       `yaml:"failover"`               // 故障切换配置
 	HealthCheckInterval time.Duration        `yaml:"health_check_interval"`  // 健康检查间隔
 }
@@ -288,13 +288,11 @@ type WALConfig struct {
 	SyncOnWrite bool   `yaml:"sync_on_write"`
 }
 
-// BackupConfig 备份配置
+// BackupConfig 备份配置（备份 MinIO 连接仅配置在 network.pools.minio_backup）
 type BackupConfig struct {
-	Enabled  bool        `yaml:"enabled"`
-	Interval int         `yaml:"interval"`
-	MinIO    MinioConfig `yaml:"minio"`
+	Enabled  bool `yaml:"enabled"`
+	Interval int  `yaml:"interval"` // 秒，备份计划间隔
 
-	// 元数据备份配置
 	Metadata MetadataBackupConfig `yaml:"metadata"`
 }
 
@@ -808,6 +806,9 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 	}
 
+	// 统一 MinIO 配置：若 yaml 中写了顶层 minio，则同步到 network.pools.minio
+	config.syncPoolsMinIOFromLegacy()
+
 	// 使用环境变量覆盖配置
 	config.overrideWithEnv()
 
@@ -1275,6 +1276,45 @@ func (c *Config) setDefaults() {
 	}
 }
 
+// syncPoolsMinIOFromLegacy 若 yaml 中只写了顶层 minio，则同步到 Network.Pools.MinIO，保证全代码只读 Pools 这一份
+func (c *Config) syncPoolsMinIOFromLegacy() {
+	if c.MinIO.Endpoint != "" {
+		c.Network.Pools.MinIO.Endpoint = c.MinIO.Endpoint
+		c.Network.Pools.MinIO.AccessKeyID = c.MinIO.AccessKeyID
+		c.Network.Pools.MinIO.SecretAccessKey = c.MinIO.SecretAccessKey
+		c.Network.Pools.MinIO.UseSSL = c.MinIO.UseSSL
+		c.Network.Pools.MinIO.Bucket = c.MinIO.Bucket
+	}
+}
+
+// GetBackupMinIO 返回当前生效的备份 MinIO 配置（仅从 Network.Pools.BackupMinIO 读取）
+// 未配置 minio_backup 时返回零值，调用方需判断 Endpoint 是否为空。
+func (c *Config) GetBackupMinIO() MinioConfig {
+	if c.Network.Pools.BackupMinIO == nil {
+		return MinioConfig{}
+	}
+	p := c.Network.Pools.BackupMinIO
+	return MinioConfig{
+		Endpoint:        p.Endpoint,
+		AccessKeyID:     p.AccessKeyID,
+		SecretAccessKey: p.SecretAccessKey,
+		UseSSL:          p.UseSSL,
+		Bucket:          p.Bucket,
+	}
+}
+
+// GetMinIO 返回当前生效的 MinIO 配置（统一从 Network.Pools.MinIO 读取，供 Querier、main、buffer 等使用）
+func (c *Config) GetMinIO() MinioConfig {
+	p := &c.Network.Pools.MinIO
+	return MinioConfig{
+		Endpoint:        p.Endpoint,
+		AccessKeyID:     p.AccessKeyID,
+		SecretAccessKey: p.SecretAccessKey,
+		UseSSL:          p.UseSSL,
+		Bucket:          p.Bucket,
+	}
+}
+
 // overrideWithEnv 使用环境变量覆盖配置
 func (c *Config) overrideWithEnv() {
 	// Redis配置环境变量覆盖 (同时更新新旧配置以确保兼容性)
@@ -1354,12 +1394,10 @@ func (c *Config) overrideWithEnv() {
 	}
 
 	// 备份MinIO配置环境变量覆盖
+	// 备份 MinIO 仅配置在 Network.Pools.BackupMinIO（network.pools.minio_backup）
 	if minioBackupEndpoint := os.Getenv("MINIO_BACKUP_ENDPOINT"); minioBackupEndpoint != "" {
-		c.Backup.MinIO.Endpoint = minioBackupEndpoint
 		c.Backup.Enabled = true
-		// 同时更新Network.Pools.BackupMinIO配置
 		if c.Network.Pools.BackupMinIO == nil {
-			// 初始化BackupMinIO配置，复制主MinIO的配置作为基础
 			c.Network.Pools.BackupMinIO = &EnhancedMinIOConfig{
 				UseSSL:                false,
 				Region:                "us-east-1",
@@ -1382,19 +1420,16 @@ func (c *Config) overrideWithEnv() {
 		c.Network.Pools.BackupMinIO.Endpoint = minioBackupEndpoint
 	}
 	if minioBackupAccessKey := os.Getenv("MINIO_BACKUP_ACCESS_KEY"); minioBackupAccessKey != "" {
-		c.Backup.MinIO.AccessKeyID = minioBackupAccessKey
 		if c.Network.Pools.BackupMinIO != nil {
 			c.Network.Pools.BackupMinIO.AccessKeyID = minioBackupAccessKey
 		}
 	}
 	if minioBackupSecretKey := os.Getenv("MINIO_BACKUP_SECRET_KEY"); minioBackupSecretKey != "" {
-		c.Backup.MinIO.SecretAccessKey = minioBackupSecretKey
 		if c.Network.Pools.BackupMinIO != nil {
 			c.Network.Pools.BackupMinIO.SecretAccessKey = minioBackupSecretKey
 		}
 	}
 	if minioBackupBucket := os.Getenv("MINIO_BACKUP_BUCKET"); minioBackupBucket != "" {
-		c.Backup.MinIO.Bucket = minioBackupBucket
 		if c.Network.Pools.BackupMinIO != nil {
 			c.Network.Pools.BackupMinIO.Bucket = minioBackupBucket
 		}
@@ -1444,17 +1479,18 @@ func (c *Config) validate() error {
 		return fmt.Errorf("redis addr validation failed: %w", err)
 	}
 
-	// 验证MinIO配置
-	if c.MinIO.Endpoint == "" {
+	// 验证MinIO配置（使用统一配置）
+	minioCfg := c.GetMinIO()
+	if minioCfg.Endpoint == "" {
 		return fmt.Errorf("minio endpoint is required")
 	}
-	if err := validateAddress(c.MinIO.Endpoint); err != nil {
+	if err := validateAddress(minioCfg.Endpoint); err != nil {
 		return fmt.Errorf("minio endpoint validation failed: %w", err)
 	}
-	if c.MinIO.Bucket == "" {
+	if minioCfg.Bucket == "" {
 		return fmt.Errorf("minio bucket is required")
 	}
-	if err := validateBucketName(c.MinIO.Bucket); err != nil {
+	if err := validateBucketName(minioCfg.Bucket); err != nil {
 		return fmt.Errorf("minio bucket name validation failed: %w", err)
 	}
 

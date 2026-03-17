@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +24,14 @@ import (
 	"github.com/xitongsys/parquet-go/writer"
 	"go.uber.org/zap"
 )
+
+// emptyIDPlaceholder 空 ID 时的占位符，避免 bufferKey 出现 "table//date" 导致 MinIO 对象名非法
+const emptyIDPlaceholder = "_"
+
+// normalizeObjectKey 合并多余斜杠并去掉首尾 "/"，避免 MinIO 报 "Object name contains unsupported characters"
+func normalizeObjectKey(key string) string {
+	return strings.Trim(path.Clean(key), "/")
+}
 
 // DataRow defines the structure for our Parquet file records
 type DataRow struct {
@@ -450,7 +459,8 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), w.buffer.config.FlushTimeout)
 	defer cancel()
 
-	objectName := fmt.Sprintf("%s/%d.parquet", bufferKey, time.Now().UnixNano())
+	rawObjectName := fmt.Sprintf("%s/%d.parquet", bufferKey, time.Now().UnixNano())
+	objectName := normalizeObjectKey(rawObjectName)
 
 	// 上传到主存储
 	minioPool := w.buffer.poolManager.GetMinIOPool()
@@ -463,8 +473,8 @@ func (w *Worker) uploadToStorage(bufferKey, localFilePath string) error {
 	if w.buffer.appConfig != nil {
 		if w.buffer.appConfig.Buffer.DefaultBucket != "" {
 			primaryBucket = w.buffer.appConfig.Buffer.DefaultBucket
-		} else if w.buffer.appConfig.MinIO.Bucket != "" {
-			primaryBucket = w.buffer.appConfig.MinIO.Bucket
+		} else if w.buffer.appConfig.GetMinIO().Bucket != "" {
+			primaryBucket = w.buffer.appConfig.GetMinIO().Bucket
 		}
 	}
 	if primaryBucket == "" {
@@ -598,8 +608,8 @@ func (w *Worker) extractAndStoreFileMetadata(ctx context.Context, localFilePath,
 	if w.buffer.appConfig != nil {
 		if w.buffer.appConfig.Buffer.DefaultBucket != "" {
 			bucket = w.buffer.appConfig.Buffer.DefaultBucket
-		} else if w.buffer.appConfig.MinIO.Bucket != "" {
-			bucket = w.buffer.appConfig.MinIO.Bucket
+		} else if w.buffer.appConfig.GetMinIO().Bucket != "" {
+			bucket = w.buffer.appConfig.GetMinIO().Bucket
 		}
 	}
 	if bucket == "" {
@@ -731,7 +741,11 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 			tableName = "default_table"
 		}
 	}
-	bufferKey := fmt.Sprintf("%s/%s/%s", tableName, row.ID, dayStr)
+	idPart := row.ID
+	if idPart == "" {
+		idPart = emptyIDPlaceholder
+	}
+	bufferKey := fmt.Sprintf("%s/%s/%s", tableName, idPart, dayStr)
 
 	// 准备 WAL 数据（在锁内准备，避免数据竞争）
 	var walDataToWrite []byte

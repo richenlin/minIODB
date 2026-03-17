@@ -138,7 +138,7 @@ func (cp *ColumnPruner) BuildOptimizedViewSQL(tableName string, files []string, 
 
 	filesClause := cp.buildFilesClause(files)
 
-	return fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT %s FROM read_parquet(['%s'])`,
+	return fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT %s FROM read_parquet([%s])`,
 		tableName, columnsClause, filesClause)
 }
 
@@ -146,7 +146,7 @@ func (cp *ColumnPruner) BuildOptimizedViewSQL(tableName string, files []string, 
 func (cp *ColumnPruner) buildStandardViewSQL(tableName string, files []string) string {
 	filesClause := cp.buildFilesClause(files)
 
-	return fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT * FROM read_parquet(['%s'])`,
+	return fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT * FROM read_parquet([%s])`,
 		tableName, filesClause)
 }
 
