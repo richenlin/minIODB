@@ -1,7 +1,8 @@
 import { useAuthStore } from '@/stores/auth-store'
 import type { LoginResponse } from './types'
 
-const API_BASE = '/dashboard/api/v1'
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'
+const API_BASE = `${API_BASE_URL}/dashboard/api/v1`
 
 interface LoginRequest {
   api_key: string

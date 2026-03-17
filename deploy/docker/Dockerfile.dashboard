@@ -1,3 +1,7 @@
+# DEPRECATED: Dashboard is now mounted on the Core REST Server (port 8081).
+# This standalone Dockerfile is kept for backward compatibility but will be removed in a future release.
+# Use the main Dockerfile instead with dashboard.enabled=true in config.yaml.
+#
 # Dockerfile.dashboard - 独立 Dashboard 镜像
 # 用于独立部署 Dashboard 服务，通过 HTTP/gRPC 连接核心服务
 

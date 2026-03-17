@@ -1,7 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef } from 'react'
+import CodeMirror from '@uiw/react-codemirror'
+import { sql } from '@codemirror/lang-sql'
+import { oneDark } from '@codemirror/theme-one-dark'
 import { Button } from '@/components/ui/button'
+import { keymap } from '@codemirror/view'
+import { EditorView } from '@codemirror/view'
 
 interface SqlEditorProps {
   value: string
@@ -18,24 +23,67 @@ export function SqlEditor({
   placeholder = 'SELECT * FROM table_name LIMIT 100',
   loading = false
 }: SqlEditorProps) {
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault()
-      onExecute()
-    }
+  const editorRef = useRef<EditorView | null>(null)
+
+  const handleEditorCreated = (editor: EditorView) => {
+    editorRef.current = editor
   }
+
+  // Create keymap for Ctrl/Cmd + Enter to execute SQL
+  const executeKeymap = keymap.of([
+    {
+      key: 'Mod-Enter',
+      run: () => {
+        onExecute()
+        return true
+      }
+    }
+  ])
 
   return (
     <div className="space-y-2">
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        disabled={loading}
-        className="w-full h-32 p-3 font-mono text-sm border rounded-md resize-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
-        spellCheck={false}
-      />
+      <div className="border rounded-md overflow-hidden">
+        <CodeMirror
+          value={value}
+          onChange={(v) => onChange(v)}
+          extensions={[sql(), executeKeymap]}
+          theme={oneDark}
+          placeholder={placeholder}
+          editable={!loading}
+          onCreateEditor={handleEditorCreated}
+          height="120px"
+          style={{
+            fontSize: '14px',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+          }}
+          basicSetup={{
+            lineNumbers: true,
+            highlightActiveLineGutter: true,
+            highlightSpecialChars: true,
+            history: true,
+            foldGutter: true,
+            drawSelection: true,
+            dropCursor: true,
+            allowMultipleSelections: true,
+            indentOnInput: true,
+            syntaxHighlighting: true,
+            bracketMatching: true,
+            closeBrackets: true,
+            autocompletion: true,
+            rectangularSelection: true,
+            crosshairCursor: true,
+            highlightActiveLine: true,
+            highlightSelectionMatches: true,
+            closeBracketsKeymap: true,
+            defaultKeymap: true,
+            searchKeymap: true,
+            historyKeymap: true,
+            foldKeymap: true,
+            completionKeymap: true,
+            lintKeymap: true
+          }}
+        />
+      </div>
       <div className="flex justify-between items-center">
         <span className="text-xs text-muted-foreground">
           Ctrl/Cmd + Enter 执行

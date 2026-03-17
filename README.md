@@ -125,19 +125,22 @@ minio:
 ### 启动服务
 
 ```bash
-# 启动redis、minio和服务
+# 启动 redis、minio 和后端服务
 ./deploy/deploy.sh dev --install-deps
-＃　启动go服务
 go run cmd/main.go -c config/config.local.yaml
+```
 
-# 或仅启动核心服务（不含Dashboard）
-go run cmd/main.go -c config/config.local.yaml -tags !dashboard
+**启动 Dashboard 前端**（独立运行）：
+```bash
+cd dashboard-ui
+npm install
+npm run dev
 ```
 
 服务启动后：
 - **gRPC端口**: :8080
 - **REST API端口**: :8081
-- **Dashboard控制台**: http://localhost:8081/dashboard/
+- **Dashboard 前端**: http://localhost:3000
 - **Swagger UI**: http://localhost:8081/api-docs/index.html
 - **Prometheus指标**: http://localhost:8081/metrics
 

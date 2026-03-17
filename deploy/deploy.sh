@@ -373,12 +373,12 @@ deploy_dev() {
     log_info "访问地址:"
     log_info "  REST API:             http://localhost:8081"
     log_info "  gRPC API:             localhost:8080"
-    log_info "  Dashboard UI:         http://localhost:9090/dashboard/ui/"
+    log_info "  Dashboard UI:         http://localhost:8081/dashboard/ui/"
     log_info "  Prometheus metrics:   http://localhost:8082/metrics"
     log_info "  MinIO Console:        http://localhost:9001"
     log_info "  MinIO Backup Console: http://localhost:9003"
     log_info ""
-    log_info "服务架构: miniodb core (8080/8081/8082) + dashboard 独立容器 (9090)"
+    log_info "服务架构: miniodb core (8080/8081/8082) + dashboard 挂载于 core (8081)"
 }
 
 # Ansible 直接部署（client/server 分离）

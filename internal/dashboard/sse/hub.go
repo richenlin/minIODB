@@ -1,4 +1,3 @@
-//go:build dashboard
 
 package sse
 

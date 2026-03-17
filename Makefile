@@ -1,57 +1,43 @@
-.PHONY: build test lint vet clean docker docker-arm swagger proto test-coverage \
-	dashboard-ui dashboard build-with-dashboard docker-dashboard docker-allinone
+# MinIODB Makefile
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_TIME ?= $(shell date -u '+%Y-%m-%d_%H:%M:%S')
-LDFLAGS = -ldflags "-X 'minIODB/pkg/version.version=$(VERSION)' -X 'minIODB/pkg/version.gitCommit=$(GIT_COMMIT)' -X 'minIODB/pkg/version.buildTime=$(BUILD_TIME)'"
+LDFLAGS := -ldflags "-X minIODB/pkg/version.version=$(VERSION)"
 
+.PHONY: build build-ui build-go clean test lint vet
+
+# 构建 MinIODB（仅 Go 二进制，前端独立部署）
 build:
 	go build $(LDFLAGS) -o bin/miniodb ./cmd/
 
-test:
-	go test ./... -race -count=1
+# 仅构建 Go 二进制（别名）
+build-go:
+	go build $(LDFLAGS) -o bin/miniodb ./cmd/
 
-test-coverage:
-	go test ./... -race -coverprofile=coverage.out
-	go tool cover -html=coverage.out -o coverage.html
+# 构建前端（独立部署）
+build-ui:
+	@if [ -d dashboard-ui ]; then \
+		echo "Building Dashboard UI..."; \
+		cd dashboard-ui && npm run build; \
+		echo "Dashboard UI built in dashboard-ui/out/"; \
+	else \
+		echo "Skipping Dashboard UI build (dashboard-ui/ not found)"; \
+	fi
+
+# Docker 构建
+docker:
+	docker build -f deploy/docker/Dockerfile -t miniodb:$(VERSION) .
+
+# 测试
+test:
+	go test ./...
+
+# 代码检查
+lint:
+	golangci-lint run ./...
 
 vet:
 	go vet ./...
 
-lint:
-	golangci-lint run
-
+# 清理
 clean:
-	rm -rf bin/ coverage.out coverage.html
-
-docker:
-	docker build -f deploy/docker/Dockerfile -t miniodb:$(VERSION) .
-
-docker-arm:
-	docker build -f deploy/docker/Dockerfile.arm -t miniodb:$(VERSION)-arm .
-
-swagger:
-	swag init -g cmd/main.go -o docs
-
-proto:
-	protoc --go_out=. --go-grpc_out=. api/proto/miniodb/v1/miniodb.proto
-
-# Dashboard targets
-dashboard-ui:
-	cd dashboard-ui && npm ci && npm run build
-	rm -rf internal/dashboard/static
-	cp -r dashboard-ui/out internal/dashboard/static
-
-# Dashboard 已完全分离，仅独立部署
-dashboard: dashboard-ui
-	go build -tags dashboard $(LDFLAGS) -o bin/miniodb-dashboard ./cmd/dashboard/
-
-# 兼容旧 target 名称，等同于 dashboard
-build-with-dashboard: dashboard
-
-docker-dashboard:
-	docker build -f deploy/docker/Dockerfile.dashboard -t miniodb-dashboard:$(VERSION) .
-
-docker-allinone: 
-	docker build -f deploy/docker/Dockerfile --build-arg BUILD_TAGS=dashboard -t miniodb:$(VERSION)-allinone .
+	rm -rf bin/

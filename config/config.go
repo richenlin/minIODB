@@ -43,10 +43,10 @@ type Config struct {
 
 type DashboardConfig struct {
 	Enabled               bool          `yaml:"enabled"`
-	Port                  string        `yaml:"port"`
+	Port                  string        `yaml:"port"` // Deprecated: 融合架构下不再使用，Dashboard 挂载到 REST Server 端口
 	BasePath              string        `yaml:"base_path"`
-	CoreEndpoint          string        `yaml:"core_endpoint"`
-	CoreGRPCEndpoint      string        `yaml:"core_grpc_endpoint"`
+	CoreEndpoint          string        `yaml:"core_endpoint"`      // Deprecated: 融合架构下不再使用，Dashboard 直接持有 service 依赖
+	CoreGRPCEndpoint      string        `yaml:"core_grpc_endpoint"` // Deprecated: 融合架构下不再使用，Dashboard 直接持有 service 依赖
 	MetricsScrapeInterval time.Duration `yaml:"metrics_scrape_interval"`
 	LogDir                string        `yaml:"log_dir"`
 	BackupDir             string        `yaml:"backup_dir"`
@@ -460,7 +460,7 @@ type LogConfig struct {
 type APIKeyPair struct {
 	Key         string `yaml:"key"`
 	Secret      string `yaml:"secret"`
-	Role        string `yaml:"role" json:"role"`                   // 预留字段，当前默认 "root"（全部权限）
+	Role        string `yaml:"role" json:"role"`                 // 预留字段，当前默认 "root"（全部权限）
 	DisplayName string `yaml:"display_name" json:"display_name"` // 显示名称
 }
 
@@ -986,11 +986,11 @@ func (c *Config) setDefaults() {
 			PathLimits:      []PathRateLimit{},
 		},
 		CORS: CORSConfig{
-			AllowedOrigins:   []string{},                                                          // 空列表表示不允许跨域（安全默认值）
-			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},                  // 常用 HTTP 方法
-			AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},         // 常用请求头
-			AllowCredentials: false,                                                                // 默认不允许携带凭证
-			MaxAge:           86400,                                                                // 预检请求缓存 24 小时
+			AllowedOrigins:   []string{},                                                    // 空列表表示不允许任何跨域请求（安全默认值）
+			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},           // 常用 HTTP 方法
+			AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"}, // 常用请求头
+			AllowCredentials: false,                                                         // 默认不允许携带凭证
+			MaxAge:           86400,                                                         // 预检请求缓存 24 小时
 		},
 	}
 

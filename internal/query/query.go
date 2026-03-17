@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,9 @@ import (
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 )
+
+// ErrNoDataFiles is returned when a table has no data files available for querying
+var ErrNoDataFiles = errors.New("no data files available for table")
 
 // stmtEntry 预编译语句缓存条目
 type stmtEntry struct {
@@ -220,7 +224,7 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		logger:         logger,
 		tempDir:        tempDir,
 		tableExtractor: NewTableExtractor(),
-		stmtCache:      newStmtCache(1000),                                            // 预编译语句LRU缓存，maxSize=1000
+		stmtCache:      newStmtCache(1000), // 预编译语句LRU缓存，maxSize=1000
 		queryStats:     queryStats,
 		queryOptimizer: NewQueryOptimizer(logger),                                     // 查询优化器（文件剪枝、谓词下推）
 		columnPruner:   NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy), // 列剪枝优化器
@@ -281,6 +285,11 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 	// 5. 为每个表准备数据文件（使用同一个数据库连接，支持文件剪枝）
 	for _, tableName := range validTables {
 		if err := q.prepareTableDataWithPruning(ctx, db, tableName, sqlQuery); err != nil {
+			// 如果表没有数据文件，返回空结果而不是错误
+			if errors.Is(err, ErrNoDataFiles) {
+				q.logger.Sugar().Infof("Returning empty result for table with no data: %s", tableName)
+				return "[]", nil
+			}
 			q.updateErrorStats()
 			return "", fmt.Errorf("failed to prepare data for table %s: %w", tableName, err)
 		}
@@ -562,43 +571,17 @@ func (q *Querier) processQueryResults(rows *sql.Rows) (string, error) {
 	return q.formatResults(results), nil
 }
 
-// formatResults 格式化查询结果
+// formatResults 格式化查询结果为合法 JSON（兼容 time.Time、[]byte 等类型）
 func (q *Querier) formatResults(results []map[string]interface{}) string {
 	if len(results) == 0 {
 		return "[]"
 	}
-
-	var output strings.Builder
-	output.WriteString("[\n")
-
-	for i, row := range results {
-		if i > 0 {
-			output.WriteString(",\n")
-		}
-		output.WriteString("  {")
-
-		first := true
-		for key, value := range row {
-			if !first {
-				output.WriteString(", ")
-			}
-			first = false
-			output.WriteString(fmt.Sprintf("\"%s\": ", key))
-
-			switch v := value.(type) {
-			case string:
-				output.WriteString(fmt.Sprintf("\"%s\"", v))
-			case nil:
-				output.WriteString("null")
-			default:
-				output.WriteString(fmt.Sprintf("%v", v))
-			}
-		}
-		output.WriteString("}")
+	b, err := json.Marshal(results)
+	if err != nil {
+		q.logger.Warn("formatResults: json.Marshal failed, falling back to empty array", zap.Error(err))
+		return "[]"
 	}
-
-	output.WriteString("\n]")
-	return output.String()
+	return string(b)
 }
 
 // createTempFilePath 创建临时文件路径
@@ -1167,7 +1150,7 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 	allFiles := append(bufferFiles, storageFiles...)
 	if len(allFiles) == 0 {
 		q.logger.Sugar().Infof("No data files found for table: %s", tableName)
-		return nil
+		return ErrNoDataFiles
 	}
 
 	// 使用列剪枝优化创建视图

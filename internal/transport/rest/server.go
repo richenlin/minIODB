@@ -451,6 +451,16 @@ func (s *Server) SetMetadataManager(manager *metadata.Manager) {
 	s.metadataManager = manager
 }
 
+// Router 返回底层的 gin.Engine，用于挂载 Dashboard 路由
+func (s *Server) Router() *gin.Engine {
+	return s.router
+}
+
+// AuthManager 返回认证管理器，Dashboard 需要共享它
+func (s *Server) AuthManager() *security.AuthManager {
+	return s.authManager
+}
+
 // setupRoutes 设置路由
 func (s *Server) setupRoutes() {
 	// Swagger API文档路由（根据配置决定是否启用）

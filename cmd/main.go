@@ -48,7 +48,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"minIODB/config"
-	"minIODB/pkg/version"
 	"minIODB/internal/buffer"
 	"minIODB/internal/compaction"
 	"minIODB/internal/coordinator"
@@ -66,6 +65,9 @@ import (
 	restTransport "minIODB/internal/transport/rest"
 	"minIODB/pkg/logger"
 	"minIODB/pkg/pool"
+	"minIODB/pkg/version"
+
+	"minIODB/internal/dashboard"
 )
 
 func main() {
@@ -362,8 +364,31 @@ func main() {
 		logger.Sugar.Fatalf("Failed to create REST server: %v", err)
 	}
 	restServer.SetCoordinators(writeCoord, queryCoord)
+	if metadataManager != nil {
+		restServer.SetMetadataManager(metadataManager)
+	}
 
-	// Dashboard 已完全分离：仅通过 cmd/dashboard 独立部署，使用 HTTP 访问 MinIODB /v1/* API
+	// 启动 Dashboard（如果启用）
+	var dashSrv *dashboard.Server
+	if cfg.Dashboard.Enabled {
+		dashSrv, err = dashboard.NewServer(
+			miniodbService,
+			cfg,
+			logger.Logger,
+			restServer.AuthManager(),
+		)
+		if err != nil {
+			logger.Sugar.Fatalf("Failed to create dashboard server: %v", err)
+		}
+
+		dashSrv.MountRoutes(restServer.Router().Group(cfg.Dashboard.BasePath))
+
+		go func() {
+			dashSrv.Start(ctx)
+		}()
+
+		logger.Sugar.Infof("Dashboard mounted at %s on port %s", cfg.Dashboard.BasePath, cfg.Server.RestPort)
+	}
 
 	go func() {
 		if err := restServer.Start(cfg.Server.RestPort); err != nil {
@@ -371,19 +396,14 @@ func main() {
 		}
 	}()
 
-	// 启动备份goroutine
-	if cfg.Backup.Enabled && backupMinio != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			startBackupRoutine(ctx, primaryMinio, backupMinio, *cfg)
-		}()
+	if cfg.Backup.Enabled {
+		go startBackupRoutine(ctx, primaryMinio, backupMinio, *cfg)
 	}
 
 	logger.Sugar.Info("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager, subscriptionManager)
+	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv)
 	logger.Sugar.Info("MinIODB server stopped")
 }
 
@@ -391,7 +411,8 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 	grpcService *grpcTransport.Server, restServer *restTransport.Server,
 	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
 	metadataManager *metadata.Manager, redisPool *pool.RedisPool,
-	compactionManager *compaction.Manager, subscriptionManager *subscription.Manager) {
+	compactionManager *compaction.Manager, subscriptionManager *subscription.Manager,
+	dashSrv *dashboard.Server) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -416,6 +437,12 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 		logger.Sugar.Errorf("Error shutting down REST server: %v", err)
 	} else {
 		logger.Sugar.Info("REST server stopped")
+	}
+
+	if dashSrv != nil {
+		logger.Sugar.Info("Stopping Dashboard server...")
+		dashSrv.Stop()
+		logger.Sugar.Info("Dashboard server stopped")
 	}
 
 	if metricsServer != nil {

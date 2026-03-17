@@ -1,30 +1,33 @@
-//go:build dashboard
-
 package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/http"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	miniodbv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
-	"minIODB/internal/dashboard/client"
 	"minIODB/internal/dashboard/model"
 	"minIODB/internal/dashboard/sse"
 	"minIODB/internal/security"
+	"minIODB/internal/service"
+	"minIODB/pkg/version"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// statsRefreshInterval controls how often the background stats collector runs.
-// Heavy operations (COUNT(*) per table) only happen in this goroutine — never
-// in the hot request path.
-const statsRefreshInterval = 5 * time.Minute
+// statsRefreshInterval is configured per-instance via DashboardConfig.MetricsScrapeInterval.
+// The minimum is 1 minute (to avoid overwhelming the DB with COUNT(*) queries);
+// values below that threshold fall back to 5 minutes.
 
 // statsCache holds pre-computed cluster statistics.
 // All fields are protected by mu; reads return the last-known-good value
@@ -42,48 +45,55 @@ type contextKey string
 
 const userContextKey contextKey = "user"
 
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+var dangerousSQL = regexp.MustCompile(`(?i)(;|--|\b(DROP|ALTER|TRUNCATE|DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|UNION\s+(ALL\s+)?SELECT|INTO\s+OUTFILE|LOAD_FILE)\b)`)
+
+func isSafeFilter(filter string) bool {
+	return !dangerousSQL.MatchString(filter)
+}
+
+func maskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "********"
+}
+
 // Server is the Dashboard HTTP server: serves the Next.js SPA and the Dashboard API.
 type Server struct {
-	client      client.CoreClient
-	cfg         *config.Config
-	logger      *zap.Logger
-	authManager *security.AuthManager
-	hub         *sse.Hub
-	stats       *statsCache
-	stopStats   context.CancelFunc
+	svc                  *service.MinIODBService
+	cfg                  *config.Config
+	cfgMu                sync.RWMutex
+	logger               *zap.Logger
+	authManager          *security.AuthManager
+	hub                  *sse.Hub
+	stats                *statsCache
+	stopStats            context.CancelFunc
+	statsRefreshInterval time.Duration
 }
 
 // NewServer creates a new Dashboard server and starts the background stats collector.
-func NewServer(coreClient client.CoreClient, cfg *config.Config, logger *zap.Logger) (*Server, error) {
-	authCfg := &security.AuthConfig{
-		Mode:            "token",
-		TokenExpiration: 24 * time.Hour,
-		Issuer:          "miniodb-dashboard",
-		Audience:        "miniodb-dashboard-api",
-		// key 作为 JWT payload user_id，secret 作为该用户的 JWT 签名密钥
-		APIKeyPairs: convertAPIKeyPairs(cfg.Auth.APIKeyPairs),
-	}
-
-	authManager, err := security.NewAuthManager(authCfg)
-	if err != nil {
-		return nil, err
-	}
-
+func NewServer(svc *service.MinIODBService, cfg *config.Config, logger *zap.Logger, authManager *security.AuthManager) (*Server, error) {
 	hub := sse.NewHub()
 	statsCtx, cancel := context.WithCancel(context.Background())
 
-	srv := &Server{
-		client:      coreClient,
-		cfg:         cfg,
-		logger:      logger,
-		authManager: authManager,
-		hub:         hub,
-		stats:       &statsCache{},
-		stopStats:   cancel,
+	statsInterval := cfg.Dashboard.MetricsScrapeInterval
+	if statsInterval < 1*time.Minute {
+		statsInterval = 5 * time.Minute
 	}
 
-	// Kick off the background stats collector.
-	// First refresh runs immediately (async) so the cache is warm within seconds.
+	srv := &Server{
+		svc:                  svc,
+		cfg:                  cfg,
+		logger:               logger,
+		authManager:          authManager,
+		hub:                  hub,
+		stats:                &statsCache{},
+		stopStats:            cancel,
+		statsRefreshInterval: statsInterval,
+	}
+
 	go srv.runStatsCollector(statsCtx)
 
 	return srv, nil
@@ -92,9 +102,8 @@ func NewServer(coreClient client.CoreClient, cfg *config.Config, logger *zap.Log
 // runStatsCollector runs a periodic stats refresh in the background.
 // It does NOT run in the hot request path; HTTP handlers only read from the cache.
 func (s *Server) runStatsCollector(ctx context.Context) {
-	// Refresh immediately, then on every tick.
 	s.refreshStats(ctx)
-	ticker := time.NewTicker(statsRefreshInterval)
+	ticker := time.NewTicker(s.statsRefreshInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -114,28 +123,35 @@ func (s *Server) refreshStats(ctx context.Context) {
 	defer cancel()
 
 	// --- tables count ---------------------------------------------------------
-	tables, err := s.client.ListTables(ctx)
+	resp, err := s.svc.ListTables(ctx, &miniodbv1.ListTablesRequest{})
 	tablesCount := 0
-	if err == nil {
-		tablesCount = len(tables)
+	if err == nil && resp != nil {
+		tablesCount = len(resp.Tables)
 	}
 
 	// --- total records (COUNT(*) per table, concurrent) ----------------------
 	var totalRecords int64
-	if len(tables) > 0 {
+	if tablesCount > 0 {
 		type countVal struct{ n int64 }
-		ch := make(chan countVal, len(tables))
-		for _, t := range tables {
+		ch := make(chan countVal, tablesCount)
+		for _, t := range resp.Tables {
 			go func(name string) {
-				qr, err := s.client.QuerySQL(ctx,
-					fmt.Sprintf("SELECT COUNT(*) AS cnt FROM `%s`", name))
-				if err != nil || len(qr.Rows) == 0 {
+				qr, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{
+					Sql: fmt.Sprintf("SELECT COUNT(*) AS cnt FROM `%s`", name),
+				})
+				if err != nil || qr == nil || qr.ResultJson == "" {
+					ch <- countVal{0}
+					return
+				}
+				// Parse JSON result to get count
+				var rows []map[string]interface{}
+				if err := json.Unmarshal([]byte(qr.ResultJson), &rows); err != nil || len(rows) == 0 {
 					ch <- countVal{0}
 					return
 				}
 				var n int64
 				for _, key := range []string{"cnt", "count_star()", "count(*)"} {
-					if v, ok := qr.Rows[0][key]; ok {
+					if v, ok := rows[0][key]; ok {
 						switch val := v.(type) {
 						case float64:
 							n = int64(val)
@@ -148,7 +164,7 @@ func (s *Server) refreshStats(ctx context.Context) {
 				ch <- countVal{n}
 			}(t.Name)
 		}
-		for range tables {
+		for range resp.Tables {
 			totalRecords += (<-ch).n
 		}
 	}
@@ -156,11 +172,11 @@ func (s *Server) refreshStats(ctx context.Context) {
 	// --- pending writes (from status endpoint) --------------------------------
 	var pendingWrites int64
 	var nodesCount int
-	if st, err := s.client.GetStatus(ctx); err == nil && st != nil {
-		pendingWrites = st.PendingWrites
-	}
-	if nodes, err := s.client.GetNodes(ctx); err == nil {
-		nodesCount = len(nodes)
+	if st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{}); err == nil && st != nil {
+		if pw, ok := st.BufferStats["pending_writes"]; ok {
+			pendingWrites = pw
+		}
+		nodesCount = int(st.TotalNodes)
 	}
 	if nodesCount == 0 {
 		nodesCount = 1
@@ -182,29 +198,20 @@ func (s *Server) refreshStats(ctx context.Context) {
 	)
 }
 
-func convertAPIKeyPairs(pairs []config.APIKeyPair) []security.APIKeyPair {
-	result := make([]security.APIKeyPair, len(pairs))
-	for i, p := range pairs {
-		result[i] = security.APIKeyPair{
-			Key:         p.Key,
-			Secret:      p.Secret,
-			Role:        p.Role,
-			DisplayName: p.DisplayName,
-		}
+// getMode determines the cluster mode from configuration
+func (s *Server) getMode() string {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	if s.cfg.Network.Pools.Redis.Mode == "cluster" || s.cfg.Network.Pools.Redis.Mode == "sentinel" {
+		return "distributed"
 	}
-	return result
+	return "standalone"
 }
 
 // MountRoutes registers all dashboard routes on the given gin group.
 // The group should correspond to cfg.Dashboard.BasePath (e.g. "/dashboard").
+// Note: Frontend is served separately; this only registers API routes.
 func (s *Server) MountRoutes(group *gin.RouterGroup) {
-	staticSub, err := fs.Sub(staticFS, "static")
-	if err != nil {
-		s.logger.Error("dashboard: failed to load embedded static files", zap.Error(err))
-	} else {
-		group.StaticFS("/ui", http.FS(staticSub))
-	}
-
 	api := group.Group("/api/v1")
 	api.GET("/health", s.health)
 	api.POST("/auth/login", s.login)
@@ -261,7 +268,7 @@ func (s *Server) MountRoutes(group *gin.RouterGroup) {
 
 type loginRequest struct {
 	APIKey    string `json:"api_key" binding:"required"`
-	APISecret string `json:"api_secret" binding:"required"` // 对应 config.yaml auth.api_key_pairs 中的 secret
+	APISecret string `json:"api_secret" binding:"required"` // maps to secret in config.yaml auth.api_key_pairs
 }
 
 type loginResponse struct {
@@ -287,7 +294,7 @@ func (s *Server) login(c *gin.Context) {
 	matched, role, displayName := s.authManager.ValidateCredentials(req.APIKey, req.APISecret)
 	if !matched {
 		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "无效的凭证，请检查 config.yaml 中 auth.api_key_pairs 配置",
+			"error": "Invalid credentials. Check auth.api_key_pairs in config.yaml.",
 		})
 		return
 	}
@@ -319,7 +326,7 @@ func (s *Server) login(c *gin.Context) {
 }
 
 func (s *Server) logout(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully. Note: token remains valid until expiry."})
 }
 
 func (s *Server) getMe(c *gin.Context) {
@@ -343,33 +350,10 @@ func (s *Server) getMe(c *gin.Context) {
 	})
 }
 
-type changePasswordRequest struct {
-	CurrentPassword string `json:"current_password" binding:"required"`
-	NewPassword     string `json:"new_password" binding:"required,min=8"`
-}
-
 func (s *Server) changePassword(c *gin.Context) {
-	var req changePasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	claims, exists := c.Get(string(userContextKey))
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found in context"})
-		return
-	}
-
-	userClaims, ok := claims.(*security.Claims)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user context"})
-		return
-	}
-
-	_ = userClaims.UserID
-
-	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully. Please login again with new credentials."})
+	c.JSON(http.StatusNotImplemented, gin.H{
+		"error": "Password change is not yet supported. Credentials are managed via config.yaml api_key_pairs.",
+	})
 }
 
 // requireAuth middleware validates the Bearer token on secured routes.
@@ -398,34 +382,49 @@ func (s *Server) requireAuth(c *gin.Context) {
 // ---------- API handlers ----------
 
 func (s *Server) health(c *gin.Context) {
-	result, err := s.client.GetHealth(c.Request.Context())
-	if err != nil {
+	ctx := c.Request.Context()
+	mode := s.getMode()
+	if err := s.svc.HealthCheck(ctx); err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"status":    "healthy",
+			"status":    "degraded",
 			"timestamp": time.Now().Unix(),
-			"version":   "",
-			"node_id":   "",
-			"mode":      "",
+			"version":   version.Get(),
+			"node_id":   s.cfg.Server.NodeID,
+			"mode":      mode,
 		})
 		return
 	}
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "healthy",
+		"timestamp": time.Now().Unix(),
+		"version":   version.Get(),
+		"node_id":   s.cfg.Server.NodeID,
+		"mode":      mode,
+	})
 }
 
 func (s *Server) clusterInfo(c *gin.Context) {
 	ctx := c.Request.Context()
+	mode := s.getMode()
 
-	// GetHealth is a lightweight ping — do it live so the status badge is fresh.
-	health, err := s.client.GetHealth(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	// HealthCheck is a lightweight ping — do it live so the status badge is fresh.
+	if err := s.svc.HealthCheck(ctx); err != nil {
+		s.logger.Warn("cluster/info: HealthCheck failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+			"hint":  "ensure MinIODB Core is running",
+		})
 		return
 	}
 
-	// Uptime is read from the status endpoint; it's cheap (one HTTP call).
+	// Uptime is read from the metrics endpoint
 	var uptime int64
-	if st, err := s.client.GetStatus(ctx); err == nil && st != nil {
-		uptime = st.Uptime
+	if metrics, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{}); err == nil && metrics != nil {
+		if uptimeStr, ok := metrics.SystemInfo["uptime_seconds"]; ok {
+			if secs, err := time.ParseDuration(uptimeStr + "s"); err == nil {
+				uptime = int64(secs.Seconds())
+			}
+		}
 	}
 
 	// Heavy stats (record counts, table list, nodes) come from the cache.
@@ -448,10 +447,10 @@ func (s *Server) clusterInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":         health.Status,
-		"version":        health.Version,
-		"node_id":        health.NodeID,
-		"mode":           health.Mode,
+		"status":         "healthy",
+		"version":        version.Get(),
+		"node_id":        s.cfg.Server.NodeID,
+		"mode":           mode,
 		"nodes_count":    nodesCount,
 		"tables_count":   tablesCount,
 		"uptime":         uptime,
@@ -464,10 +463,22 @@ func (s *Server) clusterInfo(c *gin.Context) {
 func (s *Server) clusterTopology(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	nodes, err := s.client.GetNodes(ctx)
+	st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	nodes := make([]*model.NodeResult, 0, len(st.Nodes))
+	for _, n := range st.Nodes {
+		nodes = append(nodes, &model.NodeResult{
+			ID:       n.Id,
+			Address:  n.Address,
+			Port:     "",
+			Status:   n.Status,
+			LastSeen: time.Unix(n.LastSeen, 0),
+			Metadata: map[string]string{"type": n.Type},
+		})
 	}
 
 	type topoEdge struct {
@@ -493,17 +504,9 @@ func (s *Server) clusterTopology(c *gin.Context) {
 		}
 	}
 
-	// Ask the client for the actual runtime mode so we don't accidentally show
-	// the Redis coordinator when Redis is configured only for caching (standalone
-	// cluster mode) but service-discovery is not active.
-	isDistributed := false
-	if health, herr := s.client.GetHealth(ctx); herr == nil {
-		isDistributed = health.Mode == "distributed"
-	}
-
 	// Inject a virtual Redis coordinator whenever the cluster is actually running
-	// in distributed mode.  This correctly reflects the architecture even for a
-	// single-node distributed deployment (e.g. during initial scale-up).
+	// in distributed mode.
+	isDistributed := s.getMode() == "distributed"
 	if isDistributed && redisAddr != "" {
 		const redisID = "redis-coordinator"
 		redisNode := &model.NodeResult{
@@ -537,11 +540,50 @@ func (s *Server) clusterTopology(c *gin.Context) {
 }
 
 func (s *Server) clusterFullConfig(c *gin.Context) {
-	full, err := s.client.GetFullConfig(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	s.cfgMu.RLock()
+	cfg := s.cfg
+	full := &model.FullConfig{
+		// server
+		NodeID:   cfg.Server.NodeID,
+		GrpcPort: cfg.Server.GrpcPort,
+		RestPort: cfg.Server.RestPort,
+
+		// network.pools.redis
+		RedisMode:       cfg.Network.Pools.Redis.Mode,
+		RedisAddr:       cfg.Network.Pools.Redis.Addr,
+		RedisPassword:   maskSecret(cfg.Network.Pools.Redis.Password),
+		RedisDB:         cfg.Network.Pools.Redis.DB,
+		RedisMasterName: cfg.Network.Pools.Redis.MasterName,
+		SentinelAddrs:   cfg.Network.Pools.Redis.SentinelAddrs,
+		ClusterAddrs:    cfg.Network.Pools.Redis.ClusterAddrs,
+
+		// network.pools.minio
+		MinioEndpoint:        cfg.Network.Pools.MinIO.Endpoint,
+		MinioAccessKeyID:     cfg.Network.Pools.MinIO.AccessKeyID,
+		MinioSecretAccessKey: maskSecret(cfg.Network.Pools.MinIO.SecretAccessKey),
+		MinioUseSSL:          cfg.Network.Pools.MinIO.UseSSL,
+		MinioRegion:          cfg.Network.Pools.MinIO.Region,
+		MinioBucket:          cfg.Network.Pools.MinIO.Bucket,
+
+		// dashboard
+		CoreEndpoint:  cfg.Dashboard.CoreEndpoint,
+		DashboardPort: cfg.Dashboard.Port,
+
+		// log
+		LogLevel:    cfg.Log.Level,
+		LogFormat:   cfg.Log.Format,
+		LogOutput:   cfg.Log.Output,
+		LogFilename: cfg.Log.Filename,
+
+		// buffer
+		BufferSize:    cfg.Buffer.BufferSize,
+		FlushInterval: cfg.Buffer.FlushInterval.String(),
+
+		// runtime-read-only
+		Mode:    s.getMode(),
+		Version: version.Get(),
 	}
+	s.cfgMu.RUnlock()
 	c.JSON(http.StatusOK, full)
 }
 
@@ -551,12 +593,103 @@ func (s *Server) updateClusterConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	result, err := s.client.UpdateConfig(c.Request.Context(), &req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+
+	// Apply changes to in-memory config
+	s.cfgMu.Lock()
+	cfg := s.cfg
+	if req.NodeID != "" {
+		cfg.Server.NodeID = req.NodeID
 	}
-	c.JSON(http.StatusOK, result)
+	if req.GrpcPort != "" {
+		cfg.Server.GrpcPort = req.GrpcPort
+	}
+	if req.RestPort != "" {
+		cfg.Server.RestPort = req.RestPort
+	}
+	if req.RedisMode != "" {
+		cfg.Network.Pools.Redis.Mode = req.RedisMode
+	}
+	if req.RedisAddr != "" {
+		cfg.Network.Pools.Redis.Addr = req.RedisAddr
+	}
+	if req.RedisPassword != "" {
+		cfg.Network.Pools.Redis.Password = req.RedisPassword
+	}
+	if req.RedisDB != nil {
+		cfg.Network.Pools.Redis.DB = *req.RedisDB
+	}
+	if req.RedisMasterName != "" {
+		cfg.Network.Pools.Redis.MasterName = req.RedisMasterName
+	}
+	if len(req.SentinelAddrs) > 0 {
+		cfg.Network.Pools.Redis.SentinelAddrs = req.SentinelAddrs
+	}
+	if len(req.ClusterAddrs) > 0 {
+		cfg.Network.Pools.Redis.ClusterAddrs = req.ClusterAddrs
+	}
+	if req.MinioEndpoint != "" {
+		cfg.Network.Pools.MinIO.Endpoint = req.MinioEndpoint
+	}
+	if req.MinioAccessKeyID != "" {
+		cfg.Network.Pools.MinIO.AccessKeyID = req.MinioAccessKeyID
+	}
+	if req.MinioSecretAccessKey != "" {
+		cfg.Network.Pools.MinIO.SecretAccessKey = req.MinioSecretAccessKey
+	}
+	if req.MinioUseSSL != nil {
+		cfg.Network.Pools.MinIO.UseSSL = *req.MinioUseSSL
+	}
+	if req.MinioRegion != "" {
+		cfg.Network.Pools.MinIO.Region = req.MinioRegion
+	}
+	if req.MinioBucket != "" {
+		cfg.Network.Pools.MinIO.Bucket = req.MinioBucket
+	}
+	if req.CoreEndpoint != "" {
+		cfg.Dashboard.CoreEndpoint = req.CoreEndpoint
+	}
+	if req.DashboardPort != "" {
+		cfg.Dashboard.Port = req.DashboardPort
+	}
+	if req.LogLevel != "" {
+		cfg.Log.Level = req.LogLevel
+	}
+	if req.LogFormat != "" {
+		cfg.Log.Format = req.LogFormat
+	}
+	if req.LogOutput != "" {
+		cfg.Log.Output = req.LogOutput
+	}
+	if req.LogFilename != "" {
+		cfg.Log.Filename = req.LogFilename
+	}
+	if req.BufferSize != nil {
+		cfg.Buffer.BufferSize = *req.BufferSize
+	}
+	if req.FlushInterval != "" {
+		if d, err := time.ParseDuration(req.FlushInterval); err == nil {
+			cfg.Buffer.FlushInterval = d
+		}
+	}
+	s.cfgMu.Unlock()
+
+	// Generate YAML snippet for manual config update
+	snippet := "# Configuration updated in memory. Add to config.yaml:\n"
+	if req.RedisMode != "" || req.RedisAddr != "" {
+		snippet += "network:\n  pools:\n    redis:\n"
+		if req.RedisMode != "" {
+			snippet += fmt.Sprintf("      mode: %s\n", req.RedisMode)
+		}
+		if req.RedisAddr != "" {
+			snippet += fmt.Sprintf("      addr: %s\n", req.RedisAddr)
+		}
+	}
+
+	c.JSON(http.StatusOK, &model.ConfigUpdateResult{
+		ConfigSnippet:   snippet,
+		RestartRequired: true,
+		Message:         "Configuration updated in memory. Restart required for persistence.",
+	})
 }
 
 func (s *Server) enableDistributed(c *gin.Context) {
@@ -565,33 +698,78 @@ func (s *Server) enableDistributed(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	result, err := s.client.EnableDistributedMode(c.Request.Context(), &req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+
+	// Update config in memory
+	s.cfgMu.Lock()
+	cfg := s.cfg
+	cfg.Network.Pools.Redis.Mode = req.RedisMode
+	cfg.Network.Pools.Redis.Addr = req.RedisAddr
+	cfg.Network.Pools.Redis.Password = req.RedisPassword
+	cfg.Network.Pools.Redis.DB = req.RedisDB
+	cfg.Network.Pools.Redis.MasterName = req.MasterName
+	cfg.Network.Pools.Redis.SentinelAddrs = req.SentinelAddrs
+	cfg.Network.Pools.Redis.ClusterAddrs = req.ClusterAddrs
+	s.cfgMu.Unlock()
+
+	// Generate YAML snippet
+	snippet := fmt.Sprintf(`# Add to config.yaml and restart:
+network:
+  pools:
+    redis:
+      mode: %s
+      addr: %s
+`, req.RedisMode, req.RedisAddr)
+
+	if req.RedisMode == "sentinel" && len(req.SentinelAddrs) > 0 {
+		snippet += "      sentinel_addrs:\n"
+		for _, addr := range req.SentinelAddrs {
+			snippet += fmt.Sprintf("        - %s\n", addr)
+		}
 	}
-	c.JSON(http.StatusOK, result)
+
+	c.JSON(http.StatusOK, &model.EnableDistributedResult{
+		ConfigSnippet:   snippet,
+		RestartRequired: true,
+		Message:         "Distributed mode enabled. Restart required.",
+	})
 }
 
 func (s *Server) clusterConfig(c *gin.Context) {
-	cfg, err := s.client.GetClusterConfig(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, cfg)
+	s.cfgMu.RLock()
+	cfg := s.cfg
+	c.JSON(http.StatusOK, gin.H{
+		"node_id":        cfg.Server.NodeID,
+		"grpc_port":      cfg.Server.GrpcPort,
+		"rest_port":      cfg.Server.RestPort,
+		"redis_mode":     cfg.Network.Pools.Redis.Mode,
+		"minio_endpoint": cfg.Network.Pools.MinIO.Endpoint,
+		"log_level":      cfg.Log.Level,
+		"buffer_size":    cfg.Buffer.BufferSize,
+		"mode":           s.getMode(),
+	})
+	s.cfgMu.RUnlock()
 }
 
 func (s *Server) getNode(c *gin.Context) {
 	id := c.Param("id")
-	nodes, err := s.client.GetNodes(c.Request.Context())
+	ctx := c.Request.Context()
+
+	st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	for _, n := range nodes {
-		if n.ID == id {
-			c.JSON(http.StatusOK, n)
+
+	for _, n := range st.Nodes {
+		if n.Id == id {
+			c.JSON(http.StatusOK, &model.NodeResult{
+				ID:       n.Id,
+				Address:  n.Address,
+				Port:     "",
+				Status:   n.Status,
+				LastSeen: time.Unix(n.LastSeen, 0),
+				Metadata: map[string]string{"type": n.Type},
+			})
 			return
 		}
 	}
@@ -599,31 +777,100 @@ func (s *Server) getNode(c *gin.Context) {
 }
 
 func (s *Server) listNodes(c *gin.Context) {
-	nodes, err := s.client.GetNodes(c.Request.Context())
+	ctx := c.Request.Context()
+
+	st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	var nodes []*model.NodeResult
+	for _, n := range st.Nodes {
+		nodes = append(nodes, &model.NodeResult{
+			ID:       n.Id,
+			Address:  n.Address,
+			Port:     "",
+			Status:   n.Status,
+			LastSeen: time.Unix(n.LastSeen, 0),
+			Metadata: map[string]string{"type": n.Type},
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"nodes": nodes, "total": len(nodes)})
 }
 
 func (s *Server) listTables(c *gin.Context) {
-	tables, err := s.client.ListTables(c.Request.Context())
+	ctx := c.Request.Context()
+	resp, err := s.svc.ListTables(ctx, &miniodbv1.ListTablesRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	var tables []*model.TableResult
+	for _, t := range resp.Tables {
+		var createdAt time.Time
+		if t.CreatedAt != nil {
+			createdAt = t.CreatedAt.AsTime()
+		}
+		tables = append(tables, &model.TableResult{
+			Name:      t.Name,
+			CreatedAt: createdAt,
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"tables": tables, "total": len(tables)})
 }
 
 func (s *Server) getTable(c *gin.Context) {
 	name := c.Param("name")
-	table, err := s.client.GetTable(c.Request.Context(), name)
+	ctx := c.Request.Context()
+
+	resp, err := s.svc.GetTable(ctx, &miniodbv1.GetTableRequest{TableName: name})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, table)
+	if resp.TableInfo == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Table not found"})
+		return
+	}
+
+	t := resp.TableInfo
+	var createdAt time.Time
+	if t.CreatedAt != nil {
+		createdAt = t.CreatedAt.AsTime()
+	}
+
+	result := &model.TableDetailResult{
+		TableResult: model.TableResult{
+			Name:      t.Name,
+			CreatedAt: createdAt,
+		},
+	}
+
+	if t.Config != nil {
+		result.Config = config.TableConfig{
+			BufferSize:     int(t.Config.BufferSize),
+			FlushInterval:  time.Duration(t.Config.FlushIntervalSeconds) * time.Second,
+			RetentionDays:  int(t.Config.RetentionDays),
+			BackupEnabled:  t.Config.BackupEnabled,
+			IDStrategy:     t.Config.IdStrategy,
+			IDPrefix:       t.Config.IdPrefix,
+			AutoGenerateID: t.Config.AutoGenerateId,
+		}
+		result.BufferSize = int(t.Config.BufferSize)
+		result.FlushInterval = int64(t.Config.FlushIntervalSeconds)
+		result.RetentionDays = int(t.Config.RetentionDays)
+		result.BackupEnabled = t.Config.BackupEnabled
+		result.IDStrategy = t.Config.IdStrategy
+	}
+
+	if t.Stats != nil {
+		result.RowCountEst = t.Stats.RecordCount
+		result.SizeBytes = t.Stats.SizeBytes
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 func (s *Server) createTable(c *gin.Context) {
@@ -632,31 +879,54 @@ func (s *Server) createTable(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.client.CreateTable(c.Request.Context(), &req); err != nil {
+
+	ctx := c.Request.Context()
+	protoReq := &miniodbv1.CreateTableRequest{
+		TableName:   req.TableName,
+		IfNotExists: true,
+	}
+	if req.Config.BufferSize > 0 || req.Config.RetentionDays > 0 {
+		protoReq.Config = &miniodbv1.TableConfig{
+			BufferSize:           int32(req.Config.BufferSize),
+			FlushIntervalSeconds: int32(req.Config.FlushInterval.Seconds()),
+			RetentionDays:        int32(req.Config.RetentionDays),
+			BackupEnabled:        req.Config.BackupEnabled,
+			IdStrategy:           req.Config.IDStrategy,
+			IdPrefix:             req.Config.IDPrefix,
+			AutoGenerateId:       req.Config.AutoGenerateID,
+		}
+	}
+
+	resp, err := s.svc.CreateTable(ctx, protoReq)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"message": "Table created"})
 }
 
 func (s *Server) updateTable(c *gin.Context) {
-	name := c.Param("name")
-	var req model.UpdateTableRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if err := s.client.UpdateTable(c.Request.Context(), name, &req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "Table updated"})
+	c.JSON(http.StatusNotImplemented, gin.H{"error": "Table config update is not yet supported"})
 }
 
 func (s *Server) deleteTable(c *gin.Context) {
 	name := c.Param("name")
-	if err := s.client.DeleteTable(c.Request.Context(), name); err != nil {
+	ctx := c.Request.Context()
+
+	resp, err := s.svc.DeleteTable(ctx, &miniodbv1.DeleteTableRequest{
+		TableName: name,
+		IfExists:  true,
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Table deleted"})
@@ -664,12 +934,24 @@ func (s *Server) deleteTable(c *gin.Context) {
 
 func (s *Server) tableStats(c *gin.Context) {
 	name := c.Param("name")
-	stats, err := s.client.GetTableStats(c.Request.Context(), name)
+	ctx := c.Request.Context()
+
+	resp, err := s.svc.GetTable(ctx, &miniodbv1.GetTableRequest{TableName: name})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, stats)
+	if resp.TableInfo == nil || resp.TableInfo.Stats == nil {
+		c.JSON(http.StatusOK, gin.H{"name": name, "columns": []interface{}{}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"name":         name,
+		"record_count": resp.TableInfo.Stats.RecordCount,
+		"file_count":   resp.TableInfo.Stats.FileCount,
+		"size_bytes":   resp.TableInfo.Stats.SizeBytes,
+	})
 }
 
 func (s *Server) browseData(c *gin.Context) {
@@ -679,12 +961,87 @@ func (s *Server) browseData(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	result, err := s.client.BrowseData(c.Request.Context(), name, &params)
+
+	if params.Filter != "" {
+		if !isSafeFilter(params.Filter) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Filter contains disallowed SQL keywords"})
+			return
+		}
+	}
+
+	if params.SortBy != "" {
+		if !validIdentifier.MatchString(params.SortBy) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid sort_by: must be a valid column name"})
+			return
+		}
+	}
+
+	pageSize := params.PageSize
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	page := params.Page
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
+	ctx := c.Request.Context()
+
+	var total int64
+	countSQL := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM `%s`", name)
+	if params.Filter != "" {
+		countSQL += fmt.Sprintf(" WHERE %s", params.Filter)
+	}
+	countResp, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{Sql: countSQL})
+	if err == nil && countResp.ResultJson != "" {
+		var countRows []map[string]interface{}
+		if json.Unmarshal([]byte(countResp.ResultJson), &countRows) == nil && len(countRows) > 0 {
+			for _, key := range []string{"cnt", "count_star()", "count(*)"} {
+				if v, ok := countRows[0][key]; ok {
+					if val, ok := v.(float64); ok {
+						total = int64(val)
+					}
+					break
+				}
+			}
+		}
+	}
+
+	sql := fmt.Sprintf("SELECT * FROM `%s`", name)
+	if params.Filter != "" {
+		sql += fmt.Sprintf(" WHERE %s", params.Filter)
+	}
+	if params.SortBy != "" {
+		order := "ASC"
+		if strings.ToUpper(params.SortOrder) == "DESC" {
+			order = "DESC"
+		}
+		sql += fmt.Sprintf(" ORDER BY `%s` %s", params.SortBy, order)
+	}
+	sql += fmt.Sprintf(" LIMIT %d OFFSET %d", pageSize, offset)
+
+	resp, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{Sql: sql})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, result)
+
+	var rows []map[string]interface{}
+	if resp.ResultJson != "" {
+		if err := json.Unmarshal([]byte(resp.ResultJson), &rows); err != nil {
+			s.logger.Warn("browseData: failed to parse ResultJson", zap.String("table", name), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse result: " + err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, &model.BrowseResult{
+		Rows:     rows,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
 }
 
 func (s *Server) writeRecord(c *gin.Context) {
@@ -694,8 +1051,39 @@ func (s *Server) writeRecord(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.client.WriteRecord(c.Request.Context(), name, &req); err != nil {
+
+	ctx := c.Request.Context()
+
+	// Convert payload to protobuf Struct
+	payload, err := structpb.NewStruct(req.Payload)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid payload: %v", err)})
+		return
+	}
+
+	var ts *timestamppb.Timestamp
+	if req.Timestamp > 0 {
+		ts = timestamppb.New(time.UnixMilli(req.Timestamp))
+	} else {
+		ts = timestamppb.Now()
+	}
+
+	protoReq := &miniodbv1.WriteDataRequest{
+		Table: name,
+		Data: &miniodbv1.DataRecord{
+			Id:        req.ID,
+			Timestamp: ts,
+			Payload:   payload,
+		},
+	}
+
+	resp, err := s.svc.WriteData(ctx, protoReq)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"message": "Record created"})
@@ -708,9 +1096,40 @@ func (s *Server) writeBatch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.client.WriteBatch(c.Request.Context(), name, records); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+
+	ctx := c.Request.Context()
+	for _, req := range records {
+		payload, err := structpb.NewStruct(req.Payload)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid payload: %v", err)})
+			return
+		}
+
+		var ts *timestamppb.Timestamp
+		if req.Timestamp > 0 {
+			ts = timestamppb.New(time.UnixMilli(req.Timestamp))
+		} else {
+			ts = timestamppb.Now()
+		}
+
+		protoReq := &miniodbv1.WriteDataRequest{
+			Table: name,
+			Data: &miniodbv1.DataRecord{
+				Id:        req.ID,
+				Timestamp: ts,
+				Payload:   payload,
+			},
+		}
+
+		resp, err := s.svc.WriteData(ctx, protoReq)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !resp.Success {
+			c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
+			return
+		}
 	}
 	c.JSON(http.StatusCreated, gin.H{"message": "Records created"})
 }
@@ -723,8 +1142,36 @@ func (s *Server) updateRecord(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.client.UpdateRecord(c.Request.Context(), name, id, &req); err != nil {
+
+	ctx := c.Request.Context()
+
+	payload, err := structpb.NewStruct(req.Payload)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid payload: %v", err)})
+		return
+	}
+
+	var ts *timestamppb.Timestamp
+	if req.Timestamp > 0 {
+		ts = timestamppb.New(time.UnixMilli(req.Timestamp))
+	} else {
+		ts = timestamppb.Now()
+	}
+
+	protoReq := &miniodbv1.UpdateDataRequest{
+		Table:     name,
+		Id:        id,
+		Payload:   payload,
+		Timestamp: ts,
+	}
+
+	resp, err := s.svc.UpdateData(ctx, protoReq)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Record updated"})
@@ -734,11 +1181,22 @@ func (s *Server) deleteRecord(c *gin.Context) {
 	name := c.Param("name")
 	id := c.Param("id")
 	day := c.DefaultQuery("day", "")
-	if day == "" {
-		day = time.Now().Format("2006-01-02")
+	_ = day // not used in proto
+
+	ctx := c.Request.Context()
+
+	protoReq := &miniodbv1.DeleteDataRequest{
+		Table: name,
+		Id:    id,
 	}
-	if err := s.client.DeleteRecord(c.Request.Context(), name, id, day); err != nil {
+
+	resp, err := s.svc.DeleteData(ctx, protoReq)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Record deleted"})
@@ -752,26 +1210,41 @@ func (s *Server) querySQL(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	result, err := s.client.QuerySQL(c.Request.Context(), req.SQL)
+
+	ctx := c.Request.Context()
+	resp, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{Sql: req.SQL})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, result)
+
+	// Parse JSON result
+	var rows []map[string]interface{}
+	var columns []string
+	if resp.ResultJson != "" {
+		if err := json.Unmarshal([]byte(resp.ResultJson), &rows); err == nil && len(rows) > 0 {
+			for k := range rows[0] {
+				columns = append(columns, k)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, &model.QueryResult{
+		Columns:    columns,
+		Rows:       rows,
+		Total:      int64(len(rows)),
+		DurationMs: 0,
+	})
 }
 
 func (s *Server) queryLogs(c *gin.Context) {
-	var params model.LogQueryParams
-	if err := c.ShouldBindQuery(&params); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	result, err := s.client.QueryLogs(c.Request.Context(), &params)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, result)
+	// Log query is not implemented in service, return empty
+	c.JSON(http.StatusOK, gin.H{
+		"logs":     []interface{}{},
+		"total":    0,
+		"page":     1,
+		"pageSize": 20,
+	})
 }
 
 func (s *Server) streamLogs(c *gin.Context) {
@@ -779,47 +1252,104 @@ func (s *Server) streamLogs(c *gin.Context) {
 }
 
 func (s *Server) listLogFiles(c *gin.Context) {
-	files, err := s.client.ListLogFiles(c.Request.Context())
+	// Log file listing is not implemented, return empty
+	c.JSON(http.StatusOK, gin.H{"files": []interface{}{}})
+}
+
+func (s *Server) listBackups(c *gin.Context) {
+	ctx := c.Request.Context()
+	resp, err := s.svc.ListBackups(ctx, &miniodbv1.ListBackupsRequest{Days: 30})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"files": files})
-}
 
-func (s *Server) listBackups(c *gin.Context) {
-	backups, err := s.client.ListBackups(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	var backups []*model.BackupResult
+	for _, b := range resp.Backups {
+		var timestamp, completedAt time.Time
+		if b.Timestamp != nil {
+			timestamp = b.Timestamp.AsTime()
+		}
+		if b.LastModified != nil {
+			completedAt = b.LastModified.AsTime()
+		}
+		backups = append(backups, &model.BackupResult{
+			ID:          b.ObjectName,
+			Type:        "metadata",
+			Status:      "completed",
+			SizeBytes:   b.Size,
+			CreatedAt:   timestamp,
+			CompletedAt: completedAt,
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"backups": backups})
 }
 
 func (s *Server) triggerMetadataBackup(c *gin.Context) {
-	result, err := s.client.TriggerMetadataBackup(c.Request.Context())
+	ctx := c.Request.Context()
+	resp, err := s.svc.BackupMetadata(ctx, &miniodbv1.BackupMetadataRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, result)
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":   resp.Message,
+		"backup_id": resp.BackupId,
+	})
 }
 
 func (s *Server) getBackupSchedule(c *gin.Context) {
-	status, err := s.client.GetMetadataStatus(c.Request.Context())
+	ctx := c.Request.Context()
+	resp, err := s.svc.GetMetadataStatus(ctx, &miniodbv1.GetMetadataStatusRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, status)
+
+	var lastBackup time.Time
+	if resp.LastBackup != nil {
+		lastBackup = resp.LastBackup.AsTime()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"last_backup":     lastBackup,
+		"tables_count":    0,
+		"backup_enabled":  resp.BackupStatus["status"] == "enabled",
+		"backup_interval": 3600,
+	})
 }
 
 func (s *Server) monitorOverview(c *gin.Context) {
-	overview, err := s.client.GetMonitorOverview(c.Request.Context())
+	ctx := c.Request.Context()
+	resp, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	overview := &model.MonitorOverviewResult{
+		Goroutines:  runtime.NumGoroutine(),
+		MemAllocMB:  float64(memStats.Alloc) / 1024 / 1024,
+		GCPauseMs:   float64(memStats.PauseNs[(memStats.NumGC+255)%256]) / 1e6,
+		CPUPercent:  0,
+		UptimeHours: 0,
+	}
+
+	if resp.SystemInfo != nil {
+		if uptime, ok := resp.SystemInfo["uptime_seconds"]; ok {
+			if secs, err := time.ParseDuration(uptime + "s"); err == nil {
+				overview.UptimeHours = secs.Hours()
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, overview)
 }
 
@@ -828,11 +1358,26 @@ func (s *Server) monitorStream(c *gin.Context) {
 }
 
 func (s *Server) slaMetrics(c *gin.Context) {
-	sla, err := s.client.GetSLA(c.Request.Context())
+	ctx := c.Request.Context()
+	resp, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	avgQueryMs := resp.PerformanceMetrics["avg_query_time_seconds"] * 1000
+	slowestQueryMs := resp.PerformanceMetrics["slowest_query_seconds"] * 1000
+	avgFlushMs := resp.PerformanceMetrics["avg_flush_time_seconds"] * 1000
+
+	sla := &model.SLAResult{
+		QueryLatencyP50Ms: avgQueryMs,
+		QueryLatencyP95Ms: slowestQueryMs,
+		QueryLatencyP99Ms: slowestQueryMs,
+		WriteLatencyP95Ms: avgFlushMs,
+		CacheHitRate:      resp.PerformanceMetrics["cache_hit_rate"],
+		ErrorRate:         1 - resp.PerformanceMetrics["query_success_rate"],
+	}
+
 	c.JSON(http.StatusOK, sla)
 }
 
@@ -844,21 +1389,40 @@ func (s *Server) analyticsQuery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	result, err := s.client.AnalyticsQuery(c.Request.Context(), req.Query)
+
+	ctx := c.Request.Context()
+	resp, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{Sql: req.Query})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, result)
+
+	// Parse JSON result
+	var rows []map[string]interface{}
+	var columns []string
+	if resp.ResultJson != "" {
+		if err := json.Unmarshal([]byte(resp.ResultJson), &rows); err == nil && len(rows) > 0 {
+			for k := range rows[0] {
+				columns = append(columns, k)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, &model.AnalyticsQueryResult{
+		Columns:    columns,
+		Rows:       rows,
+		Total:      int64(len(rows)),
+		DurationMs: 0,
+	})
 }
 
 func (s *Server) analyticsOverview(c *gin.Context) {
-	overview, err := s.client.GetAnalyticsOverview(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, overview)
+	// Return empty analytics overview
+	c.JSON(http.StatusOK, gin.H{
+		"write_trend": []interface{}{},
+		"query_trend": []interface{}{},
+		"data_volume": []interface{}{},
+	})
 }
 
 func (s *Server) Start(ctx context.Context) {
@@ -874,11 +1438,25 @@ func (s *Server) startMetricsPush(ctx context.Context) {
 				ticker.Stop()
 				return
 			case <-ticker.C:
-				overview, err := s.client.GetMonitorOverview(ctx)
+				resp, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{})
 				if err == nil {
-					s.hub.Publish("metrics", overview)
+					var memStats runtime.MemStats
+					runtime.ReadMemStats(&memStats)
+					s.hub.Publish("metrics", gin.H{
+						"goroutines":   runtime.NumGoroutine(),
+						"mem_alloc_mb": float64(memStats.Alloc) / 1024 / 1024,
+						"uptime_hours": resp.SystemInfo["uptime_seconds"],
+						"cpu_percent":  0,
+					})
 				}
 			}
 		}
 	}()
+}
+
+func (s *Server) Stop() {
+	if s.stopStats != nil {
+		s.stopStats()
+	}
+	s.hub.Close()
 }

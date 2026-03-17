@@ -1,3 +1,6 @@
+# DEPRECATED: Dashboard is now embedded in the Core server.
+# Use docker-compose.yml with DASHBOARD_ENABLED=true instead.
+#
 # Docker Compose for Dashboard Service
 # 独立部署 Dashboard，连接到已有的 MinIODB 核心服务
 #

@@ -1,7 +1,26 @@
 # MinIODB Dashboard 管理控制台架构设计
 
+> ⚠️ **架构变更通知 (2026-03-17)**
+>
+> 本文档描述的"前端嵌入 Go 二进制"架构已变更。当前实现为 **前端独立部署**：
+> - Dashboard 前端（Next.js SPA）独立运行，不再嵌入 Go 二进制
+> - Go 后端仅提供 API 服务 (`/dashboard/api/v1/*`)，不服务静态文件
+> - `internal/dashboard/embed.go` 和 `internal/dashboard/static/` 已删除
+> - 前端通过环境变量 `NEXT_PUBLIC_API_URL` 配置后端地址
+>
+> **新的部署方式**：
+> ```bash
+> # 后端
+> go run cmd/main.go -c config/config.yaml  # 监听 :8081
+> 
+> # 前端
+> cd dashboard-ui && npm run dev  # 监听 :3000
+> ```
+>
+> **访问地址**：`http://localhost:3000`（前端）→ `http://localhost:8081/dashboard/api/v1/*`（后端 API）
+
 **设计日期**：2026-03-13  
-**版本**：v1.2  
+**版本**：v1.3  
 **设计目标**：轻量化、高性能、可水平扩展、与核心程序解耦
 
 ---
@@ -53,46 +72,117 @@
 
 ## 三、部署模式
 
-### 模式 A：All-in-One（单二进制部署）
+> **当前部署模式**：前端独立部署，后端 API 集成到 MinIODB Core。
+
+### 模式：前后端分离部署（当前）
 
 ```
-┌──────────────────────────────────────────────┐
-│         Single Binary (go build -tags dashboard)  │
-│                                                    │
-│  Gin Engine :8081                                  │
-│  ├── /v1/*           → Core API Routes            │
-│  ├── /dashboard/api/* → Dashboard API Routes      │
-│  └── /dashboard/ui/*  → Embedded Next.js SPA      │
-└──────────────────────────────────────────────┘
+┌─────────────────────────┐      ┌──────────────────────────────┐
+│  Dashboard UI :3000      │      │  MinIODB Core :8081          │
+│                         │      │                              │
+│  Next.js SPA           │      │  miniodb binary              │
+│  (独立静态服务器/CDN)    │─────▶│  REST/gRPC API               │
+│                         │ HTTP │  /dashboard/api/v1/*         │
+└─────────────────────────┘      └──────────────────────────────┘
 ```
 
-- Dashboard 路由挂载在已有的 Gin Router 上，路径前缀 `/dashboard/`
-- 通过 `go build -tags dashboard ./cmd/` 编译时包含 Dashboard
-- Dashboard Service 通过 `LocalClient` 直接调用核心 Go 接口（零网络开销）
-- 单二进制、单端口、单容器
+- Dashboard 前端独立部署（Next.js 静态导出或开发服务器）
+- 通过环境变量 `NEXT_PUBLIC_API_URL` 配置后端地址
+- 后端 API 挂载在 Core REST Server 的 `/dashboard/api/v1/` 路径
+- 前端可通过 CDN、Nginx、Vercel 等任意静态服务器托管
 
-### 模式 B：Client + Server（独立镜像部署）
+### 开发环境
 
+```bash
+# 终端 1: 启动后端
+go run cmd/main.go -c config/config.local.yaml
+
+# 终端 2: 启动前端
+cd dashboard-ui
+npm run dev
 ```
-┌─────────────────────────┐      ┌──────────────────────┐
-│  Dashboard Image :9090  │      │  MinIODB Image :8081  │
-│                         │      │                       │
-│  dashboard binary       │      │  miniodb binary       │
-│  Embedded Next.js SPA   │      │  REST/gRPC API        │
-│  HTTP/gRPC Client ──────│──────│→ Core Services        │
-└─────────────────────────┘      └──────────────────────┘
-```
 
-- Dashboard 作为独立 Go 二进制 (`cmd/dashboard/main.go`) 运行在独立容器
-- 通过 REST/gRPC 与 minIODB Core 通信（配置 endpoint）
-- 前端 SPA 嵌入 Dashboard 二进制
-- 独立 Docker 镜像：`miniodb-dashboard:VERSION`
+### 生产环境
+
+```bash
+# 构建前端
+cd dashboard-ui
+cp .env.example .env.local
+# 编辑 NEXT_PUBLIC_API_URL=https://api.example.com
+npm run build
+
+# 部署 out/ 目录到静态服务器
+```
 
 ---
 
-## 四、目录结构
+## 四、目录结构（当前）
 
 ```
+minIODB/
+├── cmd/
+│   └── main.go                              # 核心入口（含 Dashboard API 挂载）
+├── internal/
+│   └── dashboard/                           # Dashboard 后端（Go）
+│       ├── server.go                        # Dashboard HTTP Server（API handlers）
+│       ├── model/                           # Dashboard 数据模型
+│       │   └── types.go                     # 请求/响应类型定义
+│       └── sse/                             # SSE 事件中心
+│           └── hub.go                       # 事件广播器
+├── dashboard-ui/                            # Next.js SPA（独立部署）
+│   ├── package.json
+│   ├── next.config.mjs                      # Next.js 配置
+│   ├── .env.example                         # 环境变量示例
+│   ├── tailwind.config.ts
+│   ├── tsconfig.json
+│   ├── components.json                      # shadcn/ui 配置
+│   ├── src/
+│   │   ├── app/                             # Next.js App Router
+│   │   │   ├── layout.tsx                   # 根布局
+│   │   │   ├── page.tsx                     # Overview 总览
+│   │   │   ├── login/page.tsx               # 登录页
+│   │   │   ├── cluster/page.tsx             # 集群拓扑与模式
+│   │   │   ├── nodes/page.tsx               # 节点管理
+│   │   │   ├── data/page.tsx                # 数据浏览与查询控制台
+│   │   │   ├── logs/page.tsx                # 日志查看器
+│   │   │   ├── backup/page.tsx              # 备份管理
+│   │   │   ├── monitor/page.tsx             # 实时监控
+│   │   │   ├── analytics/page.tsx           # 统计分析
+│   │   │   └── settings/page.tsx            # 设置
+│   │   ├── components/
+│   │   │   ├── ui/                          # shadcn/ui 组件
+│   │   │   ├── charts/                      # ECharts 图表封装
+│   │   │   ├── code-editor/                 # SQL 编辑器封装
+│   │   │   └── layout/                      # 侧边栏、顶栏等布局组件
+│   │   ├── lib/
+│   │   │   ├── utils.ts                     # cn() 等工具函数
+│   │   │   └── api/                         # API 客户端层
+│   │   │       ├── client.ts                # HTTP 客户端封装
+│   │   │       ├── types.ts                 # API 类型定义
+│   │   │       ├── cluster.ts               # 集群 API
+│   │   │       ├── nodes.ts                 # 节点 API
+│   │   │       ├── data.ts                  # 数据 API
+│   │   │       ├── logs.ts                  # 日志 API
+│   │   │       ├── backup.ts                # 备份 API
+│   │   │       ├── monitor.ts               # 监控 API
+│   │   │       └── analytics.ts             # 分析 API
+│   │   ├── hooks/
+│   │   │   ├── use-sse.ts                   # SSE 连接管理
+│   │   │   └── use-query.ts                 # 数据请求封装
+│   │   └── stores/                          # Zustand 状态管理
+│   │       ├── auth-store.ts                # 认证状态
+│   │       └── cluster-store.ts             # 集群状态
+│   └── out/                                 # 静态导出产物（npm run build）
+└── Makefile                                 # 构建命令
+```
+
+**已删除的文件/目录**：
+- `cmd/dashboard/main.go` - 独立 Dashboard 入口（已删除）
+- `internal/dashboard/embed.go` - go:embed 前端静态文件（已删除）
+- `internal/dashboard/static/` - 嵌入的前端文件（已删除）
+- `internal/dashboard/client/` - CoreClient 抽象层（已删除）
+- `internal/dashboard/service/` - 业务逻辑层（合并到 server.go）
+- `internal/dashboard/handler/` - HTTP 处理器（合并到 server.go）
 minIODB/
 ├── cmd/
 │   ├── main.go                              # 现有核心入口

@@ -38,11 +38,14 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ReloadIcon,
+  ArrowUpIcon,
+  ArrowDownIcon,
 } from '@radix-ui/react-icons'
 import type { 
   TableResult, 
   BrowseResult, 
-  QueryResult 
+  QueryResult,
+  CreateTableRequest,
 } from '@/lib/api/types'
 
 type ViewMode = 'data' | 'sql'
@@ -69,6 +72,10 @@ export default function DataPage() {
   const [page, setPage] = useState(1)
   const pageSize = 20
   
+  // 排序状态
+  const [sortBy, setSortBy] = useState<string | null>(null)
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | null>(null)
+  
   // SQL 控制台状态
   const [sqlQuery, setSqlQuery] = useState('')
   const [sqlResult, setSqlResult] = useState<QueryResult | null>(null)
@@ -79,11 +86,26 @@ export default function DataPage() {
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [editingRow, setEditingRow] = useState<Record<string, unknown> | null>(null)
   const [editFormData, setEditFormData] = useState<Record<string, string>>({})
+  const [newRecordId, setNewRecordId] = useState('')
+  const [newRecordPayload, setNewRecordPayload] = useState('')
+  const [newRecordError, setNewRecordError] = useState('')
+  const [newRecordLoading, setNewRecordLoading] = useState(false)
   
   // 删除确认对话框
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deletingRowId, setDeletingRowId] = useState<string | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
+  
+  // 创建表对话框状态
+  const [createTableDialogOpen, setCreateTableDialogOpen] = useState(false)
+  const [newTableName, setNewTableName] = useState('')
+  const [createTableLoading, setCreateTableLoading] = useState(false)
+  const [createTableError, setCreateTableError] = useState('')
+  
+  // 删除表确认对话框状态
+  const [deleteTableDialogOpen, setDeleteTableDialogOpen] = useState(false)
+  const [deleteTableLoading, setDeleteTableLoading] = useState(false)
+  const [deleteTableConfirmName, setDeleteTableConfirmName] = useState('')
 
   // 加载表列表
   const loadTables = useCallback(async () => {
@@ -112,6 +134,8 @@ export default function DataPage() {
       const result = await dataApi.browseData(selectedTable, {
         page,
         page_size: pageSize,
+        sort_by: sortBy || undefined,
+        sort_order: sortOrder || undefined,
       })
       setBrowseData(result)
     } catch (e) {
@@ -119,7 +143,7 @@ export default function DataPage() {
     } finally {
       setDataLoading(false)
     }
-  }, [selectedTable, page])
+  }, [selectedTable, page, sortBy, sortOrder])
 
   // 初始加载
   useEffect(() => {
@@ -131,7 +155,7 @@ export default function DataPage() {
     if (viewMode === 'data' && selectedTable) {
       loadTableData()
     }
-  }, [viewMode, selectedTable, page, loadTableData])
+  }, [viewMode, selectedTable, page, sortBy, sortOrder, loadTableData])
 
   // 执行 SQL
   const handleExecuteSql = async () => {
@@ -154,6 +178,8 @@ export default function DataPage() {
   const handleTableSelect = (tableName: string) => {
     setSelectedTable(tableName)
     setPage(1)
+    setSortBy(null)
+    setSortOrder(null)
     setViewMode('data')
   }
 
@@ -166,10 +192,40 @@ export default function DataPage() {
     }
   }
 
+  // 处理排序
+  const handleSort = (column: string) => {
+    if (sortBy === column) {
+      // 当前列已排序，切换排序方向或清除排序
+      if (sortOrder === 'asc') {
+        setSortOrder('desc')
+      } else if (sortOrder === 'desc') {
+        setSortBy(null)
+        setSortOrder(null)
+      }
+    } else {
+      // 切换到新列，默认升序
+      setSortBy(column)
+      setSortOrder('asc')
+    }
+    setPage(1) // 排序变化时重置到第一页
+  }
+
+  // 渲染排序指示器
+  const renderSortIndicator = (column: string) => {
+    if (sortBy !== column) {
+      return null
+    }
+    return sortOrder === 'asc' 
+      ? <ArrowUpIcon className="h-3.5 w-3.5 ml-1 inline" />
+      : <ArrowDownIcon className="h-3.5 w-3.5 ml-1 inline" />
+  }
+
   // 打开新增对话框
   const handleAddRow = () => {
     setEditingRow(null)
-    setEditFormData({})
+    setNewRecordId('')
+    setNewRecordPayload('{\n  \n}')
+    setNewRecordError('')
     setEditDialogOpen(true)
   }
 
@@ -189,27 +245,40 @@ export default function DataPage() {
     if (!selectedTable) return
     
     try {
-      const payload: Record<string, unknown> = {}
-      Object.entries(editFormData).forEach(([key, value]) => {
-        if (key !== 'id' && key !== 'timestamp') {
-          payload[key] = value
-        }
-      })
-      
-      if (editingRow?.id) {
+      if (editingRow) {
+        // 编辑模式
+        const payload: Record<string, unknown> = {}
+        Object.entries(editFormData).forEach(([key, value]) => {
+          if (key !== 'id' && key !== 'timestamp') {
+            payload[key] = value
+          }
+        })
+        
         await dataApi.updateRecord(selectedTable, String(editingRow.id), {
           payload,
         })
       } else {
-        await dataApi.writeRecord(selectedTable, {
+        // 新增模式
+        const payload = newRecordPayload ? JSON.parse(newRecordPayload) : {}
+        const recordData: Record<string, unknown> = {
           payload,
-        })
+        }
+        
+        if (newRecordId.trim()) {
+          recordData.id = newRecordId.trim()
+        }
+        
+        await dataApi.writeRecord(selectedTable, recordData)
       }
       
       setEditDialogOpen(false)
+      setNewRecordId('')
+      setNewRecordPayload('{\n  \n}')
+      setNewRecordError('')
       loadTableData()
     } catch (e) {
       console.error('Save failed:', e)
+      setNewRecordError(e instanceof Error ? e.message : '保存失败')
     }
   }
 
@@ -260,6 +329,70 @@ export default function DataPage() {
     URL.revokeObjectURL(link.href)
   }
 
+  // 打开创建表对话框
+  const handleOpenCreateTable = () => {
+    setNewTableName('')
+    setCreateTableError('')
+    setCreateTableDialogOpen(true)
+  }
+
+  // 创建表
+  const handleCreateTable = async () => {
+    if (!newTableName.trim()) {
+      setCreateTableError('请输入表名')
+      return
+    }
+    
+    setCreateTableLoading(true)
+    setCreateTableError('')
+    try {
+      const req: CreateTableRequest = {
+        table_name: newTableName.trim(),
+        config: {}
+      }
+      await dataApi.createTable(req)
+      setCreateTableDialogOpen(false)
+      // 刷新表列表并选中新表
+      const result = await dataApi.listTables()
+      setTables(result)
+      setSelectedTable(newTableName.trim())
+    } catch (e) {
+      setCreateTableError(e instanceof Error ? e.message : '创建表失败')
+    } finally {
+      setCreateTableLoading(false)
+    }
+  }
+
+  // 打开删除表确认
+  const handleOpenDeleteTable = () => {
+    setDeleteTableDialogOpen(true)
+  }
+
+  // 确认删除表
+  const handleConfirmDeleteTable = async () => {
+    if (!selectedTable) return
+    
+    setDeleteTableLoading(true)
+    try {
+      await dataApi.deleteTable(selectedTable)
+      setDeleteTableDialogOpen(false)
+      // 刷新表列表
+      const result = await dataApi.listTables()
+      setTables(result)
+      // 选择第一个表或清空选择
+      if (result.length > 0) {
+        setSelectedTable(result[0].name)
+      } else {
+        setSelectedTable(null)
+        setBrowseData(null)
+      }
+    } catch (e) {
+      console.error('Delete table failed:', e)
+    } finally {
+      setDeleteTableLoading(false)
+    }
+  }
+
   // 格式化字节
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`
@@ -291,6 +424,29 @@ export default function DataPage() {
               >
                 <ChevronLeftIcon className="h-4 w-4" />
               </Button>
+            </div>
+            
+            {/* 表管理按钮 */}
+            <div className="flex gap-2 mb-4">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                className="flex-1"
+                onClick={handleOpenCreateTable}
+              >
+                <PlusIcon className="h-4 w-4 mr-1" />
+                新建表
+              </Button>
+              {selectedTable && (
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={handleOpenDeleteTable}
+                >
+                  <TrashIcon className="h-4 w-4" />
+                </Button>
+              )}
             </div>
             
             {tablesLoading ? (
@@ -469,7 +625,14 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                             <TableHead className="w-12">#</TableHead>
                             {browseData.rows.length > 0 && 
                               Object.keys(browseData.rows[0]).map(col => (
-                                <TableHead key={col}>{col}</TableHead>
+                                <TableHead 
+                                  key={col}
+                                  className="cursor-pointer hover:bg-muted/50 select-none"
+                                  onClick={() => handleSort(col)}
+                                >
+                                  {col}
+                                  {renderSortIndicator(col)}
+                                </TableHead>
                               ))
                             }
                             <TableHead className="w-24">操作</TableHead>
@@ -618,6 +781,86 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
               disabled={deleteLoading}
             >
               {deleteLoading ? '删除中...' : '删除'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 创建表对话框 */}
+      <Dialog open={createTableDialogOpen} onOpenChange={setCreateTableDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>新建数据表</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                表名
+              </label>
+              <input
+                type="text"
+                value={newTableName}
+                onChange={(e) => setNewTableName(e.target.value)}
+                placeholder="输入表名..."
+                className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleCreateTable()
+                  }
+                }}
+              />
+              {createTableError && (
+                <p className="text-sm text-destructive">{createTableError}</p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateTableDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleCreateTable} disabled={createTableLoading}>
+              {createTableLoading ? '创建中...' : '创建'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除表确认对话框 */}
+      <Dialog open={deleteTableDialogOpen} onOpenChange={(open) => {
+        setDeleteTableDialogOpen(open)
+        if (!open) setDeleteTableConfirmName('')
+      }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-destructive">确认删除表</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              此操作将永久删除表 <strong className="text-foreground">{selectedTable}</strong> 及其所有数据，且无法撤销。
+            </p>
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
+              <p className="text-sm text-destructive font-medium">
+                请输入表名 <code className="px-1 py-0.5 bg-destructive/20 rounded">{selectedTable}</code> 以确认删除：
+              </p>
+            </div>
+            <input
+              type="text"
+              value={deleteTableConfirmName}
+              onChange={(e) => setDeleteTableConfirmName(e.target.value)}
+              placeholder="输入表名确认..."
+              className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-destructive"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTableDialogOpen(false)}>
+              取消
+            </Button>
+            <Button 
+              variant="destructive" 
+              onClick={handleConfirmDeleteTable}
+              disabled={deleteTableLoading || deleteTableConfirmName !== selectedTable}
+            >
+              {deleteTableLoading ? '删除中...' : '确认删除'}
             </Button>
           </DialogFooter>
         </DialogContent>
