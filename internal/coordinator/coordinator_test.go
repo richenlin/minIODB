@@ -102,6 +102,10 @@ func (t *testLocalQuerier) ExecuteQuery(sql string) (string, error) {
 	return `[{"result": "test"}]`, nil
 }
 
+func (t *testLocalQuerier) ExecuteUpdate(sql string) (int64, error) {
+	return 1, nil
+}
+
 func TestNewQueryCoordinator(t *testing.T) {
 	redisPool, registry, cleanup := setupTestEnvironment(t)
 	defer cleanup()

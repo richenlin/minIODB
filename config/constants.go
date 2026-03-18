@@ -199,6 +199,7 @@ const (
 	DefaultDuckDBConnectionReuseEnabled  = true
 	DefaultDuckDBMaxReuseCount           = 1000
 	DefaultDuckDBConnHealthCheckInterval = 5 * time.Minute
+	DefaultSlowQueryThreshold            = 1 * time.Second
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

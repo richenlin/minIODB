@@ -403,10 +403,10 @@ export default function DataPage() {
 
   return (
     <DashboardLayout>
-      <div className="flex h-[calc(100vh-4rem)] -m-4">
+      <div className="relative flex h-[calc(100vh-4rem)] -m-4">
         {/* 左侧表列表侧边栏 */}
         <div 
-          className={`border-r border-border bg-card transition-all duration-300 ${
+          className={`shrink-0 border-r border-border bg-card transition-all duration-300 ${
             sidebarOpen ? 'w-64' : 'w-0 overflow-hidden'
           }`}
         >
@@ -488,16 +488,17 @@ export default function DataPage() {
           </div>
         </div>
 
-        {/* 折叠按钮 */}
+        {/* 侧边栏收起后：左侧展开条，点击可再次展示表列表 */}
         {!sidebarOpen && (
-          <Button
-            variant="ghost"
-            size="icon"
+          <button
+            type="button"
             onClick={() => setSidebarOpen(true)}
-            className="absolute left-2 top-20 z-10 h-8 w-8"
+            className="absolute left-0 top-0 z-20 flex h-full w-9 flex-col items-center justify-center border-r border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+            title="展开表列表"
+            aria-label="展开表列表"
           >
-            <ChevronRightIcon className="h-4 w-4" />
-          </Button>
+            <ChevronRightIcon className="h-5 w-5" />
+          </button>
         )}
 
         {/* 右侧内容区 */}

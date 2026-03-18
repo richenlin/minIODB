@@ -70,4 +70,20 @@ var (
 			Help: "Backup pool health status (0=unhealthy, 1=healthy)",
 		},
 	)
+
+	// SyncQueueDropped 同步队列满时丢弃的任务计数（用于告警）
+	SyncQueueDropped = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "miniodb_sync_queue_dropped_total",
+			Help: "Total number of sync tasks dropped due to queue full (alert metric)",
+		},
+	)
+
+	// SyncQueueBlocked 同步队列满时阻塞等待的任务计数
+	SyncQueueBlocked = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "miniodb_sync_queue_blocked_total",
+			Help: "Total number of sync tasks that blocked waiting for queue space",
+		},
+	)
 )

@@ -165,6 +165,19 @@ func (s *SQLSanitizer) BuildSafeDeleteSQL(tableName, id string) (string, error) 
 	return sql, nil
 }
 
+// BuildSafeDeleteEmptyIDSQL 构建删除空ID记录的安全SQL语句
+// 用于清理脏数据
+func (s *SQLSanitizer) BuildSafeDeleteEmptyIDSQL(tableName string) (string, error) {
+	if err := s.ValidateTableName(tableName); err != nil {
+		return "", fmt.Errorf("invalid table name: %w", err)
+	}
+
+	sql := fmt.Sprintf("DELETE FROM %s WHERE id = '' OR id IS NULL",
+		s.QuoteIdentifier(tableName))
+
+	return sql, nil
+}
+
 // BuildSafeSelectSQL 构建安全的 SELECT SQL 语句（用于验证表存在性等）
 // whereClause 为 WHERE 子句内容（不含 WHERE 关键字）；suffix 为可选尾部子句，如 "LIMIT 0"（仅允许 "LIMIT" + 数字 的安全形式）。
 func (s *SQLSanitizer) BuildSafeSelectSQL(tableName string, columns []string, whereClause string, suffix string) (string, error) {

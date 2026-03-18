@@ -1,15 +1,19 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/stores/auth-store'
+import { useNavStore } from '@/stores/nav-store'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
+import { NavigationProgress } from '@/components/navigation-progress'
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false)
   const { isAuthenticated } = useAuthStore()
   const router = useRouter()
+  const pathname = usePathname()
+  const setNavigating = useNavStore((s) => s.setNavigating)
 
   useEffect(() => {
     setMounted(true)
@@ -21,6 +25,11 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
     }
   }, [mounted, isAuthenticated, router])
 
+  // Clear navigation progress when route has changed (new page mounted)
+  useEffect(() => {
+    setNavigating(false)
+  }, [pathname, setNavigating])
+
   if (!mounted || !isAuthenticated) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
@@ -31,6 +40,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
+      <NavigationProgress />
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden pl-64">
         <Header />

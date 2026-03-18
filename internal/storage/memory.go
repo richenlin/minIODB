@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -109,6 +110,7 @@ type BufferStats struct {
 // ZeroCopyManager 零拷贝管理器
 type ZeroCopyManager struct {
 	mappedRegions map[string]*MappedRegion
+	mmapManager   *MmapManager
 	copyStats     *CopyStats
 	enabled       bool
 	mutex         sync.RWMutex
@@ -124,6 +126,9 @@ type MappedRegion struct {
 	mapped   bool
 	refCount int32
 	lastUsed time.Time
+	file     *os.File  // 映射的文件
+	mmapFile *MmapFile // mmap 文件对象
+	filePath string    // 文件路径（用于日志）
 }
 
 // CopyStats 拷贝统计
@@ -209,6 +214,7 @@ func NewBufferOptimizer() *BufferOptimizer {
 func NewZeroCopyManager(logger *zap.Logger) *ZeroCopyManager {
 	return &ZeroCopyManager{
 		mappedRegions: make(map[string]*MappedRegion),
+		mmapManager:   NewMmapManager(),
 		copyStats:     &CopyStats{},
 		enabled:       true,
 		logger:        logger,
@@ -440,7 +446,8 @@ func (wb *WriteBuffer) Flush() error {
 	return nil
 }
 
-// CreateMappedRegion 创建内存映射区域
+// CreateMappedRegion 创建内存映射区域（纯内存，无文件）
+// 已弃用：建议使用 CreateMappedRegionFromFile 进行真正的文件 mmap
 func (zcm *ZeroCopyManager) CreateMappedRegion(name string, size int64, readonly bool) (*MappedRegion, error) {
 	zcm.mutex.Lock()
 	defer zcm.mutex.Unlock()
@@ -451,17 +458,113 @@ func (zcm *ZeroCopyManager) CreateMappedRegion(name string, size int64, readonly
 
 	region := &MappedRegion{
 		name:     name,
-		data:     make([]byte, size), // 简化实现，实际应使用mmap
+		data:     make([]byte, size), // 纯内存实现（无文件时回退）
 		size:     size,
 		readonly: readonly,
-		mapped:   true,
+		mapped:   false, // 标记为非真正的 mmap
 		refCount: 1,
 		lastUsed: time.Now(),
 	}
 
 	zcm.mappedRegions[name] = region
-	zcm.logger.Sugar().Infof("Created mapped region: %s (size: %d, readonly: %v)", name, size, readonly)
+	zcm.logger.Sugar().Infof("Created in-memory region: %s (size: %d, readonly: %v)", name, size, readonly)
 
+	return region, nil
+}
+
+// CreateMappedRegionFromFile 从文件创建内存映射区域（真正的 mmap）
+func (zcm *ZeroCopyManager) CreateMappedRegionFromFile(name string, f *os.File, readonly bool) (*MappedRegion, error) {
+	zcm.mutex.Lock()
+	defer zcm.mutex.Unlock()
+
+	if !zcm.enabled {
+		return nil, fmt.Errorf("zero copy disabled")
+	}
+
+	// 检查是否已存在
+	if existing, ok := zcm.mappedRegions[name]; ok {
+		atomic.AddInt32(&existing.refCount, 1)
+		existing.lastUsed = time.Now()
+		return existing, nil
+	}
+
+	// 获取文件信息
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file stat: %w", err)
+	}
+
+	size := stat.Size()
+	if size == 0 {
+		return nil, fmt.Errorf("cannot mmap empty file")
+	}
+
+	// 使用 MmapManager 创建映射
+	mmapFile, err := zcm.mmapManager.CreateMmapFile(name, f, size, readonly)
+	if err != nil {
+		// mmap 失败，回退到读取整个文件到内存
+		zcm.logger.Warn("mmap failed, falling back to read entire file",
+			zap.String("name", name),
+			zap.Error(err))
+
+		data := make([]byte, size)
+		if _, readErr := f.ReadAt(data, 0); readErr != nil {
+			return nil, fmt.Errorf("fallback read failed: %w", readErr)
+		}
+
+		region := &MappedRegion{
+			name:     name,
+			data:     data,
+			size:     size,
+			readonly: readonly,
+			mapped:   false,
+			refCount: 1,
+			file:     f,
+			lastUsed: time.Now(),
+		}
+
+		zcm.mappedRegions[name] = region
+		return region, nil
+	}
+
+	region := &MappedRegion{
+		name:     name,
+		data:     mmapFile.Data(),
+		size:     size,
+		readonly: readonly,
+		mapped:   true, // 标记为真正的 mmap
+		refCount: 1,
+		file:     f,
+		mmapFile: mmapFile,
+		lastUsed: time.Now(),
+	}
+
+	zcm.mappedRegions[name] = region
+	zcm.logger.Sugar().Infof("Created mmap region: %s (size: %d, readonly: %v)", name, size, readonly)
+
+	return region, nil
+}
+
+// CreateMappedRegionFromPath 从文件路径创建内存映射区域
+func (zcm *ZeroCopyManager) CreateMappedRegionFromPath(name, filePath string, readonly bool) (*MappedRegion, error) {
+	// 打开文件
+	flag := os.O_RDONLY
+	if !readonly {
+		flag = os.O_RDWR
+	}
+
+	f, err := os.OpenFile(filePath, flag, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file %s: %w", filePath, err)
+	}
+
+	region, err := zcm.CreateMappedRegionFromFile(name, f, readonly)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	region.filePath = filePath
 	return region, nil
 }
 
@@ -499,12 +602,58 @@ func (zcm *ZeroCopyManager) ReleaseMappedRegion(regionName string) error {
 		return fmt.Errorf("mapped region not found: %s", regionName)
 	}
 
-	if atomic.AddInt32(&region.refCount, -1) <= 0 {
+	newRefCount := atomic.AddInt32(&region.refCount, -1)
+	if newRefCount <= 0 {
+		// 引用计数归零，执行清理
 		delete(zcm.mappedRegions, regionName)
+
+		// 如果是真正的 mmap，解除映射
+		if region.mapped && region.mmapFile != nil {
+			if err := zcm.mmapManager.CloseMmapFile(regionName); err != nil {
+				zcm.logger.Warn("failed to unmap region",
+					zap.String("region", regionName),
+					zap.Error(err))
+			}
+		}
+
+		// 关闭文件（如果由本模块打开）
+		if region.file != nil && region.filePath != "" {
+			region.file.Close()
+		}
+
 		zcm.logger.Sugar().Infof("Released mapped region: %s", regionName)
 	}
 
 	return nil
+}
+
+// Close 关闭 ZeroCopyManager，释放所有资源
+func (zcm *ZeroCopyManager) Close() error {
+	zcm.mutex.Lock()
+	defer zcm.mutex.Unlock()
+
+	var lastErr error
+	for name, region := range zcm.mappedRegions {
+		// 如果是真正的 mmap，解除映射
+		if region.mapped && region.mmapFile != nil {
+			if err := zcm.mmapManager.CloseMmapFile(name); err != nil {
+				lastErr = err
+				zcm.logger.Warn("failed to unmap region during close",
+					zap.String("region", name),
+					zap.Error(err))
+			}
+		}
+
+		// 关闭文件（如果由本模块打开）
+		if region.file != nil && region.filePath != "" {
+			region.file.Close()
+		}
+
+		delete(zcm.mappedRegions, name)
+	}
+
+	zcm.enabled = false
+	return lastErr
 }
 
 // Start 启动GC管理器
@@ -681,6 +830,20 @@ func (mo *MemoryOptimizer) cleanupZeroCopyRegions() {
 
 	for name, region := range mo.zeroCopyManager.mappedRegions {
 		if atomic.LoadInt32(&region.refCount) <= 0 && now.Sub(region.lastUsed) > time.Hour {
+			// 如果是真正的 mmap，解除映射
+			if region.mapped && region.mmapFile != nil {
+				if err := mo.zeroCopyManager.mmapManager.CloseMmapFile(name); err != nil {
+					mo.logger.Warn("failed to unmap region during cleanup",
+						zap.String("region", name),
+						zap.Error(err))
+				}
+			}
+
+			// 关闭文件（如果由本模块打开）
+			if region.file != nil && region.filePath != "" {
+				region.file.Close()
+			}
+
 			delete(mo.zeroCopyManager.mappedRegions, name)
 			mo.logger.Sugar().Infof("Cleaned up unused mapped region: %s", name)
 		}

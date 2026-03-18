@@ -56,7 +56,7 @@ func TestConcurrentBuffer_BasicOperations(t *testing.T) {
 	}
 
 	// 添加数据
-	cb.Add(row)
+	_ = cb.Add(row)
 
 	// 稍等一下确保添加完成
 	time.Sleep(50 * time.Millisecond)
@@ -170,7 +170,7 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 		Timestamp: time.Now().UnixNano(),
 		Payload:   "test-payload-1",
 	}
-	cb.Add(row1)
+	_ = cb.Add(row1)
 
 	// 稍等确保添加完成
 	time.Sleep(10 * time.Millisecond)
@@ -187,7 +187,7 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 	// 使用goroutine添加数据以避免死锁，并设置超时
 	addDone := make(chan bool, 1)
 	go func() {
-		cb.Add(row2)
+		_ = cb.Add(row2)
 		addDone <- true
 	}()
 
@@ -250,7 +250,7 @@ func TestConcurrentBuffer_WALIntegration(t *testing.T) {
 	}
 
 	for _, row := range testRows {
-		cb1.Add(row)
+		_ = cb1.Add(row)
 	}
 
 	// 验证数据在缓冲区中
@@ -321,7 +321,7 @@ func TestConcurrentBuffer_WALDisabled(t *testing.T) {
 		Timestamp: time.Now().UnixNano(),
 		Payload:   "test-payload",
 	}
-	cb.Add(row)
+	_ = cb.Add(row)
 
 	// 验证数据添加成功（即使没有 WAL）
 	assert.Equal(t, 1, cb.Size(), "Should have 1 buffer key")
@@ -330,4 +330,137 @@ func TestConcurrentBuffer_WALDisabled(t *testing.T) {
 	// 验证 WAL 相关字段
 	assert.False(t, cb.walEnabled, "WAL should be disabled")
 	assert.Nil(t, cb.wal, "WAL instance should be nil")
+}
+
+func TestConcurrentBuffer_Remove_BasicRemove(t *testing.T) {
+	cfg := &config.Config{
+		MinIO: config.MinioConfig{Bucket: "test-bucket"},
+		TableManagement: config.TableManagementConfig{
+			DefaultTable: "test",
+		},
+	}
+
+	bufferConfig := &ConcurrentBufferConfig{
+		BufferSize:     1000,
+		FlushInterval:  1 * time.Hour,
+		WorkerPoolSize: 1,
+		TaskQueueSize:  10,
+		WALEnabled:     false,
+	}
+
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
+	defer cb.Stop()
+
+	// 添加多条数据
+	rows := []DataRow{
+		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "payload1"},
+		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Payload: "payload2"},
+		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Payload: "payload3"},
+	}
+	for _, row := range rows {
+		cb.Add(row)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// 验证初始状态
+	assert.Equal(t, 3, cb.PendingWrites(), "Should have 3 pending writes initially")
+
+	// 移除 id1 的所有记录
+	removed := cb.Remove("test", "id1")
+	assert.Equal(t, 2, removed, "Should remove 2 records for id1")
+	assert.Equal(t, 1, cb.PendingWrites(), "Should have 1 pending write after removal")
+
+	// 验证 buffer 中只剩下 id2 的记录
+	keys := cb.GetTableKeys("test")
+	assert.Len(t, keys, 1, "Should have 1 buffer key remaining")
+	if len(keys) > 0 {
+		rows := cb.Get(keys[0])
+		assert.Len(t, rows, 1, "Should have 1 row remaining")
+		assert.Equal(t, "id2", rows[0].ID, "Remaining row should be id2")
+	}
+}
+
+func TestConcurrentBuffer_Remove_NonExistent(t *testing.T) {
+	cfg := &config.Config{
+		MinIO: config.MinioConfig{Bucket: "test-bucket"},
+	}
+
+	bufferConfig := &ConcurrentBufferConfig{
+		BufferSize:     1000,
+		FlushInterval:  1 * time.Hour,
+		WorkerPoolSize: 1,
+		TaskQueueSize:  10,
+		WALEnabled:     false,
+	}
+
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
+	defer cb.Stop()
+
+	removed := cb.Remove("nonexistent", "id")
+	assert.Equal(t, 0, removed, "Should remove 0 records for non-existent table/id")
+}
+
+func TestConcurrentBuffer_Remove_OnlyAffectsTargetTable(t *testing.T) {
+	cfg := &config.Config{
+		MinIO: config.MinioConfig{Bucket: "test-bucket"},
+	}
+
+	bufferConfig := &ConcurrentBufferConfig{
+		BufferSize:     1000,
+		FlushInterval:  1 * time.Hour,
+		WorkerPoolSize: 1,
+		TaskQueueSize:  10,
+		WALEnabled:     false,
+	}
+
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
+	defer cb.Stop()
+
+	// 添加不同表的数据
+	cb.Add(DataRow{Table: "table1", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "p1"})
+	cb.Add(DataRow{Table: "table2", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "p2"})
+	time.Sleep(50 * time.Millisecond)
+
+	// 移除 table1 中的 id1
+	removed := cb.Remove("table1", "id1")
+	assert.Equal(t, 1, removed, "Should remove 1 record from table1")
+
+	// 验证 table2 的数据仍然存在
+	table2Keys := cb.GetTableKeys("table2")
+	assert.Len(t, table2Keys, 1, "table2 should still have data")
+	if len(table2Keys) > 0 {
+		rows := cb.Get(table2Keys[0])
+		assert.Len(t, rows, 1, "table2 should still have 1 row")
+		assert.Equal(t, "id1", rows[0].ID, "table2 row should still exist")
+	}
+}
+
+func TestConcurrentBuffer_Remove_PendingWritesCount(t *testing.T) {
+	cfg := &config.Config{
+		MinIO: config.MinioConfig{Bucket: "test-bucket"},
+	}
+
+	bufferConfig := &ConcurrentBufferConfig{
+		BufferSize:     1000,
+		FlushInterval:  1 * time.Hour,
+		WorkerPoolSize: 1,
+		TaskQueueSize:  10,
+		WALEnabled:     false,
+	}
+
+	cb := NewConcurrentBuffer(nil, cfg, "", "test-node", bufferConfig, logger.GetLogger())
+	defer cb.Stop()
+
+	// 添加 5 条记录（同一 ID，不同日期会产生多个 bufferKey）
+	for i := 0; i < 5; i++ {
+		cb.Add(DataRow{Table: "test", ID: "id1", Timestamp: time.Now().Add(time.Duration(i) * time.Second).UnixNano(), Payload: "payload"})
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Equal(t, 5, cb.PendingWrites(), "Should have 5 pending writes")
+
+	// 移除所有 5 条
+	removed := cb.Remove("test", "id1")
+	assert.Equal(t, 5, removed, "Should remove all 5 records")
+	assert.Equal(t, 0, cb.PendingWrites(), "Should have 0 pending writes after removal")
 }

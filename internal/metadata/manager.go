@@ -67,8 +67,11 @@ func NewManager(storage storage.Storage, cacheStorage storage.CacheStorage, conf
 	// 初始化备份管理器
 	manager.backupManager = NewBackupManager(storage, nodeID, config.Backup, logger)
 
-	// 初始化恢复管理器
-	manager.recoveryManager = NewRecoveryManager(storage, nodeID, config.Recovery.Bucket, logger)
+	// 初始化恢复管理器（传递加密配置）
+	manager.recoveryManager = NewRecoveryManagerWithStorages(
+		storage, nil, nil, nodeID, config.Recovery.Bucket,
+		config.Backup.EncryptionEnabled, config.Backup.EncryptionKey,
+	)
 
 	return manager
 }

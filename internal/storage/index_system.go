@@ -7,10 +7,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"minIODB/pkg/pool"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/bits-and-blooms/bloom/v3"
 	"go.uber.org/zap"
 )
@@ -99,16 +101,17 @@ type BloomFilterIndex struct {
 }
 
 // BloomStats BloomFilter统计
+// 使用 atomic 类型避免在 RLock 下修改字段时的数据竞争
 type BloomStats struct {
-	TotalQueries   int64     `json:"total_queries"`
-	TruePositives  int64     `json:"true_positives"`
-	FalsePositives int64     `json:"false_positives"`
-	TrueNegatives  int64     `json:"true_negatives"`
-	ActualFPRate   float64   `json:"actual_fp_rate"`
-	FilterSize     uint      `json:"filter_size"`
-	HashFunctions  uint      `json:"hash_functions"`
-	ElementCount   uint      `json:"element_count"`
-	LastReset      time.Time `json:"last_reset"`
+	TotalQueries   atomic.Int64  `json:"-"` // 使用 atomic 避免数据竞争
+	TruePositives  atomic.Int64  `json:"-"`
+	FalsePositives atomic.Int64  `json:"-"`
+	TrueNegatives  atomic.Int64  `json:"-"`
+	ActualFPRate   atomic.Uint64 `json:"-"` // 存储 math.Float64bits，避免 float64 数据竞争
+	FilterSize     uint          `json:"filter_size"`
+	HashFunctions  uint          `json:"hash_functions"`
+	ElementCount   uint          `json:"element_count"`
+	LastReset      time.Time     `json:"last_reset"`
 }
 
 // MinMaxIndex MinMax索引
@@ -157,11 +160,41 @@ type InvertedIndex struct {
 
 // PostingList 倒排列表
 type PostingList struct {
-	Term         string     `json:"term"`
-	DocumentFreq int64      `json:"document_frequency"`
-	TotalFreq    int64      `json:"total_frequency"`
-	Postings     []*Posting `json:"postings"`
-	LastUpdate   time.Time  `json:"last_update"`
+	Term         string              `json:"term"`
+	DocumentFreq int64               `json:"document_frequency"`
+	TotalFreq    int64               `json:"total_frequency"`
+	Postings     map[string]*Posting `json:"postings"` // docID -> posting (O(1) lookup)
+	LastUpdate   time.Time           `json:"last_update"`
+	mu           sync.RWMutex        `json:"-"`
+}
+
+// Get 获取指定文档的 posting，O(1) 复杂度
+func (pl *PostingList) Get(docID string) (*Posting, bool) {
+	pl.mu.RLock()
+	defer pl.mu.RUnlock()
+	entry, ok := pl.Postings[docID]
+	return entry, ok
+}
+
+// Add 添加或更新 posting
+func (pl *PostingList) Add(docID string, posting *Posting) {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	if pl.Postings == nil {
+		pl.Postings = make(map[string]*Posting)
+	}
+	pl.Postings[docID] = posting
+}
+
+// GetAll 获取所有 postings（用于遍历）
+func (pl *PostingList) GetAll() []*Posting {
+	pl.mu.RLock()
+	defer pl.mu.RUnlock()
+	result := make([]*Posting, 0, len(pl.Postings))
+	for _, p := range pl.Postings {
+		result = append(result, p)
+	}
+	return result
 }
 
 // Posting 倒排记录
@@ -197,12 +230,105 @@ type BitmapIndex struct {
 	mutex       sync.RWMutex
 }
 
-// RoaringBitmap Roaring位图
+// RoaringBitmap Roaring位图 - 使用真正的 RoaringBitmap 库实现
 type RoaringBitmap struct {
-	bits        map[uint32]bool
-	cardinality uint32
-	compressed  bool
-	lastAccess  time.Time
+	bitmap     *roaring.Bitmap
+	lastAccess time.Time
+}
+
+// NewRoaringBitmap 创建新的 RoaringBitmap
+func NewRoaringBitmap() *RoaringBitmap {
+	return &RoaringBitmap{
+		bitmap:     roaring.New(),
+		lastAccess: time.Now(),
+	}
+}
+
+// Add 添加值到位图
+func (rb *RoaringBitmap) Add(value uint32) {
+	rb.bitmap.Add(value)
+	rb.lastAccess = time.Now()
+}
+
+// AddMany 批量添加值
+func (rb *RoaringBitmap) AddMany(values []uint32) {
+	rb.bitmap.AddMany(values)
+	rb.lastAccess = time.Now()
+}
+
+// Contains 检查值是否存在于位图中
+func (rb *RoaringBitmap) Contains(value uint32) bool {
+	rb.lastAccess = time.Now()
+	return rb.bitmap.Contains(value)
+}
+
+// Remove 从位图中删除值
+func (rb *RoaringBitmap) Remove(value uint32) {
+	rb.bitmap.Remove(value)
+	rb.lastAccess = time.Now()
+}
+
+// Cardinality 返回位图中的元素数量
+func (rb *RoaringBitmap) Cardinality() uint64 {
+	return rb.bitmap.GetCardinality()
+}
+
+// And 与另一个位图进行 AND 操作
+func (rb *RoaringBitmap) And(other *RoaringBitmap) *RoaringBitmap {
+	result := NewRoaringBitmap()
+	result.bitmap.Or(rb.bitmap)
+	result.bitmap.And(other.bitmap)
+	result.lastAccess = time.Now()
+	return result
+}
+
+// Or 与另一个位图进行 OR 操作
+func (rb *RoaringBitmap) Or(other *RoaringBitmap) *RoaringBitmap {
+	result := NewRoaringBitmap()
+	result.bitmap.Or(rb.bitmap)
+	result.bitmap.Or(other.bitmap)
+	result.lastAccess = time.Now()
+	return result
+}
+
+// Xor 与另一个位图进行 XOR 操作
+func (rb *RoaringBitmap) Xor(other *RoaringBitmap) *RoaringBitmap {
+	result := NewRoaringBitmap()
+	result.bitmap.Or(rb.bitmap)
+	result.bitmap.Xor(other.bitmap)
+	result.lastAccess = time.Now()
+	return result
+}
+
+// AndNot 与另一个位图进行 AND NOT 操作
+func (rb *RoaringBitmap) AndNot(other *RoaringBitmap) *RoaringBitmap {
+	result := NewRoaringBitmap()
+	result.bitmap.Or(rb.bitmap)
+	result.bitmap.AndNot(other.bitmap)
+	result.lastAccess = time.Now()
+	return result
+}
+
+// IsEmpty 检查位图是否为空
+func (rb *RoaringBitmap) IsEmpty() bool {
+	return rb.bitmap.IsEmpty()
+}
+
+// Clear 清空位图
+func (rb *RoaringBitmap) Clear() {
+	rb.bitmap = roaring.New()
+	rb.lastAccess = time.Now()
+}
+
+// ToArray 返回位图中所有值的数组
+func (rb *RoaringBitmap) ToArray() []uint32 {
+	rb.lastAccess = time.Now()
+	return rb.bitmap.ToArray()
+}
+
+// GetSizeInBytes 返回位图的字节大小
+func (rb *RoaringBitmap) GetSizeInBytes() uint64 {
+	return rb.bitmap.GetSizeInBytes()
 }
 
 // BitmapStats 位图索引统计
@@ -531,19 +657,22 @@ func (is *IndexSystem) TestBloomFilter(indexName string, value string) (bool, er
 
 	result := index.bloomFilter.TestString(value)
 
-	// 更新统计信息
-	index.stats.TotalQueries++
+	// 使用 atomic 操作更新统计信息，避免数据竞争
+	index.stats.TotalQueries.Add(1)
 	if result {
 		// 这里需要实际验证是否为真正的positive
 		// 简化起见，假设有一定的false positive rate
-		index.stats.TruePositives++
+		index.stats.TruePositives.Add(1)
 	} else {
-		index.stats.TrueNegatives++
+		index.stats.TrueNegatives.Add(1)
 	}
 
-	// 计算实际false positive rate
-	if index.stats.TotalQueries > 0 {
-		index.stats.ActualFPRate = float64(index.stats.FalsePositives) / float64(index.stats.TotalQueries)
+	// 计算实际false positive rate 并使用 atomic 存储
+	totalQueries := index.stats.TotalQueries.Load()
+	falsePositives := index.stats.FalsePositives.Load()
+	if totalQueries > 0 {
+		fpRate := float64(falsePositives) / float64(totalQueries)
+		index.stats.ActualFPRate.Store(math.Float64bits(fpRate))
 	}
 
 	return result, nil
@@ -684,29 +813,22 @@ func (is *IndexSystem) AddToInvertedIndex(indexName, documentID, text string) er
 		if !exists {
 			postingList = &PostingList{
 				Term:       token,
-				Postings:   make([]*Posting, 0),
+				Postings:   make(map[string]*Posting),
 				LastUpdate: time.Now(),
 			}
 			index.termIndex[token] = postingList
 		}
 
-		// 查找是否已有该文档的记录
-		var posting *Posting
-		for _, p := range postingList.Postings {
-			if p.DocumentID == documentID {
-				posting = p
-				break
-			}
-		}
-
-		if posting == nil {
+		// O(1) 查找是否已有该文档的记录
+		posting, found := postingList.Get(documentID)
+		if !found {
 			posting = &Posting{
 				DocumentID:   documentID,
 				TermFreq:     0,
 				Positions:    make([]int, 0),
 				LastAccessed: time.Now(),
 			}
-			postingList.Postings = append(postingList.Postings, posting)
+			postingList.Add(documentID, posting)
 			postingList.DocumentFreq++
 		}
 
@@ -746,7 +868,7 @@ func (is *IndexSystem) QueryInvertedIndex(indexName, query string) ([]*Posting, 
 	var allPostings []*Posting
 	for _, token := range tokens {
 		if postingList, exists := index.termIndex[token]; exists {
-			allPostings = append(allPostings, postingList.Postings...)
+			allPostings = append(allPostings, postingList.GetAll()...)
 		}
 	}
 
@@ -950,16 +1072,19 @@ func (is *IndexSystem) optimizeBloomFilters() error {
 		filter.mutex.Lock()
 
 		// 检查是否需要重建（false positive rate过高）
-		if filter.stats.ActualFPRate > filter.config.FalsePositiveRate*2 {
+		// 使用 atomic 读取 ActualFPRate
+		fpRate := math.Float64frombits(filter.stats.ActualFPRate.Load())
+		if fpRate > filter.config.FalsePositiveRate*2 {
 			is.logger.Sugar().Infof("Rebuilding bloom filter %s due to high FP rate: %.4f",
-				filter.name, filter.stats.ActualFPRate)
+				filter.name, fpRate)
 
 			// 重建过程（这里简化处理）
 			newSize := filter.stats.ElementCount * 2
 			filter.bloomFilter = bloom.NewWithEstimates(uint(newSize), filter.config.FalsePositiveRate)
 			filter.stats.LastReset = time.Now()
-			filter.stats.FalsePositives = 0
-			filter.stats.TotalQueries = 0
+			// 使用 atomic 重置统计
+			filter.stats.FalsePositives.Store(0)
+			filter.stats.TotalQueries.Store(0)
 		}
 
 		filter.mutex.Unlock()
@@ -1007,18 +1132,19 @@ func (is *IndexSystem) optimizeInvertedIndexes() error {
 
 		// 清理过期的posting
 		for term, postingList := range index.termIndex {
-			filteredPostings := make([]*Posting, 0, len(postingList.Postings))
-			for _, posting := range postingList.Postings {
-				// 保留最近访问的posting（简化策略）
-				if time.Since(posting.LastAccessed) < 24*time.Hour {
-					filteredPostings = append(filteredPostings, posting)
+			postingList.mu.Lock()
+			// 删除过期的 posting
+			for docID, posting := range postingList.Postings {
+				// 删除超过 24 小时未访问的 posting
+				if time.Since(posting.LastAccessed) >= 24*time.Hour {
+					delete(postingList.Postings, docID)
 				}
 			}
-			postingList.Postings = filteredPostings
-			postingList.DocumentFreq = int64(len(filteredPostings))
+			postingList.DocumentFreq = int64(len(postingList.Postings))
+			postingList.mu.Unlock()
 
 			// 如果没有posting了，删除这个term
-			if len(filteredPostings) == 0 {
+			if postingList.DocumentFreq == 0 {
 				delete(index.termIndex, term)
 			}
 		}

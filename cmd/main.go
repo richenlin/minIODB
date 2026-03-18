@@ -261,6 +261,29 @@ func main() {
 	if cfg.Compaction.Enabled {
 		minioPool := poolManager.GetMinIOPool()
 		if minioPool != nil {
+			// 构建分层合并配置
+			var tieredConfig *compaction.TieredCompactionConfig
+			if cfg.Compaction.Tiered.Enabled {
+				tieredConfig = &compaction.TieredCompactionConfig{
+					Enabled:         cfg.Compaction.Tiered.Enabled,
+					Levels:          make([]compaction.CompactionLevel, len(cfg.Compaction.Tiered.Levels)),
+					MaxFilesToMerge: cfg.Compaction.Tiered.MaxFilesToMerge,
+					CheckInterval:   cfg.Compaction.CheckInterval,
+					TempDir:         cfg.Compaction.TempDir,
+					CompressionType: cfg.Compaction.CompressionType,
+					MaxRowsPerFile:  cfg.Compaction.MaxRowsPerFile,
+				}
+				for i, level := range cfg.Compaction.Tiered.Levels {
+					tieredConfig.Levels[i] = compaction.CompactionLevel{
+						Name:            level.Name,
+						MaxFileSize:     level.MaxFileSize,
+						TargetFileSize:  level.TargetFileSize,
+						MinFilesToMerge: level.MinFilesToMerge,
+						CooldownPeriod:  level.CooldownPeriod,
+					}
+				}
+			}
+
 			compactionConfig := &compaction.Config{
 				TargetFileSize:    cfg.Compaction.TargetFileSize,
 				MinFilesToCompact: cfg.Compaction.MinFilesToCompact,
@@ -269,6 +292,8 @@ func main() {
 				CheckInterval:     cfg.Compaction.CheckInterval,
 				TempDir:           cfg.Compaction.TempDir,
 				CompressionType:   cfg.Compaction.CompressionType,
+				MaxRowsPerFile:    cfg.Compaction.MaxRowsPerFile,
+				TieredConfig:      tieredConfig,
 			}
 
 			var err error
@@ -277,8 +302,12 @@ func main() {
 				logger.Sugar.Warnf("Failed to create compaction manager: %v", err)
 			} else {
 				compactionManager.Start(ctx)
-				logger.Sugar.Infof("Compaction manager started - check_interval: %v, target_file_size: %d",
-					cfg.Compaction.CheckInterval, cfg.Compaction.TargetFileSize)
+				tieredStatus := "disabled"
+				if tieredConfig != nil && tieredConfig.Enabled {
+					tieredStatus = fmt.Sprintf("enabled (%d levels)", len(tieredConfig.Levels))
+				}
+				logger.Sugar.Infof("Compaction manager started - check_interval: %v, target_file_size: %d, tiered: %s",
+					cfg.Compaction.CheckInterval, cfg.Compaction.TargetFileSize, tieredStatus)
 			}
 		} else {
 			logger.Sugar.Warn("Compaction manager disabled - MinIO pool not available")
@@ -343,7 +372,7 @@ func main() {
 	defer serviceRegistry.Stop()
 
 	// 启动gRPC服务器
-	grpcService, err := grpcTransport.NewServer(miniodbService, *cfg, logger.Logger)
+	grpcService, err := grpcTransport.NewServerWithMinIO(miniodbService, *cfg, primaryMinio, logger.Logger)
 	if err != nil {
 		logger.Sugar.Fatalf("Failed to create gRPC service: %v", err)
 	}
@@ -359,7 +388,7 @@ func main() {
 	}()
 
 	// 启动REST服务器
-	restServer, err := restTransport.NewServer(miniodbService, cfg, logger.Logger)
+	restServer, err := restTransport.NewServerWithMinIO(miniodbService, cfg, primaryMinio, logger.Logger)
 	if err != nil {
 		logger.Sugar.Fatalf("Failed to create REST server: %v", err)
 	}

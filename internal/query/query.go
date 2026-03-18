@@ -3,7 +3,9 @@ package query
 import (
 	"container/list"
 	"context"
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,9 @@ var ErrNoDataFiles = errors.New("no data files available for table")
 
 // ErrStorageUnavailable is returned when the table has file references but all failed to read (e.g. MinIO auth/signature error)
 var ErrStorageUnavailable = errors.New("storage unavailable: failed to read data files (check MinIO credentials and endpoint)")
+
+// ErrIntegrityCheckFailed is returned when file integrity check fails
+var ErrIntegrityCheckFailed = errors.New("file integrity check failed: ETag mismatch")
 
 // stmtEntry 预编译语句缓存条目
 type stmtEntry struct {
@@ -130,25 +135,27 @@ type QueryStats struct {
 // Querier 增强的查询处理器
 // 集成查询结果缓存、文件缓存和DuckDB连接池管理
 type Querier struct {
-	redisClient    *redis.Client
-	redisPool      *pool.RedisPool
-	minioClient    storage.Uploader
-	db             *sql.DB
-	buffer         *buffer.ConcurrentBuffer
-	tableExtractor *TableExtractor // 升级到增强版本
-	logger         *zap.Logger
-	tempDir        string
-	config         *config.Config
+	redisClient       *redis.Client
+	redisPool         *pool.RedisPool
+	minioClient       storage.Uploader
+	db                *sql.DB
+	buffer            *buffer.ConcurrentBuffer
+	tableExtractor    *TableExtractor // 升级到增强版本
+	logger            *zap.Logger
+	tempDir           string
+	config            *config.Config
+	encryptionManager *security.FieldEncryptionManager // 字段加密管理器
 
 	// 缓存组件
 	queryCache *QueryCache
 	fileCache  *FileCache
 
 	// 性能优化组件
-	dbPool         *DuckDBPool
-	stmtCache      *stmtCache      // 预编译语句LRU缓存
-	queryOptimizer *QueryOptimizer // 查询优化器（文件剪枝、谓词下推）
-	columnPruner   *ColumnPruner   // 列剪枝优化器
+	dbPool             *DuckDBPool
+	stmtCache          *stmtCache      // 预编译语句LRU缓存
+	queryOptimizer     *QueryOptimizer // 查询优化器（文件剪枝、谓词下推）
+	columnPruner       *ColumnPruner   // 列剪枝优化器
+	slowQueryThreshold time.Duration   // 慢查询阈值
 
 	// 统计信息
 	queryStats *QueryStats
@@ -218,20 +225,21 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 	}
 
 	querier := &Querier{
-		redisPool:      redisPool,
-		minioClient:    minioClient,
-		db:             duckdbPool,
-		queryCache:     queryCache,
-		fileCache:      fileCache,
-		config:         cfg,
-		buffer:         buf,
-		logger:         logger,
-		tempDir:        tempDir,
-		tableExtractor: NewTableExtractor(),
-		stmtCache:      newStmtCache(1000), // 预编译语句LRU缓存，maxSize=1000
-		queryStats:     queryStats,
-		queryOptimizer: NewQueryOptimizer(logger),                                     // 查询优化器（文件剪枝、谓词下推）
-		columnPruner:   NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy), // 列剪枝优化器
+		redisPool:          redisPool,
+		minioClient:        minioClient,
+		db:                 duckdbPool,
+		queryCache:         queryCache,
+		fileCache:          fileCache,
+		config:             cfg,
+		buffer:             buf,
+		logger:             logger,
+		tempDir:            tempDir,
+		tableExtractor:     NewTableExtractor(),
+		stmtCache:          newStmtCache(1000), // 预编译语句LRU缓存，maxSize=1000
+		queryStats:         queryStats,
+		queryOptimizer:     NewQueryOptimizer(logger),                                     // 查询优化器（文件剪枝、谓词下推）
+		columnPruner:       NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy), // 列剪枝优化器
+		slowQueryThreshold: cfg.QueryOptimization.DuckDB.SlowQueryThreshold,               // 慢查询阈值（从配置读取）
 	}
 
 	return querier, nil
@@ -321,6 +329,17 @@ func (q *Querier) ExecuteQuery(sqlQuery string) (string, error) {
 	// 8. 更新统计信息
 	queryTime := time.Since(startTime)
 	q.updateQueryStats(validTables, queryTime, q.tableExtractor.GetQueryType(sqlQuery))
+
+	// 9. 慢查询检测与日志
+	if q.slowQueryThreshold > 0 && queryTime > q.slowQueryThreshold {
+		q.logger.Warn("slow query detected",
+			zap.String("sql", sqlQuery),
+			zap.Duration("elapsed", queryTime),
+			zap.Duration("threshold", q.slowQueryThreshold),
+			zap.Int("result_size", len(result)),
+			zap.Strings("tables", validTables),
+		)
+	}
 
 	q.logger.Sugar().Infof("Query executed successfully in %v", queryTime)
 	return result, nil
@@ -528,7 +547,7 @@ func (q *Querier) createTableViewWithDBWithColumnPruning(db *sql.DB, tableName s
 	return nil
 }
 
-// downloadToTemp 下载文件到临时目录
+// downloadToTemp 下载文件到临时目录，并进行完整性校验
 func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string, error) {
 	localPath := filepath.Join(q.tempDir, filepath.Base(objectName))
 
@@ -537,8 +556,16 @@ func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string
 		return localPath, nil
 	}
 
+	bucket := q.config.GetMinIO().Bucket
+
+	// 获取对象信息以获取 ETag（用于完整性校验）
+	objInfo, err := q.minioClient.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get object info for %s: %w", objectName, err)
+	}
+
 	// 使用正确的MinIO方法下载文件
-	data, err := q.minioClient.GetObject(ctx, q.config.GetMinIO().Bucket, objectName, minio.GetObjectOptions{})
+	data, err := q.minioClient.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to download %s: %w", objectName, err)
 	}
@@ -548,7 +575,54 @@ func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string
 		return "", fmt.Errorf("failed to write file %s: %w", localPath, err)
 	}
 
+	// 完整性校验：对比本地文件 MD5 与 MinIO ETag
+	if err := verifyFileIntegrity(localPath, objInfo.ETag); err != nil {
+		// 校验失败，删除损坏的本地文件
+		os.Remove(localPath)
+		q.logger.Warn("File integrity check failed, file deleted",
+			zap.String("object", objectName),
+			zap.String("etag", objInfo.ETag),
+			zap.Error(err))
+		return "", fmt.Errorf("%w: %s", ErrIntegrityCheckFailed, objectName)
+	}
+
+	q.logger.Debug("File integrity verified",
+		zap.String("object", objectName),
+		zap.String("etag", objInfo.ETag))
+
 	return localPath, nil
+}
+
+// verifyFileIntegrity 验证本地文件的 MD5 与 MinIO ETag 是否匹配
+// MinIO ETag 通常是 MD5 的 hex 字符串（不含引号）
+// 注意：分段上传的对象 ETag 格式为 "etag-N"，无法进行简单 MD5 比较
+func verifyFileIntegrity(filePath string, expectedETag string) error {
+	// 去除 ETag 中可能的引号
+	expectedETag = strings.Trim(expectedETag, "\"")
+
+	// 检查是否为分段上传的 ETag（格式：etag-N，其中 N 是分段数）
+	// 分段上传的 ETag 无法进行简单的 MD5 比较，跳过校验
+	if strings.Contains(expectedETag, "-") {
+		// 分段上传的 ETag 格式不适用于 MD5 比较，跳过校验
+		return nil
+	}
+
+	// 读取本地文件
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file for integrity check: %w", err)
+	}
+
+	// 计算 MD5
+	hash := md5.Sum(data)
+	actualETag := hex.EncodeToString(hash[:])
+
+	// 比较 ETag
+	if !strings.EqualFold(actualETag, expectedETag) {
+		return fmt.Errorf("integrity check failed: expected ETag %s, got %s", expectedETag, actualETag)
+	}
+
+	return nil
 }
 
 // processQueryResults 处理查询结果
@@ -576,11 +650,29 @@ func (q *Querier) processQueryResults(rows *sql.Rows) (string, error) {
 		for i, col := range columns {
 			row[col] = values[i]
 		}
+
+		// Decrypt encrypted fields if encryption is enabled
+		if q.encryptionManager != nil && q.encryptionManager.IsEnabled() {
+			decryptedRow, err := q.encryptionManager.DecryptFields(row)
+			if err != nil {
+				q.logger.Warn("Failed to decrypt row fields, using original values",
+					zap.Error(err))
+				// Continue with original row on decryption failure
+			} else {
+				row = decryptedRow
+			}
+		}
+
 		results = append(results, row)
 	}
 
 	// 简单的JSON格式化输出
 	return q.formatResults(results), nil
+}
+
+// SetEncryptionManager sets the encryption manager for field decryption
+func (q *Querier) SetEncryptionManager(manager *security.FieldEncryptionManager) {
+	q.encryptionManager = manager
 }
 
 // formatResults 格式化查询结果为合法 JSON（兼容 time.Time、[]byte 等类型）
@@ -953,6 +1045,81 @@ func (q *Querier) executeWithPreparedStatement(db *sql.DB, sqlQuery string) (str
 	defer rows.Close()
 
 	return q.processQueryResults(rows)
+}
+
+// ExecuteUpdate 执行更新/删除语句，返回受影响的行数
+// 适用于 INSERT、UPDATE、DELETE 等不返回结果集的语句
+func (q *Querier) ExecuteUpdate(sqlStatement string) (int64, error) {
+	startTime := time.Now()
+
+	q.logger.Sugar().Infof("Executing update statement: %s", sqlStatement)
+
+	// 获取数据库连接
+	db, err := q.getDBConnection()
+	if err != nil {
+		q.updateErrorStats()
+		return 0, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	defer q.returnDBConnection(db)
+
+	// 提取表名并为表准备数据视图
+	tables := q.tableExtractor.ExtractTableNames(sqlStatement)
+	hasData := false
+	for _, tableName := range tables {
+		if err := q.prepareTableDataWithDB(db, tableName); err != nil {
+			if errors.Is(err, ErrNoDataFiles) {
+				q.logger.Sugar().Infof("No data files for table %s, update will have no effect", tableName)
+				continue
+			}
+			q.updateErrorStats()
+			return 0, fmt.Errorf("failed to prepare table %s: %w", tableName, err)
+		}
+		hasData = true
+	}
+
+	// 如果没有任何表有数据文件，直接返回 0 行受影响
+	if !hasData {
+		q.logger.Sugar().Infof("No data files found for any table, returning 0 rows affected")
+		return 0, nil
+	}
+
+	// 使用 Exec 执行语句，获取受影响的行数
+	result, err := db.Exec(sqlStatement)
+	if err != nil {
+		q.updateErrorStats()
+		return 0, fmt.Errorf("update execution failed: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		q.updateErrorStats()
+		return 0, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	q.logger.Sugar().Infof("Update completed: %d rows affected in %v", rowsAffected, time.Since(startTime))
+
+	return rowsAffected, nil
+}
+
+// prepareTableDataWithDB 使用指定数据库连接为表准备数据
+func (q *Querier) prepareTableDataWithDB(db *sql.DB, tableName string) error {
+	// 1. 获取缓冲区数据文件
+	bufferFiles := q.getBufferFilesForTable(tableName)
+
+	// 2. 获取存储的数据文件
+	ctx := context.Background()
+	storageFiles, err := q.getStorageFilesForTable(ctx, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to get storage files: %w", err)
+	}
+
+	// 3. 创建或更新DuckDB视图
+	allFiles := append(bufferFiles, storageFiles...)
+	if len(allFiles) == 0 {
+		return ErrNoDataFiles
+	}
+
+	return q.createTableViewWithDB(db, tableName, allFiles)
 }
 
 // =============================================================================

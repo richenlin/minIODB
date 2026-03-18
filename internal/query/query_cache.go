@@ -1,6 +1,7 @@
 package query
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -21,13 +23,16 @@ type QueryCache struct {
 	defaultTTL     time.Duration
 	maxCacheSize   int64
 	enableMetrics  bool
-	cacheHits      int64
-	cacheMisses    int64
+	cacheHits      atomic.Int64
+	cacheMisses    atomic.Int64
 	cacheKeyPrefix string
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// LRU 缓存（O(1) 逐出）
+	lru *lruCache
 }
 
 // CacheConfig 缓存配置
@@ -61,6 +66,162 @@ type CacheStats struct {
 	EvictedKeys int64   `json:"evicted_keys"`
 }
 
+// lruEntry LRU 缓存条目（用于 container/list）
+type lruEntry struct {
+	key       string    // Redis 缓存键
+	size      int64     // 条目大小（字节）
+	expiresAt time.Time // 过期时间
+}
+
+// lruCache LRU 缓存管理器（O(1) 逐出）
+// 使用 container/list（双向链表）+ map 实现
+// 链表头部：最近使用；链表尾部：最少使用
+type lruCache struct {
+	capacity int64                    // 最大容量（字节）
+	usedSize int64                    // 当前使用大小（字节）
+	items    map[string]*list.Element // key -> list.Element（O(1) 查找）
+	order    *list.List               // 访问顺序链表（O(1) 移动/删除）
+	mu       sync.RWMutex             // 保护并发访问
+}
+
+// newLRUCache 创建 LRU 缓存
+func newLRUCache(capacity int64) *lruCache {
+	return &lruCache{
+		capacity: capacity,
+		items:    make(map[string]*list.Element),
+		order:    list.New(),
+	}
+}
+
+// get 查找并移动到链表头部（O(1)）
+func (l *lruCache) get(key string) (*lruEntry, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if elem, ok := l.items[key]; ok {
+		entry := elem.Value.(*lruEntry)
+		// 检查是否过期
+		if time.Now().Before(entry.expiresAt) {
+			l.order.MoveToFront(elem) // 移动到头部（最近使用）
+			return entry, true
+		}
+		// 过期则删除
+		l.order.Remove(elem)
+		delete(l.items, key)
+		l.usedSize -= entry.size
+	}
+	return nil, false
+}
+
+// put 添加到链表头部（O(1)）
+func (l *lruCache) put(key string, size int64, ttl time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// 如果已存在，先删除旧的
+	if elem, ok := l.items[key]; ok {
+		oldEntry := elem.Value.(*lruEntry)
+		l.usedSize -= oldEntry.size
+		l.order.Remove(elem)
+	}
+
+	// 创建新条目并添加到头部
+	entry := &lruEntry{
+		key:       key,
+		size:      size,
+		expiresAt: time.Now().Add(ttl),
+	}
+	elem := l.order.PushFront(entry)
+	l.items[key] = elem
+	l.usedSize += size
+}
+
+// remove 删除指定键（O(1)）
+func (l *lruCache) remove(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if elem, ok := l.items[key]; ok {
+		entry := elem.Value.(*lruEntry)
+		l.usedSize -= entry.size
+		l.order.Remove(elem)
+		delete(l.items, key)
+	}
+}
+
+// evictOne 逐出一个最少使用的条目（O(1)）
+// 返回被逐出的键和大小
+func (l *lruCache) evictOne() (string, int64, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// 从链表尾部获取最少使用的条目
+	elem := l.order.Back()
+	if elem == nil {
+		return "", 0, false
+	}
+
+	entry := elem.Value.(*lruEntry)
+	key := entry.key
+	size := entry.size
+
+	// 从链表和 map 中删除
+	l.order.Remove(elem)
+	delete(l.items, key)
+	l.usedSize -= size
+
+	return key, size, true
+}
+
+// evictForSpace 逐出直到腾出足够空间（O(1) 每次逐出）
+// 返回被逐出的键列表
+func (l *lruCache) evictForSpace(requiredSpace int64) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var evictedKeys []string
+	var freedSpace int64
+
+	// 从链表尾部逐出，直到腾出足够空间
+	for freedSpace < requiredSpace && l.order.Len() > 0 {
+		elem := l.order.Back()
+		if elem == nil {
+			break
+		}
+
+		entry := elem.Value.(*lruEntry)
+		evictedKeys = append(evictedKeys, entry.key)
+		freedSpace += entry.size
+
+		l.order.Remove(elem)
+		delete(l.items, entry.key)
+		l.usedSize -= entry.size
+	}
+
+	return evictedKeys
+}
+
+// needsEviction 检查是否需要逐出
+func (l *lruCache) needsEviction(newSize int64) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.usedSize+newSize > l.capacity
+}
+
+// size 获取当前使用大小
+func (l *lruCache) size() int64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.usedSize
+}
+
+// len 获取条目数量
+func (l *lruCache) len() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.order.Len()
+}
+
 // NewQueryCache 创建查询缓存管理器
 func NewQueryCache(redisClient *redis.Client, config *CacheConfig, logger *zap.Logger) *QueryCache {
 	return NewQueryCacheWithContext(context.Background(), redisClient, config, logger)
@@ -88,6 +249,7 @@ func NewQueryCacheWithContext(ctx context.Context, redisClient *redis.Client, co
 		cacheKeyPrefix: config.KeyPrefix,
 		ctx:            cacheCtx,
 		cancel:         cancel,
+		lru:            newLRUCache(config.MaxCacheSize),
 	}
 
 	// 监听Context取消
@@ -104,7 +266,25 @@ func (qc *QueryCache) Get(ctx context.Context, query string, tables []string) (*
 	// 生成缓存键
 	cacheKey := qc.generateCacheKey(query, tables)
 
-	// 从Redis获取缓存
+	// 先检查本地 LRU 缓存（O(1)）
+	if entry, ok := qc.lru.get(cacheKey); ok {
+		// LRU 中存在，从 Redis 获取数据
+		cached, err := qc.redisClient.Get(ctx, cacheKey).Result()
+		if err == nil {
+			var cacheEntry CacheEntry
+			if err := json.Unmarshal([]byte(cached), &cacheEntry); err == nil {
+				qc.updateAccessStats(ctx, cacheKey, &cacheEntry)
+				qc.recordCacheHit()
+				qc.logger.Sugar().Infof("Cache HIT for query hash: %s", cacheEntry.QueryHash[:8])
+				return &cacheEntry, true
+			}
+		}
+		// Redis 获取失败，从 LRU 中移除
+		qc.lru.remove(cacheKey)
+		_ = entry // entry 用于确认 LRU 中存在
+	}
+
+	// LRU 中不存在，尝试从 Redis 直接获取（兼容旧数据）
 	cached, err := qc.redisClient.Get(ctx, cacheKey).Result()
 	if err != nil {
 		if err != redis.Nil {
@@ -121,6 +301,9 @@ func (qc *QueryCache) Get(ctx context.Context, query string, tables []string) (*
 		qc.recordCacheMiss()
 		return nil, false
 	}
+
+	// 添加到 LRU 缓存
+	qc.lru.put(cacheKey, entry.Size, qc.defaultTTL)
 
 	// 更新访问统计
 	qc.updateAccessStats(ctx, cacheKey, &entry)
@@ -150,19 +333,25 @@ func (qc *QueryCache) Set(ctx context.Context, query string, result string, tabl
 		return fmt.Errorf("failed to marshal cache entry: %w", err)
 	}
 
-	// 检查缓存大小限制
-	if err := qc.checkCacheSizeLimit(ctx, int64(len(data))); err != nil {
-		qc.logger.Warn("Cache size limit exceeded", zap.Error(err))
-		return err
-	}
-
 	// 生成缓存键
 	cacheKey := qc.generateCacheKey(query, tables)
+	entrySize := int64(len(data))
 
-	// 存储到Redis
+	// 检查是否需要逐出（O(1)）
+	if qc.lru.needsEviction(entrySize) {
+		if err := qc.evictLRU(ctx, entrySize); err != nil {
+			qc.logger.Warn("Cache eviction failed", zap.Error(err))
+			// 继续存储，不返回错误
+		}
+	}
+
+	// 存储到 Redis
 	if err := qc.redisClient.Set(ctx, cacheKey, data, qc.defaultTTL).Err(); err != nil {
 		return fmt.Errorf("failed to set cache: %w", err)
 	}
+
+	// 添加到本地 LRU 缓存（O(1)）
+	qc.lru.put(cacheKey, entrySize, qc.defaultTTL)
 
 	// 更新表级索引（用于缓存失效）
 	qc.updateTableIndex(ctx, tables, cacheKey)
@@ -195,6 +384,12 @@ func (qc *QueryCache) InvalidateByTables(ctx context.Context, tables []string) e
 		if err := qc.redisClient.Del(ctx, keysToDelete...).Err(); err != nil {
 			return fmt.Errorf("failed to delete cache keys: %w", err)
 		}
+
+		// 从本地 LRU 中删除
+		for _, key := range keysToDelete {
+			qc.lru.remove(key)
+		}
+
 		qc.logger.Sugar().Infof("Invalidated %d cache entries for tables: %v", len(keysToDelete), tables)
 	}
 
@@ -299,84 +494,25 @@ func (qc *QueryCache) Stop() {
 	qc.logger.Info("QueryCache stopped gracefully")
 }
 
-// checkCacheSizeLimit 检查缓存大小限制
-func (qc *QueryCache) checkCacheSizeLimit(ctx context.Context, newEntrySize int64) error {
-	// 获取当前缓存大小
-	currentSize, err := qc.getCurrentCacheSize(ctx)
-	if err != nil {
-		return nil // 忽略错误，继续缓存
-	}
-
-	// 检查是否超过限制
-	if currentSize+newEntrySize > qc.maxCacheSize {
-		// 执行LRU淘汰
-		if err := qc.evictLRU(ctx, newEntrySize); err != nil {
-			return fmt.Errorf("failed to evict cache entries: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// getCurrentCacheSize 获取当前缓存大小
-func (qc *QueryCache) getCurrentCacheSize(ctx context.Context) (int64, error) {
-	// 使用Redis SCAN遍历缓存键
-	var totalSize int64
-	iter := qc.redisClient.Scan(ctx, 0, qc.cacheKeyPrefix+"*", 100).Iterator()
-
-	for iter.Next(ctx) {
-		key := iter.Val()
-		if strings.Contains(key, "table_index:") {
-			continue // 跳过索引键
-		}
-
-		// 获取键的大小
-		size, err := qc.redisClient.StrLen(ctx, key).Result()
-		if err == nil {
-			totalSize += size
-		}
-	}
-
-	return totalSize, iter.Err()
-}
-
-// evictLRU 执行LRU淘汰
+// evictLRU 执行 LRU 淘汰（O(1) 操作）
+// 使用 container/list + map 实现：
+// - 直接从链表尾部删除最少使用的条目
+// - 从 map 中删除对应的键
+// - 从 Redis 中删除对应的缓存
 func (qc *QueryCache) evictLRU(ctx context.Context, requiredSpace int64) error {
-	// 获取所有缓存条目及其访问时间
-	entries := make(map[string]*CacheEntry)
-	iter := qc.redisClient.Scan(ctx, 0, qc.cacheKeyPrefix+"*", 100).Iterator()
+	// 获取需要逐出的键列表（O(1) 每次逐出）
+	evictedKeys := qc.lru.evictForSpace(requiredSpace)
 
-	for iter.Next(ctx) {
-		key := iter.Val()
-		if strings.Contains(key, "table_index:") {
-			continue
+	// 从 Redis 中删除这些键
+	if len(evictedKeys) > 0 {
+		if err := qc.redisClient.Del(ctx, evictedKeys...).Err(); err != nil {
+			qc.logger.Warn("Failed to delete evicted keys from Redis", zap.Error(err))
+			// 不返回错误，本地 LRU 已更新
 		}
 
-		data, err := qc.redisClient.Get(ctx, key).Result()
-		if err != nil {
-			continue
+		for _, key := range evictedKeys {
+			qc.logger.Sugar().Infof("Evicted cache entry (LRU): %s", key)
 		}
-
-		var entry CacheEntry
-		if err := json.Unmarshal([]byte(data), &entry); err != nil {
-			continue
-		}
-
-		entries[key] = &entry
-	}
-
-	// 按访问计数和创建时间排序，删除最少使用的条目
-	var freedSpace int64
-	for key, entry := range entries {
-		if freedSpace >= requiredSpace {
-			break
-		}
-
-		// 删除条目
-		qc.redisClient.Del(ctx, key)
-		freedSpace += entry.Size
-
-		qc.logger.Sugar().Infof("Evicted cache entry: %s, size: %d", entry.QueryHash[:8], entry.Size)
 	}
 
 	return nil
@@ -385,22 +521,22 @@ func (qc *QueryCache) evictLRU(ctx context.Context, requiredSpace int64) error {
 // recordCacheHit 记录缓存命中
 func (qc *QueryCache) recordCacheHit() {
 	if qc.enableMetrics {
-		qc.cacheHits++
+		qc.cacheHits.Add(1)
 	}
 }
 
 // recordCacheMiss 记录缓存未命中
 func (qc *QueryCache) recordCacheMiss() {
 	if qc.enableMetrics {
-		qc.cacheMisses++
+		qc.cacheMisses.Add(1)
 	}
 }
 
 // GetStats 获取缓存统计
 func (qc *QueryCache) GetStats(ctx context.Context) *CacheStats {
 	stats := &CacheStats{
-		Hits:   qc.cacheHits,
-		Misses: qc.cacheMisses,
+		Hits:   qc.cacheHits.Load(),
+		Misses: qc.cacheMisses.Load(),
 	}
 
 	// 计算命中率
@@ -409,17 +545,9 @@ func (qc *QueryCache) GetStats(ctx context.Context) *CacheStats {
 		stats.HitRatio = float64(stats.Hits) / float64(total)
 	}
 
-	// 获取缓存大小信息
-	totalSize, _ := qc.getCurrentCacheSize(ctx)
-	stats.TotalSize = totalSize
-
-	// 计算条目数量
-	iter := qc.redisClient.Scan(ctx, 0, qc.cacheKeyPrefix+"*", 10).Iterator()
-	for iter.Next(ctx) {
-		if !strings.Contains(iter.Val(), "table_index:") {
-			stats.EntryCount++
-		}
-	}
+	// 从 LRU 缓存获取大小和条目数量（O(1)）
+	stats.TotalSize = qc.lru.size()
+	stats.EntryCount = int64(qc.lru.len())
 
 	return stats
 }
@@ -437,12 +565,15 @@ func (qc *QueryCache) Clear(ctx context.Context) error {
 		if err := qc.redisClient.Del(ctx, keys...).Err(); err != nil {
 			return fmt.Errorf("failed to clear cache: %w", err)
 		}
-		qc.logger.Sugar().Infof("Cleared %d cache entries", len(keys))
+		qc.logger.Sugar().Infof("Cleared %d cache entries from Redis", len(keys))
 	}
 
+	// 清空本地 LRU 缓存
+	qc.lru = newLRUCache(qc.maxCacheSize)
+
 	// 重置指标
-	qc.cacheHits = 0
-	qc.cacheMisses = 0
+	qc.cacheHits.Store(0)
+	qc.cacheMisses.Store(0)
 
 	return nil
 }

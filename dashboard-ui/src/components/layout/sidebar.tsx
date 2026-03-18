@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
+import { useNavStore } from '@/stores/nav-store'
 import {
   DashboardIcon,
   PersonIcon,
@@ -34,6 +35,11 @@ const navItems: NavItem[] = [
 
 export function Sidebar() {
   const pathname = usePathname()
+  const setNavigating = useNavStore((s) => s.setNavigating)
+
+  const handleNavClick = () => {
+    setNavigating(true)
+  }
 
   return (
     <aside className="fixed left-0 top-0 z-40 h-screen w-64 border-r border-border bg-card">
@@ -58,6 +64,7 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={handleNavClick}
                 className={cn(
                   'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                   isActive
@@ -76,6 +83,7 @@ export function Sidebar() {
         <div className="border-t border-border p-4">
           <Link
             href="/settings"
+            onClick={handleNavClick}
             className={cn(
               'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground',
               pathname.startsWith('/settings') &&

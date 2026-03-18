@@ -50,13 +50,37 @@ type FailoverConfig struct {
 	NodeID              string          // 节点标识
 }
 
+// QueueFullBehavior 队列满时的行为策略
+type QueueFullBehavior int
+
+const (
+	// QueueFullBlock 阻塞等待直到队列有空间（带超时）
+	QueueFullBlock QueueFullBehavior = iota
+	// QueueFullReturnError 返回错误给调用方
+	QueueFullReturnError
+	// QueueFullDropAndAlert 丢弃任务并记录告警指标
+	QueueFullDropAndAlert
+)
+
 // AsyncSyncConfig 异步同步配置
 type AsyncSyncConfig struct {
-	QueueSize     int           // 队列大小（默认1000）
-	WorkerCount   int           // 并发工作器数量（默认3）
-	RetryTimes    int           // 重试次数（默认3）
-	RetryInterval time.Duration // 重试间隔（默认1秒）
-	SyncTimeout   time.Duration // 同步超时（默认60秒）
+	QueueSize         int               // 队列大小（默认1000）
+	WorkerCount       int               // 并发工作器数量（默认3）
+	RetryTimes        int               // 重试次数（默认3）
+	RetryInterval     time.Duration     // 重试间隔（默认1秒）
+	SyncTimeout       time.Duration     // 同步超时（默认60秒）
+	QueueFullBehavior QueueFullBehavior // 队列满时的行为（默认 QueueFullBlock）
+	QueueFullTimeout  time.Duration     // 队列满阻塞超时时间（默认5秒，仅当 QueueFullBlock 时生效）
+}
+
+// SyncQueueFullError 同步队列满错误
+type SyncQueueFullError struct {
+	ObjectName string
+	QueueSize  int
+}
+
+func (e *SyncQueueFullError) Error() string {
+	return fmt.Sprintf("sync queue full, cannot enqueue task for object: %s (queue size: %d)", e.ObjectName, e.QueueSize)
 }
 
 // SyncTask 异步同步任务
@@ -92,11 +116,13 @@ func DefaultFailoverConfig() FailoverConfig {
 		Enabled:             true,
 		HealthCheckInterval: 15 * time.Second,
 		AsyncSync: AsyncSyncConfig{
-			QueueSize:     1000,
-			WorkerCount:   3,
-			RetryTimes:    3,
-			RetryInterval: time.Second,
-			SyncTimeout:   60 * time.Second,
+			QueueSize:         1000,
+			WorkerCount:       3,
+			RetryTimes:        3,
+			RetryInterval:     time.Second,
+			SyncTimeout:       60 * time.Second,
+			QueueFullBehavior: QueueFullBlock,
+			QueueFullTimeout:  5 * time.Second,
 		},
 	}
 }
@@ -351,11 +377,20 @@ func (fm *FailoverManager) checkAndRecover() {
 	metrics.CurrentActivePool.Set(0) // 0表示使用主池
 }
 
-// EnqueueSync 将同步任务加入队列
+// EnqueueSync 将同步任务加入队列（向后兼容，不返回错误）
 func (fm *FailoverManager) EnqueueSync(bucket, objectName, filePath string) {
+	_ = fm.EnqueueSyncWithResult(bucket, objectName, filePath)
+}
+
+// EnqueueSyncWithResult 将同步任务加入队列，返回错误
+// 根据配置的 QueueFullBehavior 采取不同策略：
+// - QueueFullBlock: 阻塞等待直到队列有空间或超时
+// - QueueFullReturnError: 立即返回错误
+// - QueueFullDropAndAlert: 丢弃任务并记录告警指标
+func (fm *FailoverManager) EnqueueSyncWithResult(bucket, objectName, filePath string) error {
 	// 已停止，丢弃任务
 	if fm.stopped.Load() {
-		return
+		return fmt.Errorf("failover manager is stopped, cannot enqueue task")
 	}
 
 	task := &SyncTask{
@@ -365,16 +400,87 @@ func (fm *FailoverManager) EnqueueSync(bucket, objectName, filePath string) {
 		Timestamp:  time.Now(),
 	}
 
+	// 尝试非阻塞入队
 	select {
 	case fm.syncQueue <- task:
 		// 成功加入队列
 		metrics.BackupSyncQueueSize.Set(float64(len(fm.syncQueue)))
+		return nil
 	default:
-		// 队列满，记录警告
-		fm.logger.Warn("Sync queue full, dropping task",
-			zap.String("object", objectName),
-			zap.Int("queue_size", len(fm.syncQueue)))
+		// 队列满，根据配置采取不同行为
+		return fm.handleQueueFull(task)
+	}
+}
+
+// handleQueueFull 处理队列满的情况
+func (fm *FailoverManager) handleQueueFull(task *SyncTask) error {
+	queueSize := len(fm.syncQueue)
+
+	switch fm.config.AsyncSync.QueueFullBehavior {
+	case QueueFullBlock:
+		// 阻塞等待直到队列有空间或超时
+		return fm.enqueueWithBlock(task, queueSize)
+
+	case QueueFullReturnError:
+		// 返回错误给调用方
+		fm.logger.Warn("Sync queue full, returning error",
+			zap.String("object", task.ObjectName),
+			zap.Int("queue_size", queueSize))
+		metrics.SyncQueueDropped.Inc()
+		return &SyncQueueFullError{
+			ObjectName: task.ObjectName,
+			QueueSize:  queueSize,
+		}
+
+	case QueueFullDropAndAlert:
+		// 丢弃任务并记录告警指标
+		fm.logger.Warn("Sync queue full, dropping task with alert",
+			zap.String("object", task.ObjectName),
+			zap.Int("queue_size", queueSize))
 		metrics.BackupSyncDropped.Inc()
+		metrics.SyncQueueDropped.Inc()
+		return nil
+
+	default:
+		// 默认行为：阻塞等待
+		return fm.enqueueWithBlock(task, queueSize)
+	}
+}
+
+// enqueueWithBlock 阻塞等待入队
+func (fm *FailoverManager) enqueueWithBlock(task *SyncTask, queueSize int) error {
+	timeout := fm.config.AsyncSync.QueueFullTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	fm.logger.Debug("Sync queue full, blocking until space available",
+		zap.String("object", task.ObjectName),
+		zap.Int("queue_size", queueSize),
+		zap.Duration("timeout", timeout))
+
+	metrics.SyncQueueBlocked.Inc()
+
+	select {
+	case fm.syncQueue <- task:
+		// 成功加入队列
+		metrics.BackupSyncQueueSize.Set(float64(len(fm.syncQueue)))
+		return nil
+	case <-time.After(timeout):
+		// 超时，记录告警并返回错误
+		fm.logger.Warn("Sync queue full, timeout waiting for space",
+			zap.String("object", task.ObjectName),
+			zap.Int("queue_size", queueSize),
+			zap.Duration("timeout", timeout))
+		metrics.SyncQueueDropped.Inc()
+		metrics.BackupSyncDropped.Inc()
+		return &SyncQueueFullError{
+			ObjectName: task.ObjectName,
+			QueueSize:  queueSize,
+		}
+	case <-fm.ctx.Done():
+		// 管理器已停止
+		return fmt.Errorf("failover manager is shutting down")
 	}
 }
 

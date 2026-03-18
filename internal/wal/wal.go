@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	RecordTypeData   byte = 1
-	RecordTypeCommit byte = 2
-	RecordTypeDelete byte = 3
+	RecordTypeData      byte = 1
+	RecordTypeCommit    byte = 2
+	RecordTypeDelete    byte = 3
+	RecordTypeTombstone byte = 4
 
 	HeaderSize    = 13
 	MaxRecordSize = 64 * 1024 * 1024
@@ -25,7 +26,94 @@ const (
 	walFilePrefix  = "wal_"
 	walFileSuffix  = ".log"
 	maxWALFileSize = 64 * 1024 * 1024
+
+	// File header constants
+	MagicNumber     = "MWAL"
+	MagicNumberSize = 4
+	CurrentVersion  = 1
+	VersionSize     = 2
+	FileHeaderSize  = MagicNumberSize + VersionSize // 6 bytes
 )
+
+// walBufferPool 用于复用 WAL 写入时的临时 buffer
+// 大小为 HeaderSize(13) + Timestamp(8) + 预留空间，通常足够大多数记录
+const walBufferInitialSize = 256
+
+var walBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 0, walBufferInitialSize)
+		return &buf
+	},
+}
+
+// getWALBuffer 从池中获取 buffer
+func getWALBuffer() *[]byte {
+	return walBufferPool.Get().(*[]byte)
+}
+
+// putWALBuffer 将 buffer 放回池中
+func putWALBuffer(buf *[]byte) {
+	*buf = (*buf)[:0] // 重置长度但保留容量
+	// 如果 buffer 增长过大（超过 64KB），不放回池中，让 GC 回收
+	if cap(*buf) > 64*1024 {
+		return
+	}
+	walBufferPool.Put(buf)
+}
+
+// headerPool 用于复用 header buffer (13 bytes)
+var headerPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, HeaderSize)
+		return &buf
+	},
+}
+
+// getHeaderBuffer 从池中获取 header buffer
+func getHeaderBuffer() *[]byte {
+	return headerPool.Get().(*[]byte)
+}
+
+// putHeaderBuffer 将 header buffer 放回池中
+func putHeaderBuffer(buf *[]byte) {
+	headerPool.Put(buf)
+}
+
+// timestampPool 用于复用 timestamp buffer (8 bytes)
+var timestampPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 8)
+		return &buf
+	},
+}
+
+// getTimestampBuffer 从池中获取 timestamp buffer
+func getTimestampBuffer() *[]byte {
+	return timestampPool.Get().(*[]byte)
+}
+
+// putTimestampBuffer 将 timestamp buffer 放回池中
+func putTimestampBuffer(buf *[]byte) {
+	timestampPool.Put(buf)
+}
+
+// crcPool 用于复用 CRC buffer (4 bytes)
+var crcPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 4)
+		return &buf
+	},
+}
+
+// getCRCBuffer 从池中获取 CRC buffer
+func getCRCBuffer() *[]byte {
+	return crcPool.Get().(*[]byte)
+}
+
+// putCRCBuffer 将 CRC buffer 放回池中
+func putCRCBuffer(buf *[]byte) {
+	crcPool.Put(buf)
+}
 
 type Record struct {
 	SeqNum    uint64
@@ -100,6 +188,15 @@ func (w *WAL) openNewFile() error {
 		return err
 	}
 
+	// Write file header: Magic Number + Version
+	fileHeader := make([]byte, FileHeaderSize)
+	copy(fileHeader[0:MagicNumberSize], MagicNumber)
+	binary.BigEndian.PutUint16(fileHeader[MagicNumberSize:FileHeaderSize], CurrentVersion)
+	if _, err := f.Write(fileHeader); err != nil {
+		f.Close()
+		return fmt.Errorf("failed to write WAL file header: %w", err)
+	}
+
 	if w.file != nil {
 		w.writer.Flush()
 		w.file.Close()
@@ -107,7 +204,7 @@ func (w *WAL) openNewFile() error {
 
 	w.file = f
 	w.writer = bufio.NewWriterSize(f, 64*1024)
-	w.currentSize = 0
+	w.currentSize = int64(FileHeaderSize)
 	w.rotateCount++
 
 	w.logger.Info("Opened new WAL file", zap.String("file", filename))
@@ -157,19 +254,43 @@ func (w *WAL) Append(recordType byte, data []byte) (uint64, error) {
 }
 
 func (w *WAL) writeRecord(record *Record) error {
-	header := make([]byte, HeaderSize)
+	// 从池中获取 header buffer
+	headerBuf := getHeaderBuffer()
+	defer putHeaderBuffer(headerBuf)
+	header := *headerBuf
 
 	binary.BigEndian.PutUint32(header[0:4], uint32(len(record.Data)))
 	header[4] = record.Type
 	binary.BigEndian.PutUint64(header[5:13], record.SeqNum)
 
-	crc := crc32.ChecksumIEEE(record.Data)
-	crcBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(crcBytes, crc)
-
-	timestampBytes := make([]byte, 8)
+	// 从池中获取 timestamp buffer
+	timestampBuf := getTimestampBuffer()
+	defer putTimestampBuffer(timestampBuf)
+	timestampBytes := *timestampBuf
 	binary.BigEndian.PutUint64(timestampBytes, uint64(record.Timestamp))
 
+	// 从池中获取 CRC 计算用的 buffer
+	crcDataBuf := getWALBuffer()
+	defer putWALBuffer(crcDataBuf)
+	crcData := *crcDataBuf
+
+	// 确保容量足够
+	neededSize := HeaderSize + 8 + len(record.Data)
+	if cap(crcData) < neededSize {
+		crcData = make([]byte, 0, neededSize)
+	}
+	crcData = append(crcData[:0], header...)
+	crcData = append(crcData, timestampBytes...)
+	crcData = append(crcData, record.Data...)
+	crc := crc32.ChecksumIEEE(crcData)
+
+	// 从池中获取 CRC buffer
+	crcBuf := getCRCBuffer()
+	defer putCRCBuffer(crcBuf)
+	crcBytes := *crcBuf
+	binary.BigEndian.PutUint32(crcBytes, crc)
+
+	// Write order: Header -> CRC -> Timestamp -> Data
 	if _, err := w.writer.Write(header); err != nil {
 		return err
 	}
@@ -223,10 +344,31 @@ func (w *WAL) replayFile(filename string, handler func(record *Record) error) er
 	defer f.Close()
 
 	reader := bufio.NewReader(f)
+
+	// Try to read file header
+	hasFileHeader, version, err := w.readFileHeader(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read file header: %w", err)
+	}
+
+	// If no file header (old format), reset reader to beginning
+	if !hasFileHeader {
+		if _, err := f.Seek(0, 0); err != nil {
+			return fmt.Errorf("failed to seek WAL file: %w", err)
+		}
+		reader = bufio.NewReader(f)
+		w.logger.Info("Replaying old format WAL file (no file header)",
+			zap.String("file", filename))
+	} else {
+		w.logger.Debug("Replaying WAL file with header",
+			zap.String("file", filename),
+			zap.Uint16("version", version))
+	}
+
 	recordCount := 0
 
 	for {
-		record, err := w.readRecord(reader)
+		record, err := w.readRecordWithFormat(reader, hasFileHeader)
 		if err == io.EOF {
 			break
 		}
@@ -252,8 +394,56 @@ func (w *WAL) replayFile(filename string, handler func(record *Record) error) er
 	return nil
 }
 
+// readFileHeader attempts to read and validate the file header.
+// Returns (hasHeader, version, error). If no header is found (old format),
+// returns (false, 0, nil).
+func (w *WAL) readFileHeader(reader *bufio.Reader) (bool, uint16, error) {
+	// Peek at the first 4 bytes to check for magic number
+	magicBytes, err := reader.Peek(MagicNumberSize)
+	if err != nil {
+		if err == io.EOF {
+			// Empty file or very small file, no header
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+
+	// Check if magic number matches
+	if string(magicBytes) != MagicNumber {
+		// Old format file, no file header
+		return false, 0, nil
+	}
+
+	// Read and discard magic number
+	if _, err := reader.Discard(MagicNumberSize); err != nil {
+		return false, 0, err
+	}
+
+	// Read version
+	versionBytes := make([]byte, VersionSize)
+	if _, err := io.ReadFull(reader, versionBytes); err != nil {
+		return false, 0, fmt.Errorf("failed to read version: %w", err)
+	}
+	version := binary.BigEndian.Uint16(versionBytes)
+
+	// Check version compatibility
+	if version > CurrentVersion {
+		return false, 0, fmt.Errorf("unsupported WAL file version: %d (current: %d)", version, CurrentVersion)
+	}
+
+	return true, version, nil
+}
+
 func (w *WAL) readRecord(reader *bufio.Reader) (*Record, error) {
-	header := make([]byte, HeaderSize)
+	return w.readRecordWithFormat(reader, true)
+}
+
+func (w *WAL) readRecordWithFormat(reader *bufio.Reader, newCRCFormat bool) (*Record, error) {
+	// 从池中获取 header buffer
+	headerBuf := getHeaderBuffer()
+	defer putHeaderBuffer(headerBuf)
+	header := *headerBuf
+
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return nil, err
 	}
@@ -265,24 +455,54 @@ func (w *WAL) readRecord(reader *bufio.Reader) (*Record, error) {
 	recordType := header[4]
 	seqNum := binary.BigEndian.Uint64(header[5:13])
 
-	crcBytes := make([]byte, 4)
+	// 从池中获取 CRC buffer
+	crcBuf := getCRCBuffer()
+	defer putCRCBuffer(crcBuf)
+	crcBytes := *crcBuf
+
 	if _, err := io.ReadFull(reader, crcBytes); err != nil {
 		return nil, err
 	}
 	expectedCRC := binary.BigEndian.Uint32(crcBytes)
 
-	timestampBytes := make([]byte, 8)
+	// 从池中获取 timestamp buffer
+	timestampBuf := getTimestampBuffer()
+	defer putTimestampBuffer(timestampBuf)
+	timestampBytes := *timestampBuf
+
 	if _, err := io.ReadFull(reader, timestampBytes); err != nil {
 		return nil, err
 	}
 	timestamp := int64(binary.BigEndian.Uint64(timestampBytes))
 
+	// data 需要返回给调用者，不能使用 pool
 	data := make([]byte, dataLen)
 	if _, err := io.ReadFull(reader, data); err != nil {
 		return nil, err
 	}
 
-	actualCRC := crc32.ChecksumIEEE(data)
+	// Verify CRC
+	var actualCRC uint32
+	if newCRCFormat {
+		// New format: CRC covers Header + Timestamp + Data
+		// 从池中获取 CRC 计算用的 buffer
+		crcDataBuf := getWALBuffer()
+		defer putWALBuffer(crcDataBuf)
+		crcData := *crcDataBuf
+
+		neededSize := HeaderSize + 8 + len(data)
+		if cap(crcData) < neededSize {
+			crcData = make([]byte, 0, neededSize)
+		}
+		crcData = append(crcData[:0], header...)
+		crcData = append(crcData, timestampBytes...)
+		crcData = append(crcData, data...)
+		actualCRC = crc32.ChecksumIEEE(crcData)
+	} else {
+		// Old format: CRC only covers Data
+		actualCRC = crc32.ChecksumIEEE(data)
+	}
+
 	if actualCRC != expectedCRC {
 		return nil, fmt.Errorf("CRC mismatch: expected %d, got %d", expectedCRC, actualCRC)
 	}
@@ -348,10 +568,25 @@ func (w *WAL) getFileMaxSequence(filename string) (uint64, error) {
 	defer f.Close()
 
 	reader := bufio.NewReader(f)
+
+	// Try to read file header
+	hasFileHeader, _, err := w.readFileHeader(reader)
+	if err != nil {
+		return 0, err
+	}
+
+	// If no file header (old format), reset reader to beginning
+	if !hasFileHeader {
+		if _, err := f.Seek(0, 0); err != nil {
+			return 0, fmt.Errorf("failed to seek WAL file: %w", err)
+		}
+		reader = bufio.NewReader(f)
+	}
+
 	var maxSeq uint64
 
 	for {
-		record, err := w.readRecord(reader)
+		record, err := w.readRecordWithFormat(reader, hasFileHeader)
 		if err == io.EOF {
 			break
 		}

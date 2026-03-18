@@ -18,7 +18,7 @@ const PAGE_TITLES: Record<string, string> = {
 }
 
 export function Header() {
-  const { isAuthenticated, logout } = useAuthStore()
+  const { isAuthenticated, user, logout } = useAuthStore()
   const router = useRouter()
   const pathname = usePathname()
   const [isDark, setIsDark] = useState(false)
@@ -69,7 +69,7 @@ export function Header() {
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
               <PersonIcon className="h-4 w-4" />
             </div>
-            <span className="text-sm font-medium">Admin</span>
+            <span className="text-sm font-medium">{user?.display_name || user?.key || '用户'}</span>
             <button
               onClick={handleLogout}
               className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"

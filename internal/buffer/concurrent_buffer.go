@@ -1,6 +1,7 @@
 package buffer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,8 +26,30 @@ import (
 	"go.uber.org/zap"
 )
 
+// bufferKeyPool 用于复用 strings.Builder，减少 bufferKey 构建时的内存分配
+// bufferKey 格式: tableName/idPart/dayStr，通常长度约 30-50 字节
+var bufferKeyPool = sync.Pool{
+	New: func() interface{} {
+		return new(strings.Builder)
+	},
+}
+
+// getBufferKeyBuilder 从池中获取 strings.Builder
+func getBufferKeyBuilder() *strings.Builder {
+	return bufferKeyPool.Get().(*strings.Builder)
+}
+
+// putBufferKeyBuilder 将 strings.Builder 放回池中
+func putBufferKeyBuilder(sb *strings.Builder) {
+	sb.Reset()
+	bufferKeyPool.Put(sb)
+}
+
 // emptyIDPlaceholder 空 ID 时的占位符，避免 bufferKey 出现 "table//date" 导致 MinIO 对象名非法
 const emptyIDPlaceholder = "_"
+
+// walFailThreshold WAL 连续失败阈值，超过此值触发紧急 flush
+const walFailThreshold = 3
 
 // normalizeObjectKey 合并多余斜杠并去掉首尾 "/"，避免 MinIO 报 "Object name contains unsupported characters"
 func normalizeObjectKey(key string) string {
@@ -63,6 +86,12 @@ type ConcurrentBufferConfig struct {
 type walDataRow struct {
 	BufferKey string  `json:"buffer_key"`
 	Row       DataRow `json:"row"`
+}
+
+// walTombstoneRow WAL 中存储的墓碑记录格式
+type walTombstoneRow struct {
+	TableName string `json:"table_name"`
+	ID        string `json:"id"`
 }
 
 // DefaultConcurrentBufferConfig 返回默认配置
@@ -106,11 +135,11 @@ type ConcurrentBuffer struct {
 	mutex  sync.RWMutex
 
 	// WAL 持久化
-	wal                 *wal.WAL
-	walEnabled          bool
-	lastFlushedSeq      map[string]uint64 // bufferKey -> lastSeqNum
-	walSeqMutex         sync.RWMutex
-	recoveryMaxSeqNum   uint64 // WAL 恢复时的最大 seqNum，恢复完成后用于全量截断
+	wal               *wal.WAL
+	walEnabled        bool
+	lastFlushedSeq    map[string]uint64 // bufferKey -> lastSeqNum
+	walSeqMutex       sync.RWMutex
+	recoveryMaxSeqNum uint64 // WAL 恢复时的最大 seqNum，恢复完成后用于全量截断
 
 	// 工作池相关
 	taskQueue    chan *FlushTask
@@ -121,6 +150,13 @@ type ConcurrentBuffer struct {
 
 	// 统计信息
 	stats *ConcurrentBufferStats
+
+	// pendingWrites 使用 atomic.Int64 维护待写入计数，避免锁内遍历 buffer
+	pendingWrites atomic.Int64
+
+	// WAL 降级计数器
+	walFailCount atomic.Int64 // 连续 WAL 失败计数
+	walDegraded  atomic.Bool  // 是否处于降级模式
 
 	logger *zap.Logger
 }
@@ -222,37 +258,78 @@ func (cb *ConcurrentBuffer) recoverFromWAL() error {
 	}
 
 	recoveredCount := 0
+	tombstoneCount := 0
 	var maxSeqNum uint64
 
+	tombstones := make(map[string]struct{})
+
 	err := cb.wal.Replay(func(record *wal.Record) error {
-		if record.Type != wal.RecordTypeData {
-			return nil
-		}
-
-		var wr walDataRow
-		if err := json.Unmarshal(record.Data, &wr); err != nil {
-			cb.logger.Warn("Failed to unmarshal WAL record during recovery",
-				zap.Error(err),
-				zap.Uint64("seq_num", record.SeqNum))
-			return nil // 跳过损坏的记录，继续恢复
-		}
-
-		// 恢复数据到缓冲区
-		cb.buffer[wr.BufferKey] = append(cb.buffer[wr.BufferKey], wr.Row)
-
-		// 记录最大序列号
 		if record.SeqNum > maxSeqNum {
 			maxSeqNum = record.SeqNum
 		}
 
-		// 更新每个 bufferKey 的最后序列号
-		cb.walSeqMutex.Lock()
-		if record.SeqNum > cb.lastFlushedSeq[wr.BufferKey] {
-			cb.lastFlushedSeq[wr.BufferKey] = record.SeqNum
-		}
-		cb.walSeqMutex.Unlock()
+		switch record.Type {
+		case wal.RecordTypeData:
+			var wr walDataRow
+			if err := json.Unmarshal(record.Data, &wr); err != nil {
+				cb.logger.Warn("Failed to unmarshal WAL data record during recovery",
+					zap.Error(err),
+					zap.Uint64("seq_num", record.SeqNum))
+				return nil
+			}
 
-		recoveredCount++
+			tombstoneKey := wr.Row.Table + "/" + wr.Row.ID
+			if _, isTombstoned := tombstones[tombstoneKey]; isTombstoned {
+				return nil
+			}
+
+			cb.buffer[wr.BufferKey] = append(cb.buffer[wr.BufferKey], wr.Row)
+
+			cb.walSeqMutex.Lock()
+			if record.SeqNum > cb.lastFlushedSeq[wr.BufferKey] {
+				cb.lastFlushedSeq[wr.BufferKey] = record.SeqNum
+			}
+			cb.walSeqMutex.Unlock()
+
+			recoveredCount++
+
+		case wal.RecordTypeTombstone:
+			var tr walTombstoneRow
+			if err := json.Unmarshal(record.Data, &tr); err != nil {
+				cb.logger.Warn("Failed to unmarshal WAL tombstone record during recovery",
+					zap.Error(err),
+					zap.Uint64("seq_num", record.SeqNum))
+				return nil
+			}
+
+			tombstoneKey := tr.TableName + "/" + tr.ID
+			tombstones[tombstoneKey] = struct{}{}
+
+			prefix := tr.TableName + "/"
+			for bufferKey, rows := range cb.buffer {
+				if !strings.HasPrefix(bufferKey, prefix) {
+					continue
+				}
+				newRows := make([]DataRow, 0, len(rows))
+				for _, row := range rows {
+					if row.ID != tr.ID {
+						newRows = append(newRows, row)
+					}
+				}
+				if len(newRows) == 0 {
+					delete(cb.buffer, bufferKey)
+				} else {
+					cb.buffer[bufferKey] = newRows
+				}
+			}
+
+			tombstoneCount++
+			cb.logger.Debug("Applied WAL tombstone during recovery",
+				zap.String("table", tr.TableName),
+				zap.String("id", tr.ID),
+				zap.Uint64("seq_num", record.SeqNum))
+		}
+
 		return nil
 	})
 
@@ -260,21 +337,18 @@ func (cb *ConcurrentBuffer) recoverFromWAL() error {
 		return err
 	}
 
-	if recoveredCount > 0 {
+	if recoveredCount > 0 || tombstoneCount > 0 {
 		cb.recoveryMaxSeqNum = maxSeqNum
 		cb.logger.Info("Recovered data from WAL",
 			zap.Int("records", recoveredCount),
+			zap.Int("tombstones", tombstoneCount),
 			zap.Int("buffer_keys", len(cb.buffer)),
 			zap.Uint64("max_seq_num", maxSeqNum))
 
-		// 更新统计信息
+		cb.pendingWrites.Store(int64(recoveredCount))
 		cb.updateStats(func(stats *ConcurrentBufferStats) {
 			stats.BufferSize = int64(len(cb.buffer))
-			totalPending := int64(0)
-			for _, rows := range cb.buffer {
-				totalPending += int64(len(rows))
-			}
-			stats.PendingWrites = totalPending
+			stats.PendingWrites = cb.pendingWrites.Load()
 		})
 	}
 
@@ -420,6 +494,11 @@ func (w *Worker) flushData(bufferKey string, rows []DataRow) error {
 		return fmt.Errorf("failed to write parquet file: %w", err)
 	}
 
+	// 在上传前确保数据持久化到磁盘，避免操作系统缓存导致数据丢失
+	if err := w.syncTempFile(localFilePath); err != nil {
+		return fmt.Errorf("failed to sync temp parquet file: %w", err)
+	}
+
 	// 上传到存储
 	return w.uploadToStorage(bufferKey, localFilePath)
 }
@@ -446,6 +525,25 @@ func (w *Worker) writeParquetFile(filePath string, rows []DataRow) error {
 	}
 
 	return pw.WriteStop()
+}
+
+// Worker.syncTempFile 确保临时文件数据持久化到磁盘
+// 在上传到 MinIO 前调用，避免操作系统页缓存导致数据丢失
+func (w *Worker) syncTempFile(filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open temp file for sync: %w", err)
+	}
+	defer file.Close()
+
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync file to disk: %w", err)
+	}
+
+	w.buffer.logger.Debug("Successfully synced temp parquet file",
+		zap.String("file_path", filePath))
+
+	return nil
 }
 
 // Worker.uploadToStorage 上传到存储
@@ -718,7 +816,7 @@ func (w *Worker) storeMetadataToMinIOSidecar(ctx context.Context, minioPool *poo
 
 	return minioPool.ExecuteWithRetry(ctx, func() error {
 		client := minioPool.GetClient()
-		reader := strings.NewReader(string(metaJSON))
+		reader := bytes.NewReader(metaJSON)
 		_, err := client.PutObject(ctx, bucket, metaObjectName, reader, int64(len(metaJSON)), minio.PutObjectOptions{
 			ContentType: "application/json",
 		})
@@ -727,7 +825,8 @@ func (w *Worker) storeMetadataToMinIOSidecar(ctx context.Context, minioPool *poo
 }
 
 // Add 添加数据到缓冲区
-func (cb *ConcurrentBuffer) Add(row DataRow) {
+// 返回 error 当 WAL 连续失败超过阈值时
+func (cb *ConcurrentBuffer) Add(row DataRow) error {
 	t := time.Unix(0, row.Timestamp)
 	dayStr := t.Format("2006-01-02")
 
@@ -745,14 +844,27 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 	if idPart == "" {
 		idPart = emptyIDPlaceholder
 	}
-	bufferKey := fmt.Sprintf("%s/%s/%s", tableName, idPart, dayStr)
+
+	// 使用 sync.Pool 复用 strings.Builder，减少内存分配
+	sb := getBufferKeyBuilder()
+	// 预估大小：表名 + ID + 日期 + 2个斜杠，通常约 30-50 字节
+	sb.Grow(len(tableName) + len(idPart) + len(dayStr) + 2)
+	sb.WriteString(tableName)
+	sb.WriteByte('/')
+	sb.WriteString(idPart)
+	sb.WriteByte('/')
+	sb.WriteString(dayStr)
+	bufferKey := sb.String()
+	putBufferKeyBuilder(sb)
 
 	// 准备 WAL 数据（在锁内准备，避免数据竞争）
 	var walDataToWrite []byte
 	var needFlush bool
+	var insertIdx int // 记录插入位置，用于回滚时精确删除
 
 	cb.mutex.Lock()
 	// 写入内存缓冲区
+	insertIdx = len(cb.buffer[bufferKey]) // 记录写入前的长度，即新元素的索引
 	cb.buffer[bufferKey] = append(cb.buffer[bufferKey], row)
 	needFlush = len(cb.buffer[bufferKey]) >= cb.config.BufferSize
 
@@ -772,14 +884,11 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 		}
 	}
 
-	// 更新统计信息（updateStats 使用独立的 stats.mutex，不会死锁）
+	// 更新统计信息（使用 atomic 计数器，避免锁内遍历 buffer）
+	cb.pendingWrites.Add(1)
 	cb.updateStats(func(stats *ConcurrentBufferStats) {
 		stats.BufferSize = int64(len(cb.buffer))
-		totalPending := int64(0)
-		for _, rows := range cb.buffer {
-			totalPending += int64(len(rows))
-		}
-		stats.PendingWrites = totalPending
+		stats.PendingWrites = cb.pendingWrites.Load()
 	})
 	cb.mutex.Unlock()
 
@@ -787,11 +896,43 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 	if cb.walEnabled && cb.wal != nil && len(walDataToWrite) > 0 {
 		seqNum, err := cb.wal.Append(wal.RecordTypeData, walDataToWrite)
 		if err != nil {
+			// 递增 WAL 失败计数
+			failCount := cb.walFailCount.Add(1)
 			cb.logger.Warn("WAL append failed",
 				zap.Error(err),
-				zap.String("buffer_key", bufferKey))
-			// WAL 写入失败，数据已在内存中（降级模式）
+				zap.String("buffer_key", bufferKey),
+				zap.Int64("consecutive_failures", failCount))
+
+			// 超过阈值时触发紧急 flush 并返回错误
+			if failCount >= walFailThreshold {
+				cb.walDegraded.Store(true)
+				cb.logger.Error("WAL degraded mode activated, triggering emergency flush",
+					zap.Int64("fail_count", failCount),
+					zap.Int("threshold", walFailThreshold))
+
+				// 回滚：从 buffer 中移除刚写入的数据，避免调用方重试导致重复写入
+				// 使用 insertIdx 精确删除当前 goroutine 写入的数据，而非删除最后一个元素
+				cb.mutex.Lock()
+				if rows, exists := cb.buffer[bufferKey]; exists && insertIdx < len(rows) {
+					// 按索引删除，而非删除最后一个元素（避免竞态条件）
+					cb.buffer[bufferKey] = append(rows[:insertIdx], rows[insertIdx+1:]...)
+					// 如果 slice 为空，删除该 key
+					if len(cb.buffer[bufferKey]) == 0 {
+						delete(cb.buffer, bufferKey)
+					}
+				}
+				// 更新 pendingWrites 计数
+				cb.pendingWrites.Add(-1)
+				cb.mutex.Unlock()
+
+				// 异步执行紧急 flush，避免阻塞当前请求
+				go cb.emergencyFlush()
+				return fmt.Errorf("WAL consecutive failures (%d), entering degraded mode", failCount)
+			}
 		} else {
+			// WAL 成功时重置失败计数
+			cb.walFailCount.Store(0)
+			cb.walDegraded.Store(false)
 			// 记录此 bufferKey 的最新序列号
 			cb.walSeqMutex.Lock()
 			cb.lastFlushedSeq[bufferKey] = seqNum
@@ -802,6 +943,7 @@ func (cb *ConcurrentBuffer) Add(row DataRow) {
 	if needFlush {
 		cb.triggerFlush(bufferKey, false)
 	}
+	return nil
 }
 
 // triggerFlush 触发刷新
@@ -825,6 +967,10 @@ func (cb *ConcurrentBuffer) triggerFlush(bufferKey string, force bool) {
 		maxSeqNum = cb.lastFlushedSeq[bufferKey]
 		cb.walSeqMutex.RUnlock()
 	}
+
+	// 更新 pendingWrites 计数（使用 atomic，避免锁内遍历）
+	flushedCount := len(rowsCopy)
+	cb.pendingWrites.Add(-int64(flushedCount))
 
 	cb.mutex.Unlock()
 
@@ -996,9 +1142,7 @@ func (cb *ConcurrentBuffer) Size() int {
 
 // PendingWrites 获取待写入数据数量
 func (cb *ConcurrentBuffer) PendingWrites() int {
-	cb.stats.mutex.RLock()
-	defer cb.stats.mutex.RUnlock()
-	return int(cb.stats.PendingWrites)
+	return int(cb.pendingWrites.Load())
 }
 
 // GetStats 获取统计信息
@@ -1008,6 +1152,9 @@ func (cb *ConcurrentBuffer) GetStats() *ConcurrentBufferStats {
 
 	// 实时更新队列长度（直接赋值，已有 Lock 保护）
 	cb.stats.QueuedTasks = int64(len(cb.taskQueue))
+
+	// 使用 atomic 计数器获取 pendingWrites
+	pendingWrites := cb.pendingWrites.Load()
 
 	return &ConcurrentBufferStats{
 		TotalTasks:     cb.stats.TotalTasks,
@@ -1019,7 +1166,7 @@ func (cb *ConcurrentBuffer) GetStats() *ConcurrentBufferStats {
 		TotalFlushTime: cb.stats.TotalFlushTime,
 		LastFlushTime:  cb.stats.LastFlushTime,
 		BufferSize:     cb.stats.BufferSize,
-		PendingWrites:  cb.stats.PendingWrites,
+		PendingWrites:  pendingWrites,
 	}
 }
 
@@ -1096,18 +1243,123 @@ func (cb *ConcurrentBuffer) GetTableBufferKeys(tableName string) []string {
 	return cb.GetTableKeys(tableName)
 }
 
+// Remove 从 buffer 中移除指定表和 ID 的所有记录
+// 用于 Delete/Update 操作时清理 buffer 中尚未 flush 的数据
+// 同时写入 WAL Tombstone 记录，确保崩溃恢复时不会"复活"已删除数据
+// 返回被移除的记录数
+func (cb *ConcurrentBuffer) Remove(tableName, id string) (removedCount int) {
+	cb.mutex.Lock()
+
+	prefix := tableName + "/"
+	for bufferKey, rows := range cb.buffer {
+		if !strings.HasPrefix(bufferKey, prefix) {
+			continue
+		}
+		newRows := make([]DataRow, 0, len(rows))
+		for _, row := range rows {
+			if row.ID != id {
+				newRows = append(newRows, row)
+			} else {
+				removedCount++
+			}
+		}
+		if len(newRows) == 0 {
+			delete(cb.buffer, bufferKey)
+		} else if len(newRows) < len(rows) {
+			cb.buffer[bufferKey] = newRows
+		}
+	}
+
+	if removedCount > 0 {
+		cb.pendingWrites.Add(-int64(removedCount))
+		cb.updateStats(func(stats *ConcurrentBufferStats) {
+			stats.BufferSize = int64(len(cb.buffer))
+			stats.PendingWrites = cb.pendingWrites.Load()
+		})
+	}
+
+	cb.mutex.Unlock()
+
+	if removedCount > 0 && cb.walEnabled && cb.wal != nil {
+		tombstone := walTombstoneRow{
+			TableName: tableName,
+			ID:        id,
+		}
+		tombstoneData, err := json.Marshal(tombstone)
+		if err != nil {
+			cb.logger.Error("Failed to marshal WAL tombstone",
+				zap.Error(err),
+				zap.String("table", tableName),
+				zap.String("id", id))
+		} else {
+			_, err := cb.wal.Append(wal.RecordTypeTombstone, tombstoneData)
+			if err != nil {
+				cb.logger.Warn("Failed to write WAL tombstone",
+					zap.Error(err),
+					zap.String("table", tableName),
+					zap.String("id", id))
+			} else {
+				cb.logger.Debug("Wrote WAL tombstone",
+					zap.String("table", tableName),
+					zap.String("id", id),
+					zap.Int("removed_count", removedCount))
+			}
+		}
+	} else if removedCount > 0 {
+		cb.logger.Debug("Removed records from buffer (no WAL)",
+			zap.String("table", tableName),
+			zap.String("id", id),
+			zap.Int("count", removedCount))
+	}
+
+	return removedCount
+}
+
 // AddDataPoint 添加数据点到缓冲区（兼容bufferManager接口）
+// 注意：此方法忽略 Add 返回的错误，保持向后兼容
 func (cb *ConcurrentBuffer) AddDataPoint(id string, data []byte, timestamp time.Time) {
 	row := DataRow{
 		ID:        id,
 		Timestamp: timestamp.UnixNano(),
 		Payload:   string(data),
 	}
-	cb.Add(row)
+	_ = cb.Add(row) // 忽略错误，保持向后兼容
 }
 
 // FlushDataPoints 手动刷新所有缓冲区（兼容bufferManager接口）
 func (cb *ConcurrentBuffer) FlushDataPoints() error {
 	cb.flushAllBuffers()
 	return nil
+}
+
+// emergencyFlush 紧急刷新所有缓冲区数据
+// 当 WAL 连续失败超过阈值时调用，立即将内存数据刷入存储，防止数据丢失
+func (cb *ConcurrentBuffer) emergencyFlush() {
+	cb.logger.Warn("Emergency flush triggered due to WAL degradation")
+
+	// 获取所有 buffer keys
+	cb.mutex.RLock()
+	keys := make([]string, 0, len(cb.buffer))
+	for key := range cb.buffer {
+		keys = append(keys, key)
+	}
+	cb.mutex.RUnlock()
+
+	// 触发所有 buffer 的紧急 flush
+	for _, key := range keys {
+		cb.triggerFlush(key, true) // force=true 强制刷新
+	}
+
+	cb.logger.Info("Emergency flush completed",
+		zap.Int("buffers_flushed", len(keys)))
+}
+
+// IsWALDegraded 返回当前是否处于 WAL 降级模式
+func (cb *ConcurrentBuffer) IsWALDegraded() bool {
+	return cb.walDegraded.Load()
+}
+
+// GetWALFailCount 返回当前 WAL 连续失败计数
+func (cb *ConcurrentBuffer) GetWALFailCount() int64 {
+	return cb.walFailCount.Load()
 }

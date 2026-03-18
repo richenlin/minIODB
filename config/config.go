@@ -39,6 +39,12 @@ type Config struct {
 	Benchmark         BenchmarkConfig         `yaml:"benchmark"`     // 基准测试配置
 	Swagger           SwaggerConfig           `yaml:"swagger"`       // Swagger文档配置
 	Dashboard         DashboardConfig         `yaml:"dashboard"`     // Dashboard配置
+	Debug             DebugConfig             `yaml:"debug"`         // 调试配置
+}
+
+// DebugConfig 调试配置
+type DebugConfig struct {
+	Enabled bool `yaml:"enabled"` // 是否启用调试端点（pprof等），生产环境默认关闭
 }
 
 type DashboardConfig struct {
@@ -52,17 +58,27 @@ type DashboardConfig struct {
 	BackupDir             string        `yaml:"backup_dir"`
 }
 
+// FieldEncryptionConfig 字段加密配置
+type FieldEncryptionConfig struct {
+	Enabled         bool     `yaml:"enabled" json:"enabled"`                   // 是否启用字段加密
+	KeyEnvVar       string   `yaml:"key_env_var" json:"key_env_var"`           // 加密密钥环境变量名
+	KeyFile         string   `yaml:"key_file" json:"key_file"`                 // 加密密钥文件路径
+	EncryptedFields []string `yaml:"encrypted_fields" json:"encrypted_fields"` // 需要加密的字段列表
+	KeyID           string   `yaml:"key_id" json:"key_id"`                     // 密钥标识（用于密钥轮换）
+}
+
 // TableConfig 表级配置
 type TableConfig struct {
-	BufferSize     int               `yaml:"buffer_size"`
-	FlushInterval  time.Duration     `yaml:"flush_interval"`
-	RetentionDays  int               `yaml:"retention_days"`
-	BackupEnabled  bool              `yaml:"backup_enabled"`
-	Properties     map[string]string `yaml:"properties"`
-	IDStrategy     string            `yaml:"id_strategy" json:"id_strategy"`           // ID生成策略: uuid, snowflake, custom, user_provided
-	IDPrefix       string            `yaml:"id_prefix" json:"id_prefix"`               // ID前缀（用于custom和snowflake策略）
-	AutoGenerateID bool              `yaml:"auto_generate_id" json:"auto_generate_id"` // 是否自动生成ID（未提供时）
-	IDValidation   IDValidationRules `yaml:"id_validation" json:"id_validation"`       // ID验证规则
+	BufferSize      int                    `yaml:"buffer_size"`
+	FlushInterval   time.Duration          `yaml:"flush_interval"`
+	RetentionDays   int                    `yaml:"retention_days"`
+	BackupEnabled   bool                   `yaml:"backup_enabled"`
+	Properties      map[string]string      `yaml:"properties"`
+	IDStrategy      string                 `yaml:"id_strategy" json:"id_strategy"`                     // ID生成策略: uuid, snowflake, custom, user_provided
+	IDPrefix        string                 `yaml:"id_prefix" json:"id_prefix"`                         // ID前缀（用于custom和snowflake策略）
+	AutoGenerateID  bool                   `yaml:"auto_generate_id" json:"auto_generate_id"`           // 是否自动生成ID（未提供时）
+	IDValidation    IDValidationRules      `yaml:"id_validation" json:"id_validation"`                 // ID验证规则
+	FieldEncryption *FieldEncryptionConfig `yaml:"field_encryption" json:"field_encryption,omitempty"` // 字段加密配置
 }
 
 // IDValidationRules ID验证规则
@@ -532,6 +548,7 @@ type DuckDBConfig struct {
 	Performance        DuckDBPerformanceConfig     `yaml:"performance"`
 	PreparedStatements DuckDBPreparedStmtsConfig   `yaml:"prepared_statements"`
 	ConnectionReuse    DuckDBConnectionReuseConfig `yaml:"connection_reuse"`
+	SlowQueryThreshold time.Duration               `yaml:"slow_query_threshold"` // 慢查询阈值
 }
 
 // DuckDBPerformanceConfig DuckDB性能配置
@@ -665,6 +682,24 @@ type CompactionConfig struct {
 	TempDir           string        `yaml:"temp_dir"`             // 临时目录
 	CompressionType   string        `yaml:"compression_type"`     // 压缩类型 (snappy, zstd, gzip)
 	MaxRowsPerFile    int64         `yaml:"max_rows_per_file"`    // 每个文件最大行数
+	// 分层合并配置
+	Tiered TieredCompactionAppConfig `yaml:"tiered"` // 分层合并配置
+}
+
+// TieredCompactionAppConfig 应用层分层合并配置
+type TieredCompactionAppConfig struct {
+	Enabled         bool                    `yaml:"enabled"`            // 是否启用分层合并
+	Levels          []CompactionLevelConfig `yaml:"levels"`             // 分层配置
+	MaxFilesToMerge int                     `yaml:"max_files_to_merge"` // 单次合并的最大文件数
+}
+
+// CompactionLevelConfig 分层合并层级配置
+type CompactionLevelConfig struct {
+	Name            string        `yaml:"name"`               // 层级名称（如 L0, L1, L2, L3）
+	MaxFileSize     int64         `yaml:"max_file_size"`      // 该层最大文件大小（bytes）
+	TargetFileSize  int64         `yaml:"target_file_size"`   // 合并后目标大小（bytes）
+	MinFilesToMerge int           `yaml:"min_files_to_merge"` // 最少合并文件数
+	CooldownPeriod  time.Duration `yaml:"cooldown_period"`    // 文件冷却时间
 }
 
 // FileMetadataConfig 文件元数据配置
@@ -1101,6 +1136,7 @@ func (c *Config) setDefaults() {
 				MaxReuseCount:       DefaultDuckDBMaxReuseCount,
 				HealthCheckInterval: DefaultDuckDBConnHealthCheckInterval,
 			},
+			SlowQueryThreshold: DefaultSlowQueryThreshold,
 		},
 	}
 
@@ -1144,6 +1180,41 @@ func (c *Config) setDefaults() {
 		TempDir:           DefaultCompactionTempDir,
 		CompressionType:   DefaultCompactionCompressionType,
 		MaxRowsPerFile:    DefaultCompactionMaxRowsPerFile,
+		// 分层合并默认配置
+		Tiered: TieredCompactionAppConfig{
+			Enabled: true,
+			Levels: []CompactionLevelConfig{
+				{
+					Name:            "L0",
+					MaxFileSize:     16 * 1024 * 1024, // 16MB
+					TargetFileSize:  16 * 1024 * 1024, // 16MB
+					MinFilesToMerge: 5,                // L0 至少 5 个文件才触发合并
+					CooldownPeriod:  2 * time.Minute,
+				},
+				{
+					Name:            "L1",
+					MaxFileSize:     64 * 1024 * 1024, // 64MB
+					TargetFileSize:  64 * 1024 * 1024, // 64MB
+					MinFilesToMerge: 3,                // L1 至少 3 个文件触发
+					CooldownPeriod:  5 * time.Minute,
+				},
+				{
+					Name:            "L2",
+					MaxFileSize:     256 * 1024 * 1024, // 256MB
+					TargetFileSize:  256 * 1024 * 1024, // 256MB
+					MinFilesToMerge: 2,                 // L2 至少 2 个文件触发
+					CooldownPeriod:  10 * time.Minute,
+				},
+				{
+					Name:            "L3",
+					MaxFileSize:     1024 * 1024 * 1024, // 1GB
+					TargetFileSize:  512 * 1024 * 1024,  // 512MB
+					MinFilesToMerge: 2,
+					CooldownPeriod:  30 * time.Minute,
+				},
+			},
+			MaxFilesToMerge: 20,
+		},
 	}
 
 	// 存储引擎优化配置默认值 - 当前禁用以保持系统简单性
@@ -1274,11 +1345,18 @@ func (c *Config) setDefaults() {
 		CoreGRPCEndpoint:      "localhost:8080",
 		MetricsScrapeInterval: 5 * time.Second,
 	}
+
+	// Debug配置默认值 - 生产环境默认关闭
+	c.Debug = DebugConfig{
+		Enabled: false,
+	}
 }
 
-// syncPoolsMinIOFromLegacy 若 yaml 中只写了顶层 minio，则同步到 Network.Pools.MinIO，保证全代码只读 Pools 这一份
+// syncPoolsMinIOFromLegacy 若 yaml 中只写了顶层 minio（且 Network.Pools.MinIO 未配置），则同步到 Network.Pools.MinIO，保证全代码只读 Pools 这一份
 func (c *Config) syncPoolsMinIOFromLegacy() {
-	if c.MinIO.Endpoint != "" {
+	// 只有当 Network.Pools.MinIO.Endpoint 为空时才从 legacy 同步
+	// 避免 setDefaults 设置的默认值覆盖 YAML 中的 network.pools.minio 配置
+	if c.MinIO.Endpoint != "" && c.Network.Pools.MinIO.Endpoint == "" {
 		c.Network.Pools.MinIO.Endpoint = c.MinIO.Endpoint
 		c.Network.Pools.MinIO.AccessKeyID = c.MinIO.AccessKeyID
 		c.Network.Pools.MinIO.SecretAccessKey = c.MinIO.SecretAccessKey

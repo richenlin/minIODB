@@ -73,13 +73,6 @@ const SECTIONS: { title: string; fields: FieldDef[] }[] = [
     ],
   },
   {
-    title: 'Dashboard',
-    fields: [
-      { key: 'core_endpoint', label: 'Core API 地址', type: 'text', hint: 'http://host:8081' },
-      { key: 'dashboard_port', label: 'Dashboard 端口', type: 'text', hint: '例：:9090' },
-    ],
-  },
-  {
     title: '日志',
     fields: [
       {
@@ -269,8 +262,6 @@ export default function SettingsPage() {
           minio_backup_use_ssl: false,
           minio_backup_region: '',
           minio_backup_bucket: '',
-          core_endpoint: String(legacy.core_endpoint ?? ''),
-          dashboard_port: '',
           log_level: 'info',
           log_format: 'json',
           log_output: 'both',

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -321,13 +322,15 @@ type ValidateMetadataBackupResponse struct {
 
 // NewServer 创建新的REST服务器
 func NewServer(miniodbService *service.MinIODBService, cfg *config.Config, logger *zap.Logger) (*Server, error) {
-	// 设置Gin模式
+	return NewServerWithMinIO(miniodbService, cfg, nil, logger)
+}
+
+// NewServerWithMinIO 创建带MinIO客户端的REST服务器
+func NewServerWithMinIO(miniodbService *service.MinIODBService, cfg *config.Config, minioClient security.MinioUploader, logger *zap.Logger) (*Server, error) {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
 
-	// 初始化认证管理器
-	// 转换配置中的 APIKeyPairs
 	apiKeyPairs := make([]security.APIKeyPair, len(cfg.Auth.APIKeyPairs))
 	for i, kp := range cfg.Auth.APIKeyPairs {
 		apiKeyPairs[i] = security.APIKeyPair{
@@ -388,14 +391,13 @@ func NewServer(miniodbService *service.MinIODBService, cfg *config.Config, logge
 		smartRateLimiter = security.NewSmartRateLimiter(smartRateLimitConfig)
 		logger.Info("REST smart rate limiter initialized", zap.Int("tiers", len(smartRateLimitConfig.Tiers)), zap.Int("path_limits", len(smartRateLimitConfig.PathLimits)))
 	} else {
-		// 使用默认配置但禁用
 		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
 		defaultConfig.Enabled = false
 		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
 		logger.Info("REST smart rate limiter disabled")
 	}
 
-	tokenManager := security.NewTokenManager(nil)
+	tokenManager := security.NewTokenManagerWithMinIO(context.Background(), nil, minioClient, logger)
 
 	server := &Server{
 		miniodbService:     miniodbService,
@@ -500,6 +502,7 @@ func (s *Server) setupRoutes() {
 	securedRoutes.POST("/query", s.queryData)
 	securedRoutes.PUT("/data", s.updateData)
 	securedRoutes.DELETE("/data", s.deleteData)
+	securedRoutes.POST("/data/cleanup-empty-ids", s.cleanupEmptyIDRecords)
 
 	// 表管理
 	securedRoutes.POST("/tables", s.createTable)
@@ -516,6 +519,29 @@ func (s *Server) setupRoutes() {
 	// 系统状态与监控
 	securedRoutes.GET("/status", s.getStatus)   // 主状态接口（包含统计和节点信息）
 	securedRoutes.GET("/metrics", s.getMetrics) // 性能指标接口
+
+	// Debug 路由组 - pprof 性能分析端点
+	// 安全策略：仅在 Debug.Enabled 为 true 时注册，且必须通过 securedRoutes 访问（受 JWT 保护）
+	if s.cfg.Debug.Enabled {
+		debug := securedRoutes.Group("/debug/pprof")
+		{
+			debug.GET("/", gin.WrapF(pprof.Index))
+			debug.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+			debug.GET("/profile", gin.WrapF(pprof.Profile))
+			debug.POST("/symbol", gin.WrapF(pprof.Symbol))
+			debug.GET("/symbol", gin.WrapF(pprof.Symbol))
+			debug.GET("/trace", gin.WrapF(pprof.Trace))
+			debug.GET("/heap", gin.WrapF(pprof.Handler("heap").ServeHTTP))
+			debug.GET("/goroutine", gin.WrapF(pprof.Handler("goroutine").ServeHTTP))
+			debug.GET("/threadcreate", gin.WrapF(pprof.Handler("threadcreate").ServeHTTP))
+			debug.GET("/block", gin.WrapF(pprof.Handler("block").ServeHTTP))
+			debug.GET("/mutex", gin.WrapF(pprof.Handler("mutex").ServeHTTP))
+			debug.GET("/allocs", gin.WrapF(pprof.Handler("allocs").ServeHTTP))
+		}
+		s.logger.Info("pprof endpoints registered at /v1/debug/pprof/ (debug mode enabled, secured via securedRoutes)")
+	} else {
+		s.logger.Info("pprof endpoints disabled (debug mode not enabled)")
+	}
 }
 
 // healthCheck 处理健康检查请求
@@ -813,6 +839,42 @@ func (s *Server) deleteData(c *gin.Context) {
 		"message":       message,
 		"deleted_count": totalDeleted,
 		"errors":        errors,
+	})
+}
+
+// cleanupEmptyIDRecords 清理表中空ID的脏数据
+// @Summary      清理空ID脏数据
+// @Description  删除指定表中ID为空或NULL的脏数据记录
+// @Tags         数据管理
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body object{table=string} true "表名"
+// @Success      200 {object} object{success=bool,message=string,deleted_count=int64}
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /data/cleanup-empty-ids [post]
+func (s *Server) cleanupEmptyIDRecords(c *gin.Context) {
+	var req struct {
+		Table string `json:"table" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "table name is required"})
+		return
+	}
+
+	deletedCount, err := s.miniodbService.CleanupEmptyIDRecords(c.Request.Context(), req.Table)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":       true,
+		"message":       fmt.Sprintf("Cleaned up %d empty ID records from table %s", deletedCount, req.Table),
+		"deleted_count": deletedCount,
 	})
 }
 

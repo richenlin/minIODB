@@ -107,6 +107,12 @@ type RedisPool struct {
 
 	mutex sync.RWMutex
 	stats *RedisPoolStats
+
+	// 动态调整相关
+	dynamicConfig *DynamicPoolConfig
+	adjustTicker  *time.Ticker
+	adjustStopCh  chan struct{}
+	currentSize   int
 }
 
 // RedisPoolStats Redis连接池统计信息
@@ -127,6 +133,29 @@ type RedisPoolStats struct {
 	ClusterNodes    map[string]string `json:"cluster_nodes,omitempty"` // 集群节点状态
 }
 
+// DynamicPoolConfig 动态连接池配置
+type DynamicPoolConfig struct {
+	MinConnections     int           `yaml:"min_connections"`      // 最小连接数
+	MaxConnections     int           `yaml:"max_connections"`      // 最大连接数
+	ScaleUpThreshold   float64       `yaml:"scale_up_threshold"`   // 扩容阈值（使用率 > 80%）
+	ScaleDownThreshold float64       `yaml:"scale_down_threshold"` // 缩容阈值（使用率 < 20%）
+	CheckInterval      time.Duration `yaml:"check_interval"`       // 检查间隔
+	ScaleStep          int           `yaml:"scale_step"`           // 每次扩缩容步长
+}
+
+// DefaultDynamicPoolConfig 返回默认动态连接池配置
+func DefaultDynamicPoolConfig() *DynamicPoolConfig {
+	cpuCount := runtime.NumCPU()
+	return &DynamicPoolConfig{
+		MinConnections:     cpuCount,
+		MaxConnections:     cpuCount * 20,
+		ScaleUpThreshold:   0.8, // 80%
+		ScaleDownThreshold: 0.2, // 20%
+		CheckInterval:      30 * time.Second,
+		ScaleStep:          cpuCount,
+	}
+}
+
 // NewRedisPool 创建新的Redis连接池
 func NewRedisPool(config *RedisPoolConfig, logger *zap.Logger) (*RedisPool, error) {
 	if config == nil {
@@ -137,9 +166,12 @@ func NewRedisPool(config *RedisPoolConfig, logger *zap.Logger) (*RedisPool, erro
 	}
 
 	pool := &RedisPool{
-		config: config,
-		logger: logger,
-		stats:  &RedisPoolStats{Mode: string(config.Mode)},
+		config:        config,
+		logger:        logger,
+		stats:         &RedisPoolStats{Mode: string(config.Mode)},
+		dynamicConfig: DefaultDynamicPoolConfig(),
+		adjustStopCh:  make(chan struct{}),
+		currentSize:   config.PoolSize,
 	}
 
 	// 根据模式创建相应的客户端
@@ -676,4 +708,208 @@ func (p *RedisPool) GetPoolStatus() *PoolStatus {
 	}
 
 	return status
+}
+
+// SetDynamicConfig 设置动态调整配置
+func (p *RedisPool) SetDynamicConfig(config *DynamicPoolConfig) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.dynamicConfig = config
+}
+
+// GetDynamicConfig 获取动态调整配置
+func (p *RedisPool) GetDynamicConfig() *DynamicPoolConfig {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.dynamicConfig
+}
+
+// StartDynamicAdjustment 启动动态调整
+func (p *RedisPool) StartDynamicAdjustment() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	if p.adjustTicker != nil {
+		return // 已经启动
+	}
+
+	p.adjustTicker = time.NewTicker(p.dynamicConfig.CheckInterval)
+	go func() {
+		for {
+			select {
+			case <-p.adjustTicker.C:
+				p.adjustPoolSize()
+			case <-p.adjustStopCh:
+				return
+			}
+		}
+	}()
+
+	p.logger.Sugar().Infof("Redis pool dynamic adjustment started with interval %v", p.dynamicConfig.CheckInterval)
+}
+
+// StopDynamicAdjustment 停止动态调整
+func (p *RedisPool) StopDynamicAdjustment() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	if p.adjustTicker != nil {
+		p.adjustTicker.Stop()
+		p.adjustTicker = nil
+	}
+	close(p.adjustStopCh)
+	p.adjustStopCh = make(chan struct{})
+
+	p.logger.Sugar().Info("Redis pool dynamic adjustment stopped")
+}
+
+// getUsageRate 获取连接池使用率
+func (p *RedisPool) getUsageRate() float64 {
+	status := p.GetPoolStatus()
+	if status.TotalConnections == 0 {
+		return 0
+	}
+	return float64(status.ActiveConnections) / float64(status.TotalConnections)
+}
+
+// adjustPoolSize 调整连接池大小
+func (p *RedisPool) adjustPoolSize() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	usage := p.calculateUsageRateLocked()
+	config := p.dynamicConfig
+
+	p.logger.Sugar().Debugf("Redis pool usage rate: %.2f%%, current size: %d", usage*100, p.currentSize)
+
+	if usage > config.ScaleUpThreshold {
+		p.scaleUpLocked()
+	} else if usage < config.ScaleDownThreshold {
+		p.scaleDownLocked()
+	}
+}
+
+// calculateUsageRateLocked 计算使用率（调用时已持有锁）
+func (p *RedisPool) calculateUsageRateLocked() float64 {
+	var totalConns, idleConns uint32
+
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		if p.standaloneClient != nil {
+			poolStats := p.standaloneClient.PoolStats()
+			totalConns = poolStats.TotalConns
+			idleConns = poolStats.IdleConns
+		}
+	case RedisModeSentinel:
+		if p.sentinelClient != nil {
+			poolStats := p.sentinelClient.PoolStats()
+			totalConns = poolStats.TotalConns
+			idleConns = poolStats.IdleConns
+		}
+	case RedisModeCluster:
+		if p.clusterClient != nil {
+			poolStats := p.clusterClient.PoolStats()
+			totalConns = poolStats.TotalConns
+			idleConns = poolStats.IdleConns
+		}
+	}
+
+	if totalConns == 0 {
+		return 0
+	}
+	return float64(totalConns-idleConns) / float64(totalConns)
+}
+
+// scaleUpLocked 扩容（调用时已持有锁）
+func (p *RedisPool) scaleUpLocked() {
+	config := p.dynamicConfig
+	newSize := p.currentSize + config.ScaleStep
+
+	if newSize > config.MaxConnections {
+		newSize = config.MaxConnections
+	}
+
+	if newSize == p.currentSize {
+		return // 已达到最大值
+	}
+
+	p.logger.Sugar().Infof("Scaling up Redis pool from %d to %d (usage > %.0f%%)",
+		p.currentSize, newSize, config.ScaleUpThreshold*100)
+
+	p.currentSize = newSize
+	p.config.PoolSize = newSize
+
+	// 重新创建客户端以应用新的连接池大小
+	if err := p.recreateClientLocked(); err != nil {
+		p.logger.Sugar().Errorf("Failed to scale up Redis pool: %v", err)
+	}
+}
+
+// scaleDownLocked 缩容（调用时已持有锁）
+func (p *RedisPool) scaleDownLocked() {
+	config := p.dynamicConfig
+	newSize := p.currentSize - config.ScaleStep
+
+	if newSize < config.MinConnections {
+		newSize = config.MinConnections
+	}
+
+	if newSize == p.currentSize {
+		return // 已达到最小值
+	}
+
+	p.logger.Sugar().Infof("Scaling down Redis pool from %d to %d (usage < %.0f%%)",
+		p.currentSize, newSize, config.ScaleDownThreshold*100)
+
+	p.currentSize = newSize
+	p.config.PoolSize = newSize
+
+	// 重新创建客户端以应用新的连接池大小
+	if err := p.recreateClientLocked(); err != nil {
+		p.logger.Sugar().Errorf("Failed to scale down Redis pool: %v", err)
+	}
+}
+
+// recreateClientLocked 重新创建客户端（调用时已持有锁）
+func (p *RedisPool) recreateClientLocked() error {
+	// 先关闭旧客户端
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		if p.standaloneClient != nil {
+			_ = p.standaloneClient.Close()
+		}
+	case RedisModeSentinel:
+		if p.sentinelClient != nil {
+			_ = p.sentinelClient.Close()
+		}
+	case RedisModeCluster:
+		if p.clusterClient != nil {
+			_ = p.clusterClient.Close()
+		}
+	}
+
+	// 重新创建客户端
+	switch p.config.Mode {
+	case RedisModeStandalone:
+		if err := p.createStandaloneClient(); err != nil {
+			return err
+		}
+	case RedisModeSentinel:
+		if err := p.createSentinelClient(); err != nil {
+			return err
+		}
+	case RedisModeCluster:
+		if err := p.createClusterClient(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// GetCurrentPoolSize 获取当前连接池大小
+func (p *RedisPool) GetCurrentPoolSize() int {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.currentSize
 }

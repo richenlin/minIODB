@@ -23,6 +23,11 @@ func (m *MockLocalQuerier) ExecuteQuery(sql string) (string, error) {
 	return args.String(0), args.Error(1)
 }
 
+func (m *MockLocalQuerier) ExecuteUpdate(sql string) (int64, error) {
+	args := m.Called(sql)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 // 为了测试，我们需要创建一个简单的测试环境
 func createTestQueryCoordinator() *QueryCoordinator {
 	// 创建Redis连接池配置

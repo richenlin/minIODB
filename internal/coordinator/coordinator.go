@@ -126,6 +126,7 @@ type QueryCoordinator struct {
 // LocalQuerier 本地查询接口
 type LocalQuerier interface {
 	ExecuteQuery(sql string) (string, error)
+	ExecuteUpdate(sql string) (int64, error)
 }
 
 // NewWriteCoordinator 创建写入协调器

@@ -48,8 +48,11 @@ type Server struct {
 
 // NewServer 创建新的gRPC服务器
 func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger *zap.Logger) (*Server, error) {
-	// 初始化认证管理器
-	// 转换配置中的 APIKeyPairs
+	return NewServerWithMinIO(miniodbService, cfg, nil, logger)
+}
+
+// NewServerWithMinIO 创建带MinIO客户端的gRPC服务器
+func NewServerWithMinIO(miniodbService *service.MinIODBService, cfg config.Config, minioClient security.MinioUploader, logger *zap.Logger) (*Server, error) {
 	apiKeyPairs := make([]security.APIKeyPair, len(cfg.Auth.APIKeyPairs))
 	for i, kp := range cfg.Auth.APIKeyPairs {
 		apiKeyPairs[i] = security.APIKeyPair{
@@ -71,22 +74,18 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 		return nil, fmt.Errorf("failed to create auth manager: %w", err)
 	}
 
-	// 创建gRPC拦截器
 	grpcInterceptor := security.NewGRPCInterceptor(authManager)
 
-	// 创建智能限流器
 	var smartRateLimiter *security.SmartRateLimiter
 	var grpcSmartRateLimiter *security.GRPCSmartRateLimiter
 
 	if cfg.Security.SmartRateLimit.Enabled {
-		// 转换配置格式
 		smartRateLimitConfig := security.SmartRateLimiterConfig{
 			Enabled:         cfg.Security.SmartRateLimit.Enabled,
 			DefaultTier:     cfg.Security.SmartRateLimit.DefaultTier,
 			CleanupInterval: cfg.Security.SmartRateLimit.CleanupInterval,
 		}
 
-		// 转换限流等级
 		for _, tier := range cfg.Security.SmartRateLimit.Tiers {
 			smartRateLimitConfig.Tiers = append(smartRateLimitConfig.Tiers, security.RateLimitTier{
 				Name:            tier.Name,
@@ -97,7 +96,6 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 			})
 		}
 
-		// 转换路径限制
 		for _, pathLimit := range cfg.Security.SmartRateLimit.PathLimits {
 			smartRateLimitConfig.PathLimits = append(smartRateLimitConfig.PathLimits, security.PathRateLimit{
 				Pattern: pathLimit.Pattern,
@@ -110,7 +108,6 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 		grpcSmartRateLimiter = security.NewGRPCSmartRateLimiter(smartRateLimiter)
 		logger.Info("gRPC smart rate limiter initialized", zap.Int("tiers", len(smartRateLimitConfig.Tiers)), zap.Int("path_limits", len(smartRateLimitConfig.PathLimits)))
 	} else {
-		// 使用默认配置但禁用
 		defaultConfig := security.GetDefaultSmartRateLimiterConfig()
 		defaultConfig.Enabled = false
 		smartRateLimiter = security.NewSmartRateLimiter(defaultConfig)
@@ -118,8 +115,7 @@ func NewServer(miniodbService *service.MinIODBService, cfg config.Config, logger
 		logger.Info("gRPC smart rate limiter disabled")
 	}
 
-	// 创建令牌管理器（用于 refresh token 存储，暂时使用本地存储）
-	tokenManager := security.NewTokenManager(nil)
+	tokenManager := security.NewTokenManagerWithMinIO(context.Background(), nil, minioClient, logger)
 
 	server := &Server{
 		miniodbService:       miniodbService,

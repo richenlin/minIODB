@@ -2,6 +2,8 @@ package metadata
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -29,6 +31,10 @@ type RecoveryManager struct {
 	bucket string
 	logger *zap.Logger
 	mutex  sync.RWMutex
+
+	// 加密配置
+	encryptionEnabled bool
+	encryptionKey     []byte
 }
 
 // RecoveryOptions 恢复选项
@@ -102,18 +108,20 @@ type BackupInfo struct {
 
 // NewRecoveryManager 创建恢复管理器（向后兼容）
 func NewRecoveryManager(storage storage.Storage, nodeID, bucket string, logger *zap.Logger) *RecoveryManager {
-	return NewRecoveryManagerWithStorages(storage, nil, nil, nodeID, bucket)
+	return NewRecoveryManagerWithStorages(storage, nil, nil, nodeID, bucket, false, nil)
 }
 
 // NewRecoveryManagerWithStorages 使用分离的存储接口创建恢复管理器
-func NewRecoveryManagerWithStorages(unifiedStorage storage.Storage, cacheStorage storage.CacheStorage, objectStorage storage.ObjectStorage, nodeID, bucket string) *RecoveryManager {
+func NewRecoveryManagerWithStorages(unifiedStorage storage.Storage, cacheStorage storage.CacheStorage, objectStorage storage.ObjectStorage, nodeID, bucket string, encryptionEnabled bool, encryptionKey []byte) *RecoveryManager {
 	manager := &RecoveryManager{
-		storage:       unifiedStorage,
-		cacheStorage:  cacheStorage,
-		objectStorage: objectStorage,
-		nodeID:        nodeID,
-		bucket:        bucket,
-		logger:        logger.Logger,
+		storage:           unifiedStorage,
+		cacheStorage:      cacheStorage,
+		objectStorage:     objectStorage,
+		nodeID:            nodeID,
+		bucket:            bucket,
+		logger:            logger.Logger,
+		encryptionEnabled: encryptionEnabled,
+		encryptionKey:     encryptionKey,
 	}
 
 	// 如果没有提供分离的存储接口，则从统一存储接口获取
@@ -125,6 +133,40 @@ func NewRecoveryManagerWithStorages(unifiedStorage storage.Storage, cacheStorage
 	}
 
 	return manager
+}
+
+// decrypt 使用 AES-256-GCM 解密数据
+func (rm *RecoveryManager) decrypt(ciphertext []byte) ([]byte, error) {
+	if !rm.encryptionEnabled || len(rm.encryptionKey) == 0 {
+		return ciphertext, nil
+	}
+
+	if len(rm.encryptionKey) != keyLength {
+		return nil, fmt.Errorf("invalid encryption key length: expected %d, got %d", keyLength, len(rm.encryptionKey))
+	}
+
+	block, err := aes.NewCipher(rm.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt: %w", err)
+	}
+
+	return plaintext, nil
 }
 
 // ListBackups 列出可用的备份
@@ -354,6 +396,18 @@ func (rm *RecoveryManager) downloadBackup(ctx context.Context, objectName string
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to download backup file: %w", err)
+	}
+
+	// 如果启用加密，先尝试解密
+	if rm.encryptionEnabled && len(rm.encryptionKey) > 0 {
+		decryptedData, decryptErr := rm.decrypt(data)
+		if decryptErr != nil {
+			rm.logger.Warn("Failed to decrypt backup, trying to parse as plain JSON", zap.Error(decryptErr))
+			// 解密失败，可能数据本身就是未加密的，继续尝试解析
+		} else {
+			data = decryptedData
+			rm.logger.Info("Backup decrypted successfully")
+		}
 	}
 
 	// 解析JSON

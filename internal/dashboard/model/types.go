@@ -239,10 +239,6 @@ type FullConfig struct {
 	MinioBackupRegion          string `json:"minio_backup_region"`
 	MinioBackupBucket          string `json:"minio_backup_bucket"`
 
-	// dashboard
-	CoreEndpoint  string `json:"core_endpoint"`
-	DashboardPort string `json:"dashboard_port"`
-
 	// log
 	LogLevel    string `json:"log_level"`
 	LogFormat   string `json:"log_format"`
@@ -293,9 +289,6 @@ type ConfigUpdateRequest struct {
 	MinioBackupUseSSL          *bool  `json:"minio_backup_use_ssl,omitempty"`
 	MinioBackupRegion          string `json:"minio_backup_region,omitempty"`
 	MinioBackupBucket          string `json:"minio_backup_bucket,omitempty"`
-
-	CoreEndpoint  string `json:"core_endpoint,omitempty"`
-	DashboardPort string `json:"dashboard_port,omitempty"`
 
 	LogLevel    string `json:"log_level,omitempty"`
 	LogFormat   string `json:"log_format,omitempty"`

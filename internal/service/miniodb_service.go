@@ -12,12 +12,14 @@ import (
 
 	"minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
+	"minIODB/internal/audit"
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
 	"minIODB/internal/query"
 	"minIODB/internal/security"
 	"minIODB/internal/subscription"
 	"minIODB/pkg/idgen"
+	"minIODB/pkg/lock"
 	"minIODB/pkg/pool"
 	"minIODB/pkg/version"
 
@@ -28,35 +30,43 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// 包级正则表达式，只编译一次
+var (
+	// digitsRegex 用于从节点ID字符串中提取数字
+	digitsRegex = regexp.MustCompile(`\d+`)
+	// fromTableRegex 用于重写查询中的旧式表名（FROM table）
+	fromTableRegex = regexp.MustCompile(`(?i)\bfrom\s+table\b`)
+)
+
 // BackupResult 备份结果
 type BackupResult struct {
 	BackupID      string            `json:"backup_id"`
-	BackupType    string            `json:"backup_type"`     // "full" 或 "table"
-	TableName     string            `json:"table_name"`      // 表级备份时有效
+	BackupType    string            `json:"backup_type"` // "full" 或 "table"
+	TableName     string            `json:"table_name"`  // 表级备份时有效
 	Timestamp     time.Time         `json:"timestamp"`
 	Duration      time.Duration     `json:"duration"`
 	FilesCount    int               `json:"files_count"`
 	TotalSize     int64             `json:"total_size"`
 	MetadataSaved bool              `json:"metadata_saved"`
 	DataSaved     bool              `json:"data_saved"`
-	ObjectName    string            `json:"object_name"`     // MinIO 对象名
+	ObjectName    string            `json:"object_name"` // MinIO 对象名
 	Details       map[string]string `json:"details,omitempty"`
 }
 
 // TableBackupManifest 表备份清单
 type TableBackupManifest struct {
-	BackupID      string                 `json:"backup_id"`
-	BackupType    string                 `json:"backup_type"`
-	TableName     string                 `json:"table_name"`
-	SourceTable   string                 `json:"source_table"`   // 恢复时原始表名
-	TargetTable   string                 `json:"target_table"`   // 恢复时目标表名
-	Timestamp     time.Time              `json:"timestamp"`
-	NodeID        string                 `json:"node_id"`
-	TableConfig   *config.TableConfig    `json:"table_config"`
-	Files         []TableBackupFileInfo  `json:"files"`
-	MetadataKeys  []string               `json:"metadata_keys"`  // 相关的 Redis 键
-	TotalSize     int64                  `json:"total_size"`
-	Version       string                 `json:"version"`
+	BackupID     string                `json:"backup_id"`
+	BackupType   string                `json:"backup_type"`
+	TableName    string                `json:"table_name"`
+	SourceTable  string                `json:"source_table"` // 恢复时原始表名
+	TargetTable  string                `json:"target_table"` // 恢复时目标表名
+	Timestamp    time.Time             `json:"timestamp"`
+	NodeID       string                `json:"node_id"`
+	TableConfig  *config.TableConfig   `json:"table_config"`
+	Files        []TableBackupFileInfo `json:"files"`
+	MetadataKeys []string              `json:"metadata_keys"` // 相关的 Redis 键
+	TotalSize    int64                 `json:"total_size"`
+	Version      string                `json:"version"`
 }
 
 // TableBackupFileInfo 表备份文件信息
@@ -68,14 +78,14 @@ type TableBackupFileInfo struct {
 
 // FullBackupManifest 全量备份清单
 type FullBackupManifest struct {
-	BackupID     string                        `json:"backup_id"`
-	BackupType   string                        `json:"backup_type"` // "full"
-	Timestamp    time.Time                     `json:"timestamp"`
-	NodeID       string                        `json:"node_id"`
-	Tables       []TableBackupManifest         `json:"tables"`
-	MetadataFile string                        `json:"metadata_file"` // 元数据备份文件
-	TotalSize    int64                         `json:"total_size"`
-	Version      string                        `json:"version"`
+	BackupID     string                `json:"backup_id"`
+	BackupType   string                `json:"backup_type"` // "full"
+	Timestamp    time.Time             `json:"timestamp"`
+	NodeID       string                `json:"node_id"`
+	Tables       []TableBackupManifest `json:"tables"`
+	MetadataFile string                `json:"metadata_file"` // 元数据备份文件
+	TotalSize    int64                 `json:"total_size"`
+	Version      string                `json:"version"`
 }
 
 // MinIODBService 实现MinIODBServiceServer接口
@@ -89,7 +99,10 @@ type MinIODBService struct {
 	metadataMgr         *metadata.Manager
 	configManager       *TableConfigManager
 	idGenerator         idgen.IDGenerator
-	subscriptionManager *subscription.Manager // 数据订阅管理器
+	subscriptionManager *subscription.Manager            // 数据订阅管理器
+	locker              lock.Locker                      // 分布式锁
+	auditLogger         *audit.AuditLogger               // 审计日志记录器
+	encryptionManager   *security.FieldEncryptionManager // 字段加密管理器
 	logger              *zap.Logger
 	startTime           time.Time
 }
@@ -125,17 +138,70 @@ func NewMinIODBService(cfg *config.Config, logger *zap.Logger, ingester *ingest.
 		return nil, fmt.Errorf("failed to create ID generator: %w", err)
 	}
 
+	// 创建分布式锁
+	// 根据 Redis 模式自动选择：standalone -> 乐观锁，sentinel/cluster -> Redis 分布式锁
+	var locker lock.Locker
+	if redisPool != nil {
+		redisMode := cfg.Redis.Mode
+		if redisMode == "" {
+			redisMode = cfg.Network.Pools.Redis.Mode
+		}
+		locker = lock.NewLockerFromRedisMode(redisMode, redisPool)
+	} else {
+		// 无 Redis 连接池时使用乐观锁
+		locker = lock.NewOptimisticLocker()
+	}
+
+	// 创建审计日志记录器
+	auditLogger, err := audit.NewAuditLogger(&audit.Config{
+		Enabled:  true, // 默认启用审计日志
+		FilePath: "logs/audit.log",
+		NodeID:   cfg.Server.NodeID,
+	}, logger)
+	if err != nil {
+		logger.Warn("Failed to create audit logger, audit logging disabled", zap.Error(err))
+		// 创建一个禁用的审计日志记录器，避免 nil 检查
+		auditLogger, _ = audit.NewAuditLogger(&audit.Config{
+			Enabled: false,
+			NodeID:  cfg.Server.NodeID,
+		}, logger)
+	}
+
+	// 创建字段加密管理器（如果配置了）
+	var encryptionManager *security.FieldEncryptionManager
+	if cfg.Tables.DefaultConfig.FieldEncryption != nil && cfg.Tables.DefaultConfig.FieldEncryption.Enabled {
+		encMgr, err := security.NewFieldEncryptionManager(cfg.Tables.DefaultConfig.FieldEncryption, logger)
+		if err != nil {
+			logger.Warn("Failed to create field encryption manager, encryption disabled", zap.Error(err))
+		} else {
+			encryptionManager = encMgr
+			logger.Info("Field encryption manager created successfully",
+				zap.Strings("encrypted_fields", cfg.Tables.DefaultConfig.FieldEncryption.EncryptedFields))
+		}
+	}
+
+	// 将加密管理器传递给 ingester 和 querier
+	if ingester != nil && encryptionManager != nil {
+		ingester.SetEncryptionManager(encryptionManager)
+	}
+	if querier != nil && encryptionManager != nil {
+		querier.SetEncryptionManager(encryptionManager)
+	}
+
 	return &MinIODBService{
-		cfg:           cfg,
-		ingester:      ingester,
-		querier:       querier,
-		redisPool:     redisPool,
-		tableManager:  tableManager,
-		metadataMgr:   metadataMgr,
-		configManager: configManager,
-		idGenerator:   idGenerator,
-		logger:        logger,
-		startTime:     time.Now(),
+		cfg:               cfg,
+		ingester:          ingester,
+		querier:           querier,
+		redisPool:         redisPool,
+		tableManager:      tableManager,
+		metadataMgr:       metadataMgr,
+		configManager:     configManager,
+		idGenerator:       idGenerator,
+		locker:            locker,
+		auditLogger:       auditLogger,
+		encryptionManager: encryptionManager,
+		logger:            logger,
+		startTime:         time.Now(),
 	}, nil
 }
 
@@ -147,8 +213,7 @@ func extractNodeIDNumber(nodeID string) (int64, error) {
 	}
 
 	// 提取字符串中的数字
-	re := regexp.MustCompile(`\d+`)
-	matches := re.FindStringSubmatch(nodeID)
+	matches := digitsRegex.FindStringSubmatch(nodeID)
 	if len(matches) > 0 {
 		if id, err := strconv.ParseInt(matches[0], 10, 64); err == nil {
 			return id % 1024, nil
@@ -171,15 +236,23 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		tableName = s.cfg.TableManagement.DefaultTable
 	}
 
-	s.logger.Sugar().Infof("Processing write request for table: %s, ID: %s", tableName, req.Data.Id)
+	recordID := ""
+	if req.Data != nil {
+		recordID = req.Data.Id
+	}
+
+	s.logger.Sugar().Infof("Processing write request for table: %s, ID: %s", tableName, recordID)
 
 	// 验证请求
 	if err := s.validateWriteRequest(req); err != nil {
+		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
 		return nil, err
 	}
 
 	// 验证表名
 	if !s.cfg.IsValidTableName(tableName) {
+		err := fmt.Errorf("invalid table name: %s", tableName)
+		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
 		return &miniodb.WriteDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Invalid table name: %s", tableName),
@@ -190,23 +263,41 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 	// 确保表存在
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
 		s.logger.Sugar().Infof("ERROR: Failed to ensure table exists: %v", err)
+		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
 		return &miniodb.WriteDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Table error: %v", err),
 		}, nil
 	}
 
+	// 获取表配置
+	tableConfig := s.GetTableConfig(ctx, tableName)
+
+	// 处理ID：如果ID为空且允许自动生成，则生成ID
+	recordID = req.Data.Id
+	if recordID == "" && tableConfig.AutoGenerateID {
+		generatedID, err := s.GenerateID(ctx, tableName, tableConfig)
+		if err != nil {
+			s.logger.Sugar().Errorf("Failed to generate ID for table %s: %v", tableName, err)
+			s.auditLogger.LogWrite(ctx, tableName, "", false, err, nil)
+			return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to generate ID: %v", err))
+		}
+		recordID = generatedID
+		s.logger.Sugar().Infof("Auto-generated ID for table %s: %s", tableName, recordID)
+	}
+
 	// 转换为内部写入请求格式
 	ingestReq := &miniodb.WriteRequest{
 		Table:     tableName,
-		Id:        req.Data.Id,
+		Id:        recordID,
 		Timestamp: req.Data.Timestamp,
 		Payload:   req.Data.Payload,
 	}
 
 	// 使用Ingester处理写入
 	if err := s.ingester.IngestData(ingestReq); err != nil {
-		s.logger.Sugar().Infof("ERROR: Failed to ingest data for table %s, ID %s: %v", tableName, req.Data.Id, err)
+		s.logger.Sugar().Infof("ERROR: Failed to ingest data for table %s, ID %s: %v", tableName, recordID, err)
+		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to ingest data: %v", err))
 	}
 
@@ -220,10 +311,16 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		go s.publishWriteEvent(ctx, tableName, req.Data)
 	}
 
-	s.logger.Sugar().Infof("Successfully ingested data for table: %s, ID: %s", tableName, req.Data.Id)
+	// 记录成功的审计日志
+	s.auditLogger.LogWrite(ctx, tableName, recordID, true, nil, map[string]interface{}{
+		"has_timestamp": req.Data.Timestamp != nil,
+		"payload_size":  len(req.Data.Payload.GetFields()),
+	})
+
+	s.logger.Sugar().Infof("Successfully ingested data for table: %s, ID: %s", tableName, recordID)
 	return &miniodb.WriteDataResponse{
 		Success: true,
-		Message: fmt.Sprintf("Data successfully ingested for table: %s, ID: %s", tableName, req.Data.Id),
+		Message: fmt.Sprintf("Data successfully ingested for table: %s, ID: %s", tableName, recordID),
 		NodeId:  s.cfg.Server.NodeID,
 	}, nil
 }
@@ -465,7 +562,7 @@ func (s *MinIODBService) rewriteLegacyTable(sql string) (string, error) {
 
 	// 精确匹配并替换：FROM 后跟空格，然后是完整的"table"单词
 	// 使用正则边界匹配确保只替换"FROM table"或"from table"，不替换"FROM table_data"
-	sql = regexp.MustCompile(`(?i)\bfrom\s+table\b`).ReplaceAllString(sql, "FROM "+quotedTable)
+	sql = fromTableRegex.ReplaceAllString(sql, "FROM "+quotedTable)
 
 	return sql, nil
 }
@@ -482,11 +579,14 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 
 	// 验证请求
 	if err := s.validateUpdateRequest(req); err != nil {
+		s.auditLogger.LogUpdate(ctx, tableName, req.Id, false, err, nil)
 		return nil, err
 	}
 
 	// 验证表名
 	if !s.cfg.IsValidTableName(tableName) {
+		err := fmt.Errorf("invalid table name: %s", tableName)
+		s.auditLogger.LogUpdate(ctx, tableName, req.Id, false, err, nil)
 		return &miniodb.UpdateDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Invalid table name: %s", tableName),
@@ -496,30 +596,46 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 	// 确保表存在
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
 		s.logger.Sugar().Infof("ERROR: Failed to ensure table exists: %v", err)
+		s.auditLogger.LogUpdate(ctx, tableName, req.Id, false, err, nil)
 		return &miniodb.UpdateDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Table error: %v", err),
 		}, nil
 	}
 
-	// OLAP系统中的更新策略：先删除后重新插入
-	// 1. 首先尝试删除现有记录
-	if s.querier != nil {
-		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
-		if err != nil {
-			s.logger.Sugar().Infof("ERROR: Failed to build safe delete SQL: %v", err)
-			return &miniodb.UpdateDataResponse{
-				Success: false,
-				Message: fmt.Sprintf("Invalid parameters: %v", err),
-			}, nil
+	// 获取分布式锁，防止并发更新同一记录
+	lockKey := lock.LockKey(tableName, req.Id)
+	lockTTL := 30 * time.Second
+	token, err := s.locker.Lock(ctx, lockKey, lockTTL)
+	if err != nil {
+		s.logger.Sugar().Warnf("Failed to acquire lock for update: %v", err)
+		s.auditLogger.LogUpdate(ctx, tableName, req.Id, false, err, map[string]interface{}{"lock_failed": true})
+		return &miniodb.UpdateDataResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to acquire lock: %v", err),
+		}, nil
+	}
+	defer func() {
+		if unlockErr := s.locker.Unlock(context.Background(), lockKey, token); unlockErr != nil {
+			s.logger.Sugar().Warnf("Failed to release lock: %v", unlockErr)
 		}
-		_, err = s.querier.ExecuteQuery(deleteSQL)
-		if err != nil {
-			s.logger.Sugar().Infof("WARN: Delete query during update failed: %v", err)
+	}()
+
+	// OLAP系统中的更新策略：先插入后删除
+	// 策略说明：先 INSERT 新版本数据，成功后再 DELETE 旧版本
+	// - INSERT 失败 → 直接返回错误，旧数据保持不变（无数据丢失）
+	// - DELETE 失败 → 短暂存在重复数据，但不丢失数据（可接受）
+	// 这避免了"DELETE 成功但 INSERT 失败"导致的数据永久丢失问题
+
+	// 0. 从 Buffer 中移除旧版本数据（未 flush 的数据）
+	if s.ingester != nil {
+		bufferRemoved := s.ingester.RemoveFromBuffer(tableName, req.Id)
+		if bufferRemoved > 0 {
+			s.logger.Sugar().Infof("Removed %d old records from buffer before update for table %s, ID %s", bufferRemoved, tableName, req.Id)
 		}
 	}
 
-	// 2. 插入更新后的数据
+	// 1. 首先插入更新后的数据
 	if s.ingester != nil {
 		// 构建写入请求
 		writeReq := &miniodb.WriteRequest{
@@ -537,16 +653,34 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 		// 执行插入
 		if err := s.ingester.IngestData(writeReq); err != nil {
 			s.logger.Sugar().Infof("ERROR: Failed to ingest updated data for table %s, ID %s: %v", tableName, req.Id, err)
+			s.auditLogger.LogUpdate(ctx, tableName, req.Id, false, err, map[string]interface{}{"phase": "insert"})
 			return &miniodb.UpdateDataResponse{
 				Success: false,
 				Message: fmt.Sprintf("Failed to update record: %v", err),
 			}, nil
 		}
 	} else {
+		err := fmt.Errorf("ingester not available for update operation")
+		s.auditLogger.LogUpdate(ctx, tableName, req.Id, false, err, nil)
 		return &miniodb.UpdateDataResponse{
 			Success: false,
 			Message: "Ingester not available for update operation",
 		}, nil
+	}
+
+	// 2. INSERT 成功后，删除旧版本记录
+	if s.querier != nil {
+		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
+		if err != nil {
+			// 构建删除语句失败，记录警告但不影响整体操作（新数据已插入）
+			s.logger.Sugar().Warnf("Failed to build safe delete SQL for cleanup: %v", err)
+		} else {
+			_, err = s.querier.ExecuteQuery(deleteSQL)
+			if err != nil {
+				// DELETE 失败仅记录警告，不返回错误（新数据已成功插入，短暂重复可接受）
+				s.logger.Sugar().Warnf("Delete query during update failed (data may be duplicated temporarily): %v", err)
+			}
+		}
 	}
 
 	// 3. 清理相关的缓存
@@ -576,6 +710,12 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 	if err := s.tableManager.UpdateLastWrite(ctx, tableName); err != nil {
 		s.logger.Sugar().Infof("WARN: Failed to update last write time for table %s: %v", tableName, err)
 	}
+
+	// 记录成功的审计日志
+	s.auditLogger.LogUpdate(ctx, tableName, req.Id, true, nil, map[string]interface{}{
+		"has_timestamp": req.Timestamp != nil,
+		"payload_size":  len(req.Payload.GetFields()),
+	})
 
 	s.logger.Sugar().Infof("Successfully updated record %s in table %s", req.Id, tableName)
 	return &miniodb.UpdateDataResponse{
@@ -621,11 +761,14 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 
 	// 验证请求
 	if err := s.validateDeleteRequest(req); err != nil {
+		s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, nil)
 		return nil, err
 	}
 
 	// 验证表名
 	if !s.cfg.IsValidTableName(tableName) {
+		err := fmt.Errorf("invalid table name: %s", tableName)
+		s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, nil)
 		return &miniodb.DeleteDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Invalid table name: %s", tableName),
@@ -635,39 +778,72 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 	// 确保表存在
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
 		s.logger.Sugar().Infof("ERROR: Failed to ensure table exists: %v", err)
+		s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, nil)
 		return &miniodb.DeleteDataResponse{
 			Success: false,
 			Message: fmt.Sprintf("Table error: %v", err),
 		}, nil
 	}
 
+	// 获取分布式锁，防止并发删除同一记录
+	lockKey := lock.LockKey(tableName, req.Id)
+	lockTTL := 30 * time.Second
+	token, err := s.locker.Lock(ctx, lockKey, lockTTL)
+	if err != nil {
+		s.logger.Sugar().Warnf("Failed to acquire lock for delete: %v", err)
+		s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, map[string]interface{}{"lock_failed": true})
+		return &miniodb.DeleteDataResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to acquire lock: %v", err),
+		}, nil
+	}
+	defer func() {
+		if unlockErr := s.locker.Unlock(context.Background(), lockKey, token); unlockErr != nil {
+			s.logger.Sugar().Warnf("Failed to release lock: %v", unlockErr)
+		}
+	}()
+
 	deletedCount := int32(0)
 
-	// 1. 从已持久化的数据中删除（通过DuckDB执行DELETE语句）
+	// 1. 从 Buffer 中移除未 flush 的数据
+	if s.ingester != nil {
+		bufferRemoved := s.ingester.RemoveFromBuffer(tableName, req.Id)
+		if bufferRemoved > 0 {
+			deletedCount += int32(bufferRemoved)
+			s.logger.Sugar().Infof("Removed %d records from buffer for table %s, ID %s", bufferRemoved, tableName, req.Id)
+		}
+	}
+
+	// 2. 从已持久化的数据中删除（通过DuckDB执行DELETE语句）
 	if s.querier != nil {
 		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
 		if err != nil {
 			s.logger.Sugar().Infof("ERROR: Failed to build safe delete SQL: %v", err)
+			s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, map[string]interface{}{"phase": "build_sql"})
 			return &miniodb.DeleteDataResponse{
 				Success: false,
 				Message: fmt.Sprintf("Invalid parameters: %v", err),
 			}, nil
 		}
 
-		result, err := s.querier.ExecuteQuery(deleteSQL)
+		rowsAffected, err := s.querier.ExecuteUpdate(deleteSQL)
 		if err != nil {
-			s.logger.Sugar().Infof("WARN: Delete query failed: %v", err)
-			return &miniodb.DeleteDataResponse{
-				Success: false,
-				Message: fmt.Sprintf("Failed to delete record from storage: %v", err),
-			}, nil
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "does not exist") ||
+				strings.Contains(errMsg, "no data files") ||
+				strings.Contains(errMsg, query.ErrNoDataFiles.Error()) {
+				s.logger.Sugar().Infof("Table %s has no persisted data, only buffer data was removed", tableName)
+			} else {
+				s.logger.Sugar().Infof("WARN: Delete query failed: %v", err)
+				s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, map[string]interface{}{"phase": "execute_delete"})
+				return &miniodb.DeleteDataResponse{
+					Success: false,
+					Message: fmt.Sprintf("Failed to delete record from storage: %v", err),
+				}, nil
+			}
 		}
 
-		// 解析删除结果，获取实际删除的行数
-		// 这里简化处理，假设删除成功就是1行
-		if strings.Contains(result, "DELETE") || strings.Contains(result, "success") || result != "" {
-			deletedCount = 1
-		}
+		deletedCount = int32(rowsAffected)
 	}
 
 	// 2. 清理相关的缓存和索引
@@ -683,9 +859,11 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 			}
 		}
 
-		// 更新表的记录计数
-		recordCountKey := fmt.Sprintf("table:%s:record_count", tableName)
-		redisClient.Decr(ctx, recordCountKey)
+		// 更新表的记录计数（只有实际删除了行才递减）
+		if deletedCount > 0 {
+			recordCountKey := fmt.Sprintf("table:%s:record_count", tableName)
+			redisClient.Decr(ctx, recordCountKey)
+		}
 	}
 
 	// 3. 更新表的最后修改时间
@@ -693,7 +871,11 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 		s.logger.Sugar().Infof("WARN: Failed to update last write time for table %s: %v", tableName, err)
 	}
 
+	// 记录审计日志
 	if deletedCount > 0 {
+		s.auditLogger.LogDelete(ctx, tableName, req.Id, true, nil, map[string]interface{}{
+			"deleted_count": deletedCount,
+		})
 		s.logger.Sugar().Infof("Successfully deleted %d records for ID %s from table %s", deletedCount, req.Id, tableName)
 		return &miniodb.DeleteDataResponse{
 			Success:      true,
@@ -701,6 +883,11 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 			DeletedCount: deletedCount,
 		}, nil
 	} else {
+		// 记录审计日志（未找到记录）
+		s.auditLogger.LogDelete(ctx, tableName, req.Id, false, nil, map[string]interface{}{
+			"deleted_count": 0,
+			"reason":        "record_not_found",
+		})
 		return &miniodb.DeleteDataResponse{
 			Success:      false,
 			Message:      fmt.Sprintf("No records found with ID %s in table %s", req.Id, tableName),
@@ -728,6 +915,42 @@ func (s *MinIODBService) validateDeleteRequest(req *miniodb.DeleteDataRequest) e
 	}
 
 	return nil
+}
+
+// CleanupEmptyIDRecords 清理表中空ID的脏数据
+func (s *MinIODBService) CleanupEmptyIDRecords(ctx context.Context, tableName string) (int64, error) {
+	s.logger.Sugar().Infof("Starting cleanup of empty ID records for table: %s", tableName)
+
+	if s.querier == nil {
+		return 0, fmt.Errorf("querier not available")
+	}
+
+	deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteEmptyIDSQL(tableName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to build delete SQL: %w", err)
+	}
+
+	rowsAffected, err := s.querier.ExecuteUpdate(deleteSQL)
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "does not exist") ||
+			strings.Contains(errMsg, "no data files") ||
+			strings.Contains(errMsg, query.ErrNoDataFiles.Error()) {
+			s.logger.Sugar().Infof("Table %s has no persisted data, no empty ID records to clean", tableName)
+			return 0, nil
+		}
+		s.logger.Sugar().Errorf("Failed to cleanup empty ID records for table %s: %v", tableName, err)
+		return 0, fmt.Errorf("failed to execute cleanup: %w", err)
+	}
+
+	s.logger.Sugar().Infof("Cleaned up %d empty ID records from table %s", rowsAffected, tableName)
+	s.auditLogger.LogDelete(ctx, tableName, "<empty_id_cleanup>", true, nil, map[string]interface{}{
+		"cleanup_type":  "empty_id",
+		"deleted_count": rowsAffected,
+		"table":         tableName,
+	})
+
+	return rowsAffected, nil
 }
 
 // ConvertResultToRecords 将JSON结果转换为DataRecord列表

@@ -257,9 +257,6 @@ export interface FullConfig {
   minio_backup_use_ssl: boolean
   minio_backup_region: string
   minio_backup_bucket: string
-  // dashboard
-  core_endpoint: string
-  dashboard_port: string
   // log
   log_level: string
   log_format: string
@@ -303,8 +300,6 @@ export interface ConfigUpdateRequest {
   minio_backup_use_ssl?: boolean
   minio_backup_region?: string
   minio_backup_bucket?: string
-  core_endpoint?: string
-  dashboard_port?: string
   log_level?: string
   log_format?: string
   log_output?: string
