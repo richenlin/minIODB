@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,14 @@ type SyncCheckpoint struct {
 	ObjectVersions map[string]time.Time `json:"object_versions"`
 	SyncedCount    int64                `json:"synced_count"`
 	FailedObjects  []string             `json:"failed_objects"`
+}
+
+type CheckpointStoreInterface interface {
+	Load(ctx context.Context, bucket string) (*SyncCheckpoint, error)
+	Save(ctx context.Context, bucket string, checkpoint *SyncCheckpoint) error
+	Clear(ctx context.Context, bucket string) error
+	IsDegraded() bool
+	ResetDegraded()
 }
 
 type CheckpointStore struct {
@@ -152,6 +161,17 @@ func (s *CheckpointStore) loadFromRedis(ctx context.Context, key string) (*SyncC
 		return nil, fmt.Errorf("unmarshal checkpoint: %w", err)
 	}
 
+	if checkpoint.ObjectVersions == nil {
+		checkpoint.ObjectVersions = make(map[string]time.Time)
+	}
+	if checkpoint.FailedObjects == nil {
+		checkpoint.FailedObjects = []string{}
+	}
+
+	if len(checkpoint.ObjectVersions) > maxCheckpointEntries {
+		checkpoint.pruneOldEntries(maxCheckpointEntries)
+	}
+
 	return &checkpoint, nil
 }
 
@@ -220,6 +240,10 @@ func (s *CheckpointStore) loadFromFile(bucket string) (*SyncCheckpoint, error) {
 	}
 	if checkpoint.FailedObjects == nil {
 		checkpoint.FailedObjects = []string{}
+	}
+
+	if len(checkpoint.ObjectVersions) > maxCheckpointEntries {
+		checkpoint.pruneOldEntries(maxCheckpointEntries)
 	}
 
 	return &checkpoint, nil
@@ -300,27 +324,45 @@ type checkpointEntry struct {
 	timestamp time.Time
 }
 
+type minHeap []checkpointEntry
+
+func (h minHeap) Len() int           { return len(h) }
+func (h minHeap) Less(i, j int) bool { return h[i].timestamp.Before(h[j].timestamp) }
+func (h minHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *minHeap) Push(x interface{}) {
+	*h = append(*h, x.(checkpointEntry))
+}
+
+func (h *minHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
 func (c *SyncCheckpoint) pruneOldEntries(keep int) {
 	if len(c.ObjectVersions) <= keep {
 		return
 	}
 
-	entries := make([]checkpointEntry, 0, len(c.ObjectVersions))
-	for k, v := range c.ObjectVersions {
-		entries = append(entries, checkpointEntry{key: k, timestamp: v})
-	}
+	h := &minHeap{}
+	heap.Init(h)
 
-	for i := 0; i < len(entries); i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].timestamp.After(entries[i].timestamp) {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
+	for k, v := range c.ObjectVersions {
+		entry := checkpointEntry{key: k, timestamp: v}
+		if h.Len() < keep {
+			heap.Push(h, entry)
+		} else if v.After((*h)[0].timestamp) {
+			heap.Pop(h)
+			heap.Push(h, entry)
 		}
 	}
 
 	newVersions := make(map[string]time.Time, keep)
-	for i := 0; i < keep && i < len(entries); i++ {
-		newVersions[entries[i].key] = entries[i].timestamp
+	for _, entry := range *h {
+		newVersions[entry.key] = entry.timestamp
 	}
 	c.ObjectVersions = newVersions
 }

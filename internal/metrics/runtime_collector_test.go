@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -474,4 +475,137 @@ func TestRuntimeCollectorConcurrentSnapshot(t *testing.T) {
 	}()
 
 	<-done
+}
+
+func TestGlobalRuntimeCollectorConcurrentInitAndGet(t *testing.T) {
+	original := globalRuntimeCollector.Load()
+	defer func() { globalRuntimeCollector.Store(original) }()
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	const numInitGoroutines = 10
+	const numGetGoroutines = 20
+	const iterations = 100
+
+	for i := 0; i < numInitGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				c := NewRuntimeCollector(WithInterval(time.Second))
+				globalRuntimeCollector.Store(c)
+			}
+		}(i)
+	}
+
+	for i := 0; i < numGetGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				_ = GetRuntimeSnapshot()
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(done)
+	wg.Wait()
+}
+
+func TestGlobalRuntimeCollectorConcurrentReadWrite(t *testing.T) {
+	original := globalRuntimeCollector.Load()
+	defer func() { globalRuntimeCollector.Store(original) }()
+
+	rc := InitGlobalRuntimeCollector(WithInterval(10 * time.Millisecond))
+	ctx := context.Background()
+	rc.Start(ctx)
+	defer rc.Stop()
+
+	var wg sync.WaitGroup
+	const numReaders = 50
+	const readsPerReader = 200
+
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < readsPerReader; j++ {
+				snap := GetRuntimeSnapshot()
+				if snap == nil {
+					t.Error("GetRuntimeSnapshot returned nil")
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+func TestGetRuntimeSnapshotStaleWhenCollectorStopped(t *testing.T) {
+	original := globalRuntimeCollector.Load()
+	defer func() { globalRuntimeCollector.Store(original) }()
+
+	rc := InitGlobalRuntimeCollector(WithInterval(100 * time.Millisecond))
+	ctx := context.Background()
+
+	err := rc.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start collector: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	snap := GetRuntimeSnapshot()
+	if snap.Stale {
+		t.Error("Snapshot should not be stale when collector is running")
+	}
+
+	rc.Stop()
+
+	snap = GetRuntimeSnapshot()
+	if !snap.Stale {
+		t.Error("Snapshot should be stale when collector is stopped")
+	}
+}
+
+func TestGetRuntimeSnapshotNoRaceOnStale(t *testing.T) {
+	original := globalRuntimeCollector.Load()
+	defer func() { globalRuntimeCollector.Store(original) }()
+
+	rc := InitGlobalRuntimeCollector(WithInterval(10 * time.Millisecond))
+	ctx := context.Background()
+	rc.Start(ctx)
+
+	var wg sync.WaitGroup
+	const numReaders = 100
+	const readsPerReader = 100
+
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < readsPerReader; j++ {
+				snap := GetRuntimeSnapshot()
+				_ = snap.Stale
+			}
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	rc.Stop()
+
+	wg.Wait()
 }

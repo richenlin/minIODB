@@ -229,9 +229,9 @@ func (hc *HealthChecker) checkSystemHealth(ctx context.Context) *HealthStatus {
 
 	if snap.Stale {
 		return &HealthStatus{
-			Status:    "degraded",
+			Status:    "unhealthy",
 			Timestamp: now,
-			Message:   "runtime metrics are stale",
+			Message:   "runtime metrics are stale - collector may have stopped",
 		}
 	}
 

@@ -1675,29 +1675,14 @@ func (s *Server) getBackupSchedule(c *gin.Context) {
 }
 
 func (s *Server) monitorOverview(c *gin.Context) {
-	ctx := c.Request.Context()
-	resp, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
 	snap := metrics.GetRuntimeSnapshot()
 
 	overview := &model.MonitorOverviewResult{
 		Goroutines:  snap.Goroutines,
 		MemAllocMB:  snap.HeapAllocMB,
 		GCPauseMs:   snap.GCPauseMs,
-		CPUPercent:  0, // TODO: RuntimeSnapshot does not track CPU usage; consider adding CPU metrics to RuntimeCollector
-		UptimeHours: 0, // Set from resp.SystemInfo["uptime_seconds"] below if available
-	}
-
-	if resp.SystemInfo != nil {
-		if uptime, ok := resp.SystemInfo["uptime_seconds"]; ok {
-			if secs, err := time.ParseDuration(uptime + "s"); err == nil {
-				overview.UptimeHours = secs.Hours()
-			}
-		}
+		CPUPercent:  snap.CPUPercent,
+		UptimeHours: snap.UptimeSeconds / 3600,
 	}
 
 	c.JSON(http.StatusOK, overview)
@@ -1796,7 +1781,7 @@ func (s *Server) startMetricsPush(ctx context.Context) {
 						"mem_alloc_mb": snap.HeapAllocMB,
 						"load_level":   snap.LoadLevel,
 						"uptime_hours": resp.SystemInfo["uptime_seconds"],
-						"cpu_percent":  0,
+						"cpu_percent":  snap.CPUPercent,
 					})
 				}
 			}

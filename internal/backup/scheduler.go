@@ -101,6 +101,7 @@ func (s *Scheduler) Stop() {
 	}
 	close(s.stopCh)
 	s.cron.Stop()
+	s.entryIDs = make(map[string]cron.EntryID)
 	s.running = false
 
 	s.logger.Info("backup scheduler stopped")
@@ -132,7 +133,8 @@ func (s *Scheduler) AddPlan(plan *config.BackupSchedule) error {
 		}
 	}
 
-	s.plans[plan.ID] = plan
+	planCopy := clonePlan(plan)
+	s.plans[plan.ID] = planCopy
 
 	if s.store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -177,7 +179,8 @@ func (s *Scheduler) AddPlanIfAbsent(plan *config.BackupSchedule) error {
 		}
 	}
 
-	s.plans[plan.ID] = plan
+	planCopyIfAbsent := clonePlan(plan)
+	s.plans[plan.ID] = planCopyIfAbsent
 
 	if s.store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -241,11 +244,12 @@ func (s *Scheduler) TriggerExecution(id string) error {
 		s.mu.RUnlock()
 		return fmt.Errorf("plan not found: %s", id)
 	}
+	planCopy := clonePlan(plan)
 	s.mu.RUnlock()
 
 	s.logger.Info("manual trigger for backup plan", zap.String("plan_id", id))
 
-	go s.executePlan(plan)
+	go s.executePlan(planCopy)
 
 	return nil
 }
@@ -285,18 +289,7 @@ func (s *Scheduler) schedulePlan(plan *config.BackupSchedule) error {
 		return fmt.Errorf("plan must have either cron_expr or interval")
 	}
 
-	planCopy := &config.BackupSchedule{
-		ID:            plan.ID,
-		Name:          plan.Name,
-		Enabled:       plan.Enabled,
-		Interval:      plan.Interval,
-		CronExpr:      plan.CronExpr,
-		BackupType:    plan.BackupType,
-		Tables:        append([]string{}, plan.Tables...),
-		RetentionDays: plan.RetentionDays,
-		CreatedAt:     plan.CreatedAt,
-		UpdatedAt:     plan.UpdatedAt,
-	}
+	planCopy := clonePlan(plan)
 
 	entryID := s.cron.Schedule(schedule, cron.FuncJob(func() {
 		s.executePlan(planCopy)
@@ -341,7 +334,7 @@ func (s *Scheduler) executePlan(plan *config.BackupSchedule) {
 		execution.EndTime = &now
 
 		if s.store != nil {
-			storeCtx, storeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
 			s.store.SaveExecution(storeCtx, execution)
 			storeCancel()
 		}
@@ -358,7 +351,7 @@ func (s *Scheduler) executePlan(plan *config.BackupSchedule) {
 	}
 
 	if s.store != nil {
-		storeCtx, storeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
 		s.store.SaveExecution(storeCtx, execution)
 		storeCancel()
 	}
@@ -400,6 +393,8 @@ func (s *Scheduler) executePlan(plan *config.BackupSchedule) {
 				execErr = fmt.Errorf("table backup errors: %v", errs)
 			}
 		}
+	case BackupTypeMetadata:
+		result, execErr = s.executor.MetadataBackup(ctx, plan.ID)
 	default:
 		execErr = fmt.Errorf("unknown backup type: %s", plan.BackupType)
 	}
@@ -431,7 +426,7 @@ func (s *Scheduler) executePlan(plan *config.BackupSchedule) {
 	execution.EndTime = &now
 
 	if s.store != nil {
-		storeCtx, storeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
 		s.store.SaveExecution(storeCtx, execution)
 		storeCancel()
 	}
@@ -454,6 +449,24 @@ func (s *Scheduler) publishEvent(eventType string, data interface{}) {
 		"data":  data,
 		"time":  time.Now().Unix(),
 	})
+}
+
+func clonePlan(plan *config.BackupSchedule) *config.BackupSchedule {
+	if plan == nil {
+		return nil
+	}
+	return &config.BackupSchedule{
+		ID:            plan.ID,
+		Name:          plan.Name,
+		Enabled:       plan.Enabled,
+		Interval:      plan.Interval,
+		CronExpr:      plan.CronExpr,
+		BackupType:    plan.BackupType,
+		Tables:        append([]string{}, plan.Tables...),
+		RetentionDays: plan.RetentionDays,
+		CreatedAt:     plan.CreatedAt,
+		UpdatedAt:     plan.UpdatedAt,
+	}
 }
 
 type intervalSchedule struct {

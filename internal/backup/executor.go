@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	BackupTypeFull  = "full"
-	BackupTypeTable = "table"
+	BackupTypeFull     = "full"
+	BackupTypeTable    = "table"
+	BackupTypeMetadata = "metadata"
 )
 
 type FullBackupManifest struct {
@@ -30,6 +31,7 @@ type FullBackupManifest struct {
 	Tables         []TableManifest `json:"tables"`
 	MetadataBackup string          `json:"metadata_backup"`
 	Status         string          `json:"status"`
+	FailedCount    int64           `json:"failed_count,omitempty"`
 	Degraded       bool            `json:"degraded"`
 	Errors         []string        `json:"errors,omitempty"`
 }
@@ -44,6 +46,7 @@ type TableBackupManifest struct {
 	TotalSize      int64     `json:"total_size"`
 	MetadataBackup string    `json:"metadata_backup,omitempty"`
 	Status         string    `json:"status"`
+	FailedCount    int64     `json:"failed_count,omitempty"`
 	Degraded       bool      `json:"degraded"`
 	Errors         []string  `json:"errors,omitempty"`
 }
@@ -62,6 +65,7 @@ type BackupResult struct {
 	Status       string   `json:"status"`
 	ObjectCount  int64    `json:"object_count"`
 	TotalSize    int64    `json:"total_size"`
+	FailedCount  int64    `json:"failed_count,omitempty"`
 	Duration     string   `json:"duration"`
 	Degraded     bool     `json:"degraded"`
 	Errors       []string `json:"errors,omitempty"`
@@ -182,6 +186,7 @@ func (e *Executor) FullBackup(ctx context.Context, backupID string, planID strin
 	var (
 		totalObjects int64
 		totalSize    int64
+		totalFailed  int64
 		wg           sync.WaitGroup
 		mu           sync.Mutex
 	)
@@ -210,14 +215,16 @@ func (e *Executor) FullBackup(ctx context.Context, backupID string, planID strin
 			manifest.Tables = append(manifest.Tables, *tableManifest)
 			totalObjects += tableManifest.ObjectCount
 			totalSize += tableManifest.TotalSize
+			totalFailed += tableManifest.FailedCount
 		}(tableName)
 	}
 	wg.Wait()
 
 	manifest.Status = "completed"
-	if len(result.Errors) > 0 {
+	if len(result.Errors) > 0 || totalFailed > 0 {
 		manifest.Status = "partial"
 	}
+	manifest.FailedCount = totalFailed
 
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -237,6 +244,7 @@ func (e *Executor) FullBackup(ctx context.Context, backupID string, planID strin
 	result.Status = manifest.Status
 	result.ObjectCount = totalObjects
 	result.TotalSize = totalSize
+	result.FailedCount = totalFailed
 	result.Duration = duration.String()
 	result.MetadataFile = manifestKey
 
@@ -245,6 +253,7 @@ func (e *Executor) FullBackup(ctx context.Context, backupID string, planID strin
 		zap.String("status", result.Status),
 		zap.Int64("objects", totalObjects),
 		zap.Int64("size", totalSize),
+		zap.Int64("failed", totalFailed),
 		zap.String("duration", result.Duration))
 
 	if planID != "" && e.planStore != nil {
@@ -345,7 +354,8 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 		Timestamp:   startTime,
 		ObjectCount: tableManifest.ObjectCount,
 		TotalSize:   tableManifest.TotalSize,
-		Status:      "completed",
+		Status:      tableManifest.Status,
+		FailedCount: tableManifest.FailedCount,
 		Degraded:    e.backupTarget.Degraded,
 	}
 
@@ -354,6 +364,7 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 		configBytes, err := json.MarshalIndent(tableConfig, "", "  ")
 		if err != nil {
 			e.logger.Warn("Failed to marshal table config", zap.Error(err))
+			result.Errors = append(result.Errors, fmt.Sprintf("marshal table config: %v", err))
 		} else {
 			_, err = e.backupTarget.Uploader.PutObject(ctx, e.backupTarget.Bucket, configKey,
 				toReader(configBytes), int64(len(configBytes)), minio.PutObjectOptions{
@@ -361,6 +372,7 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 				})
 			if err != nil {
 				e.logger.Warn("Failed to upload table config", zap.Error(err))
+				result.Errors = append(result.Errors, fmt.Sprintf("upload table config: %v", err))
 			}
 		}
 	}
@@ -377,6 +389,7 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 			metadataBytes, err := json.MarshalIndent(redisMetadata, "", "  ")
 			if err != nil {
 				e.logger.Warn("Failed to marshal Redis metadata", zap.Error(err))
+				result.Errors = append(result.Errors, fmt.Sprintf("marshal redis metadata: %v", err))
 			} else {
 				_, err = e.backupTarget.Uploader.PutObject(ctx, e.backupTarget.Bucket, metadataKey,
 					toReader(metadataBytes), int64(len(metadataBytes)), minio.PutObjectOptions{
@@ -384,6 +397,7 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 					})
 				if err != nil {
 					e.logger.Warn("Failed to upload Redis metadata", zap.Error(err))
+					result.Errors = append(result.Errors, fmt.Sprintf("upload redis metadata: %v", err))
 				}
 			}
 		}
@@ -404,9 +418,10 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 	}
 
 	duration := time.Since(startTime)
-	result.Status = "completed"
+	result.Status = tableManifest.Status
 	result.ObjectCount = tableManifest.ObjectCount
 	result.TotalSize = tableManifest.TotalSize
+	result.FailedCount = tableManifest.FailedCount
 	result.Duration = duration.String()
 	result.MetadataFile = manifestKey
 
@@ -415,10 +430,16 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 		zap.String("table", tableName),
 		zap.Int64("objects", result.ObjectCount),
 		zap.Int64("size", result.TotalSize),
+		zap.Int64("failed", result.FailedCount),
+		zap.String("status", result.Status),
 		zap.String("duration", result.Duration))
 
 	if planID != "" && e.planStore != nil {
-		execution.Status = ExecutionStatusCompleted
+		if tableManifest.Status == "partial" {
+			execution.Status = ExecutionStatusFailed
+		} else {
+			execution.Status = ExecutionStatusCompleted
+		}
 		endTime := startTime.Add(duration)
 		execution.EndTime = &endTime
 		execution.Manifest = manifestKey
@@ -438,6 +459,83 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 			e.logger.Warn("Failed to cleanup expired table backups",
 				zap.String("table", tableName),
 				zap.Error(err))
+		}
+	}
+
+	return result, nil
+}
+
+func (e *Executor) MetadataBackup(ctx context.Context, planID string) (*BackupResult, error) {
+	startTime := time.Now()
+	backupID := fmt.Sprintf("metadata-%s-%d", e.nodeID, startTime.Unix())
+
+	e.logger.Info("Starting metadata backup",
+		zap.String("backup_id", backupID),
+		zap.String("plan_id", planID))
+
+	if e.metadataMgr == nil {
+		return nil, fmt.Errorf("metadata manager not available")
+	}
+
+	if err := e.backupTarget.EnsureBucket(ctx); err != nil {
+		return nil, fmt.Errorf("ensure backup bucket: %w", err)
+	}
+
+	result := &BackupResult{
+		BackupID: backupID,
+		Type:     BackupTypeMetadata,
+		Status:   "running",
+		Degraded: e.backupTarget.Degraded,
+	}
+
+	execution := &BackupExecution{
+		ID:        fmt.Sprintf("exec-%s-%d", backupID, startTime.UnixNano()),
+		PlanID:    planID,
+		Status:    ExecutionStatusRunning,
+		StartTime: startTime,
+	}
+
+	if planID != "" && e.planStore != nil {
+		if err := e.planStore.SaveExecution(ctx, execution); err != nil {
+			e.logger.Warn("Failed to save initial execution record", zap.Error(err))
+		}
+	}
+
+	if err := e.metadataMgr.ManualBackup(ctx); err != nil {
+		e.logger.Error("Metadata backup failed",
+			zap.String("backup_id", backupID),
+			zap.Error(err))
+		result.Status = "failed"
+		result.Errors = append(result.Errors, err.Error())
+
+		if planID != "" && e.planStore != nil {
+			execution.Status = ExecutionStatusFailed
+			execution.Error = err.Error()
+			endTime := time.Now()
+			execution.EndTime = &endTime
+			if saveErr := e.planStore.SaveExecution(ctx, execution); saveErr != nil {
+				e.logger.Warn("Failed to save failed execution record", zap.Error(saveErr))
+			}
+		}
+
+		return result, fmt.Errorf("metadata backup failed: %w", err)
+	}
+
+	duration := time.Since(startTime)
+	result.Status = "completed"
+	result.Duration = duration.String()
+
+	e.logger.Info("Metadata backup completed",
+		zap.String("backup_id", backupID),
+		zap.String("status", result.Status),
+		zap.String("duration", result.Duration))
+
+	if planID != "" && e.planStore != nil {
+		execution.Status = ExecutionStatusCompleted
+		endTime := time.Now()
+		execution.EndTime = &endTime
+		if err := e.planStore.SaveExecution(ctx, execution); err != nil {
+			e.logger.Warn("Failed to save final execution record", zap.Error(err))
 		}
 	}
 

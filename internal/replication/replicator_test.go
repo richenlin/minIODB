@@ -1,8 +1,10 @@
 package replication
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -19,17 +21,18 @@ import (
 )
 
 type mockUploader struct {
-	objects   map[string]minio.ObjectInfo
-	copyCalls []string
-	putCalls  []string
-	getCalls  []string
-	mu        sync.Mutex
-	copyErr   error
-	getErr    error
-	putErr    error
-	listErr   error
-	statErr   error
-	copyDelay time.Duration
+	objects     map[string]minio.ObjectInfo
+	copyCalls   []string
+	putCalls    []string
+	getCalls    []string
+	streamCalls []string
+	mu          sync.Mutex
+	copyErr     error
+	getErr      error
+	putErr      error
+	listErr     error
+	statErr     error
+	copyDelay   time.Duration
 }
 
 func newMockUploader() *mockUploader {
@@ -68,6 +71,16 @@ func (m *mockUploader) GetObject(ctx context.Context, bucketName, objectName str
 	}
 	m.getCalls = append(m.getCalls, objectName)
 	return []byte("mock-data"), nil
+}
+
+func (m *mockUploader) GetObjectStream(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	m.streamCalls = append(m.streamCalls, objectName)
+	return io.NopCloser(bytes.NewReader([]byte("mock-data"))), nil
 }
 
 func (m *mockUploader) RemoveObject(ctx context.Context, bucketName, objectName string, opts minio.RemoveObjectOptions) error {
@@ -150,6 +163,18 @@ func (m *mockUploader) getPutCalls() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]string{}, m.putCalls...)
+}
+
+func (m *mockUploader) getGetCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.getCalls...)
+}
+
+func (m *mockUploader) getStreamCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.streamCalls...)
 }
 
 func TestReplicatorStatus_String(t *testing.T) {
@@ -511,8 +536,61 @@ func TestReplicator_CopyObject(t *testing.T) {
 	err := r.copyObject(context.Background(), "test-bucket", "test-obj")
 	require.NoError(t, err)
 
+	streamCalls := mockSrc.getStreamCalls()
+	assert.Contains(t, streamCalls, "test-obj", "GetObjectStream should be called on source for streaming transfer")
+
 	putCalls := mockDst.getPutCalls()
-	assert.Contains(t, putCalls, "test-obj")
+	assert.Contains(t, putCalls, "test-obj", "PutObject should be called on destination")
+
+	copyCalls := mockDst.getCopyCalls()
+	assert.Empty(t, copyCalls, "CopyObject should NOT be called - it doesn't work for cross-server replication")
+}
+
+func TestReplicator_CopyObject_UsesGetPutNotServerSideCopy(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	mockSrc.addMockObject("cross-server-obj", time.Now())
+	mockDst := newMockUploader()
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:  100,
+		Workers: 4,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+	checkpoint := NewCheckpointStore(nil, "test:checkpoint:crossserver", t.TempDir(), logger)
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		dstUploader: mockDst,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  checkpoint,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	err := r.copyObject(context.Background(), "primary-bucket", "cross-server-obj")
+	require.NoError(t, err)
+
+	srcStreamCalls := mockSrc.getStreamCalls()
+	assert.Contains(t, srcStreamCalls, "cross-server-obj",
+		"Cross-server replication must use GetObjectStream to fetch data from source")
+
+	dstPutCalls := mockDst.getPutCalls()
+	dstCopyCalls := mockDst.getCopyCalls()
+
+	assert.Contains(t, dstPutCalls, "cross-server-obj",
+		"Cross-server replication must use PutObject to send data to destination")
+	assert.Empty(t, dstCopyCalls,
+		"Cross-server replication must NOT use CopyObject (server-side copy) - it only works within same MinIO instance")
 }
 
 func TestReplicator_CopyObject_GetError(t *testing.T) {
@@ -587,6 +665,50 @@ func TestReplicator_CopyObject_PutError(t *testing.T) {
 	err := r.copyObject(context.Background(), "test-bucket", "test-obj")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "put object")
+}
+
+func TestReplicator_CopyObject_StreamingTransfer(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	mockSrc.addMockObject("large-obj", time.Now())
+	mockDst := newMockUploader()
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:  100,
+		Workers: 4,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+	checkpoint := NewCheckpointStore(nil, "test:checkpoint:stream", t.TempDir(), logger)
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		dstUploader: mockDst,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  checkpoint,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	err := r.copyObject(context.Background(), "test-bucket", "large-obj")
+	require.NoError(t, err)
+
+	streamCalls := mockSrc.getStreamCalls()
+	assert.Contains(t, streamCalls, "large-obj", "copyObject should use GetObjectStream for streaming")
+
+	getCalls := mockSrc.getGetCalls()
+	assert.NotContains(t, getCalls, "large-obj", "copyObject should NOT use GetObject (full read) for streaming")
+
+	putCalls := mockDst.getPutCalls()
+	assert.Contains(t, putCalls, "large-obj", "PutObject should be called on destination")
 }
 
 func TestReplicator_SyncBucket(t *testing.T) {
@@ -844,4 +966,378 @@ func TestReplicator_ForceSync_Overloaded(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, StatusOverloaded, r.GetStatus())
+}
+
+type countingCheckpointStore struct {
+	*CheckpointStore
+	loadCalls int
+	saveCalls int
+	mu        sync.Mutex
+}
+
+func (c *countingCheckpointStore) Load(ctx context.Context, bucket string) (*SyncCheckpoint, error) {
+	c.mu.Lock()
+	c.loadCalls++
+	c.mu.Unlock()
+	return c.CheckpointStore.Load(ctx, bucket)
+}
+
+func (c *countingCheckpointStore) Save(ctx context.Context, bucket string, checkpoint *SyncCheckpoint) error {
+	c.mu.Lock()
+	c.saveCalls++
+	c.mu.Unlock()
+	return c.CheckpointStore.Save(ctx, bucket, checkpoint)
+}
+
+func (c *countingCheckpointStore) getLoadCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.loadCalls
+}
+
+func (c *countingCheckpointStore) getSaveCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.saveCalls
+}
+
+func TestReplicator_CheckpointBatchSaving(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	objectCount := 250
+	for i := 0; i < objectCount; i++ {
+		mockSrc.addMockObject(fmt.Sprintf("obj%d", i), time.Now())
+	}
+
+	mockDst := newMockUploader()
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:   1000,
+		Workers:  10,
+		Interval: 60,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+
+	baseCheckpoint := NewCheckpointStore(nil, "test:checkpoint:batch", t.TempDir(), logger)
+	countingStore := &countingCheckpointStore{CheckpointStore: baseCheckpoint}
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		dstUploader: mockDst,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  countingStore,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	result, err := r.SyncBucket(context.Background(), "test-bucket")
+	require.NoError(t, err)
+	assert.Equal(t, int64(objectCount), result.SyncedCount)
+
+	loadCalls := countingStore.getLoadCalls()
+	saveCalls := countingStore.getSaveCalls()
+
+	assert.Equal(t, 1, loadCalls, "Checkpoint should be loaded only once per sync cycle")
+
+	expectedSaveCalls := objectCount/checkpointBatchSize + 1
+	if objectCount%checkpointBatchSize != 0 {
+		expectedSaveCalls++
+	}
+	assert.LessOrEqual(t, saveCalls, expectedSaveCalls,
+		"Checkpoint should be saved in batches (every %d objects) + final save, not once per object",
+		checkpointBatchSize)
+	assert.Less(t, saveCalls, objectCount,
+		"Save calls (%d) should be much less than object count (%d)",
+		saveCalls, objectCount)
+
+	t.Logf("Synced %d objects with %d Load calls and %d Save calls (batch size: %d)",
+		objectCount, loadCalls, saveCalls, checkpointBatchSize)
+}
+
+func TestReplicator_CheckpointBatchSaving_ExactBatchBoundary(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	objectCount := checkpointBatchSize
+	for i := 0; i < objectCount; i++ {
+		mockSrc.addMockObject(fmt.Sprintf("obj%d", i), time.Now())
+	}
+
+	mockDst := newMockUploader()
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:   1000,
+		Workers:  10,
+		Interval: 60,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+
+	baseCheckpoint := NewCheckpointStore(nil, "test:checkpoint:boundary", t.TempDir(), logger)
+	countingStore := &countingCheckpointStore{CheckpointStore: baseCheckpoint}
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		dstUploader: mockDst,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  countingStore,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	result, err := r.SyncBucket(context.Background(), "test-bucket")
+	require.NoError(t, err)
+	assert.Equal(t, int64(objectCount), result.SyncedCount)
+
+	saveCalls := countingStore.getSaveCalls()
+
+	assert.Equal(t, 2, saveCalls,
+		"Exact %d objects should trigger 2 saves: 1 batch save + 1 final save",
+		checkpointBatchSize)
+}
+
+func TestReplicator_CheckpointBatchSaving_LessThanBatchSize(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	objectCount := checkpointBatchSize - 1
+	for i := 0; i < objectCount; i++ {
+		mockSrc.addMockObject(fmt.Sprintf("obj%d", i), time.Now())
+	}
+
+	mockDst := newMockUploader()
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:   1000,
+		Workers:  10,
+		Interval: 60,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+
+	baseCheckpoint := NewCheckpointStore(nil, "test:checkpoint:less", t.TempDir(), logger)
+	countingStore := &countingCheckpointStore{CheckpointStore: baseCheckpoint}
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		dstUploader: mockDst,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  countingStore,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	result, err := r.SyncBucket(context.Background(), "test-bucket")
+	require.NoError(t, err)
+	assert.Equal(t, int64(objectCount), result.SyncedCount)
+
+	saveCalls := countingStore.getSaveCalls()
+
+	assert.Equal(t, 1, saveCalls,
+		"Less than %d objects should trigger only 1 final save, no batch saves",
+		checkpointBatchSize)
+}
+
+func TestReplicator_CheckpointBatchSaving_IOStormPrevention(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	objectCount := 1000
+	for i := 0; i < objectCount; i++ {
+		mockSrc.addMockObject(fmt.Sprintf("obj%d", i), time.Now())
+	}
+
+	mockDst := newMockUploader()
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:   1000,
+		Workers:  10,
+		Interval: 60,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+
+	baseCheckpoint := NewCheckpointStore(nil, "test:checkpoint:storm", t.TempDir(), logger)
+	countingStore := &countingCheckpointStore{CheckpointStore: baseCheckpoint}
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		dstUploader: mockDst,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  countingStore,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	result, err := r.SyncBucket(context.Background(), "test-bucket")
+	require.NoError(t, err)
+	assert.Equal(t, int64(objectCount), result.SyncedCount)
+
+	loadCalls := countingStore.getLoadCalls()
+	saveCalls := countingStore.getSaveCalls()
+
+	totalIO := loadCalls + saveCalls
+	oldIOCount := objectCount * 2
+	ioReduction := float64(oldIOCount-totalIO) / float64(oldIOCount) * 100
+
+	assert.Equal(t, 1, loadCalls, "Should load checkpoint only once")
+	assert.LessOrEqual(t, saveCalls, objectCount/checkpointBatchSize+2,
+		"Save calls should be batched")
+
+	t.Logf("IO reduction: %.1f%% (old: %d IO ops, new: %d IO ops for %d objects)",
+		ioReduction, oldIOCount, totalIO, objectCount)
+	assert.Greater(t, ioReduction, 90.0,
+		"Batch saving should reduce IO operations by at least 90%%")
+}
+
+func TestReplicator_DetectIncremental_MemoryLimit(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	totalObjects := 50000
+	maxObjects := 100
+
+	now := time.Now()
+	for i := 0; i < totalObjects; i++ {
+		mockSrc.addMockObject(fmt.Sprintf("obj%d", i), now.Add(time.Duration(i)*time.Millisecond))
+	}
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:            100,
+		Workers:           4,
+		Interval:          60,
+		MaxObjectsPerSync: maxObjects,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+	checkpoint := NewCheckpointStore(nil, "test:checkpoint:memory", t.TempDir(), logger)
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  checkpoint,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	_, objects, err := r.detectIncremental(context.Background(), "test-bucket")
+	require.NoError(t, err)
+	assert.Len(t, objects, maxObjects, "Should limit objects to MaxObjectsPerSync")
+}
+
+func TestReplicator_DetectIncremental_PrioritizesRecentObjects(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	now := time.Now()
+
+	mockSrc.addMockObject("old-obj", now.Add(-24*time.Hour))
+	mockSrc.addMockObject("mid-obj", now.Add(-1*time.Hour))
+	mockSrc.addMockObject("new-obj", now)
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:            100,
+		Workers:           4,
+		Interval:          60,
+		MaxObjectsPerSync: 2,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+	checkpoint := NewCheckpointStore(nil, "test:checkpoint:priority", t.TempDir(), logger)
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  checkpoint,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	_, objects, err := r.detectIncremental(context.Background(), "test-bucket")
+	require.NoError(t, err)
+	assert.Len(t, objects, 2, "Should return exactly MaxObjectsPerSync objects")
+	assert.Contains(t, objects, "new-obj", "Should include newest object")
+	assert.Contains(t, objects, "mid-obj", "Should include second newest object")
+	assert.NotContains(t, objects, "old-obj", "Should exclude oldest object")
+}
+
+func TestReplicator_DetectIncremental_DefaultLimit(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	for i := 0; i < 100; i++ {
+		mockSrc.addMockObject(fmt.Sprintf("obj%d", i), time.Now().Add(time.Duration(i)*time.Millisecond))
+	}
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:   100,
+		Workers:  4,
+		Interval: 60,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+	checkpoint := NewCheckpointStore(nil, "test:checkpoint:default", t.TempDir(), logger)
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  checkpoint,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	_, objects, err := r.detectIncremental(context.Background(), "test-bucket")
+	require.NoError(t, err)
+	assert.Len(t, objects, 100, "Should return all objects when below default limit")
 }

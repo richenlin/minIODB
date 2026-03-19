@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -328,6 +329,80 @@ func TestRedisPlanStore_DefaultLimit(t *testing.T) {
 	executions, err = store.ListExecutions(ctx, "limit-plan", -1)
 	require.NoError(t, err)
 	assert.Len(t, executions, 5)
+}
+
+func TestValidatePlanID(t *testing.T) {
+	tests := []struct {
+		name      string
+		planID    string
+		expectErr bool
+		errMsg    string
+	}{
+		{"empty", "", true, "plan id cannot be empty"},
+		{"single char", "a", false, ""},
+		{"single digit", "1", false, ""},
+		{"alphanumeric", "plan123", false, ""},
+		{"with hyphens", "my-backup-plan-1", false, ""},
+		{"underscores not allowed", "plan_1", true, "alphanumeric characters and hyphens"},
+		{"spaces not allowed", "plan 1", true, "alphanumeric characters and hyphens"},
+		{"special chars not allowed", "plan@1", true, "alphanumeric characters and hyphens"},
+		{"redis injection colon", "plan:drop", true, "alphanumeric characters and hyphens"},
+		{"redis injection wildcard", "plan*", true, "alphanumeric characters and hyphens"},
+		{"redis injection pattern", "plan[h-z]", true, "alphanumeric characters and hyphens"},
+		{"starts with hyphen", "-plan", true, "alphanumeric characters and hyphens"},
+		{"ends with hyphen", "plan-", true, "alphanumeric characters and hyphens"},
+		{"max length", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false, ""},
+		{"too long", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", true, "plan id too long"},
+		{"unicode not allowed", "plan测试", true, "alphanumeric characters and hyphens"},
+		{"newline injection", "plan\nmalicious", true, "alphanumeric characters and hyphens"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePlanID(tt.planID)
+			if tt.expectErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestRedisPlanStore_PlanIDValidationInOperations(t *testing.T) {
+	store := NewRedisPlanStore(nil, nil)
+	ctx := context.Background()
+
+	maliciousIDs := []string{
+		"plan:*",
+		"plan:drop *",
+		"plan\nmalicious",
+		"-evil-plan",
+		strings.Repeat("a", 65),
+	}
+
+	for _, id := range maliciousIDs {
+		t.Run("SavePlan rejects "+id, func(t *testing.T) {
+			err := store.SavePlan(ctx, &config.BackupSchedule{ID: id, Name: "test"})
+			assert.Error(t, err)
+		})
+
+		t.Run("DeletePlan rejects "+id, func(t *testing.T) {
+			err := store.DeletePlan(ctx, id)
+			assert.Error(t, err)
+		})
+
+		t.Run("ListExecutions rejects "+id, func(t *testing.T) {
+			_, err := store.ListExecutions(ctx, id, 10)
+			assert.Error(t, err)
+		})
+
+		t.Run("SaveExecution rejects planID "+id, func(t *testing.T) {
+			err := store.SaveExecution(ctx, &BackupExecution{ID: "exec-1", PlanID: id})
+			assert.Error(t, err)
+		})
+	}
 }
 
 func ptrTime(t time.Time) *time.Time {

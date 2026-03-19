@@ -1,3 +1,13 @@
+// Package metrics provides runtime metrics collection and monitoring capabilities.
+//
+// This package re-exports types and constants from minIODB/pkg/throttle for convenience:
+//   - LoadLevel: Represents system load level (Idle, Normal, Busy, Overloaded)
+//   - LoadThresholds: Configuration thresholds for load classification
+//   - Load* constants: Load level values (LoadIdle, LoadNormal, LoadBusy, LoadOverloaded)
+//
+// The RuntimeCollector periodically collects runtime metrics including memory usage,
+// goroutine count, GC pause times, and connection pool statistics. These metrics
+// are used for system health monitoring and load-based throttling decisions.
 package metrics
 
 import (
@@ -6,6 +16,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"minIODB/pkg/throttle"
@@ -43,6 +54,8 @@ type RuntimeSnapshot struct {
 	PendingWrites  int64     `json:"pending_writes"`
 	LoadLevel      LoadLevel `json:"load_level"`
 	ThrottleRatio  float64   `json:"throttle_ratio"`
+	CPUPercent     float64   `json:"cpu_percent"`
+	UptimeSeconds  float64   `json:"uptime_seconds"`
 	CollectedAt    time.Time `json:"collected_at"`
 	Stale          bool      `json:"stale"`
 }
@@ -65,22 +78,30 @@ type RuntimeCollector struct {
 	stopOnce            sync.Once
 	wg                  sync.WaitGroup
 	running             atomic.Bool
+	startTime           time.Time
+	lastCPUTime         time.Duration
+	lastCollectTime     time.Time
 }
 
 var globalRuntimeCollector atomic.Pointer[RuntimeCollector]
 
 func NewRuntimeCollector(opts ...RuntimeCollectorOption) *RuntimeCollector {
+	now := time.Now()
 	rc := &RuntimeCollector{
-		thresholds: DefaultLoadThresholds(),
-		interval:   5 * time.Second,
-		stopCh:     make(chan struct{}),
+		thresholds:      DefaultLoadThresholds(),
+		interval:        5 * time.Second,
+		stopCh:          make(chan struct{}),
+		startTime:       now,
+		lastCPUTime:     getCPUTime(),
+		lastCollectTime: now,
 	}
 	for _, opt := range opts {
 		opt(rc)
 	}
 	rc.snapshot.Store(&RuntimeSnapshot{
-		LoadLevel:   LoadIdle,
-		CollectedAt: time.Now(),
+		LoadLevel:     LoadIdle,
+		CollectedAt:   now,
+		UptimeSeconds: 0,
 	})
 	return rc
 }
@@ -156,12 +177,14 @@ func (rc *RuntimeCollector) collect() {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
+	now := time.Now()
 	snap := &RuntimeSnapshot{
-		Goroutines:  runtime.NumGoroutine(),
-		HeapAllocMB: float64(memStats.HeapAlloc) / 1024 / 1024,
-		HeapSysMB:   float64(memStats.HeapSys) / 1024 / 1024,
-		NumGC:       memStats.NumGC,
-		CollectedAt: time.Now(),
+		Goroutines:    runtime.NumGoroutine(),
+		HeapAllocMB:   float64(memStats.HeapAlloc) / 1024 / 1024,
+		HeapSysMB:     float64(memStats.HeapSys) / 1024 / 1024,
+		NumGC:         memStats.NumGC,
+		CollectedAt:   now,
+		UptimeSeconds: now.Sub(rc.startTime).Seconds(),
 	}
 
 	if memStats.NumGC > 0 {
@@ -179,6 +202,15 @@ func (rc *RuntimeCollector) collect() {
 	if rc.bufferStatsProvider != nil {
 		snap.PendingWrites = rc.bufferStatsProvider()
 	}
+
+	currentCPUTime := getCPUTime()
+	elapsed := now.Sub(rc.lastCollectTime)
+	if elapsed > 0 {
+		cpuDelta := currentCPUTime - rc.lastCPUTime
+		snap.CPUPercent = float64(cpuDelta) / float64(elapsed) * 100
+	}
+	rc.lastCPUTime = currentCPUTime
+	rc.lastCollectTime = now
 
 	snap.LoadLevel = rc.determineLoadLevel(snap)
 	snap.ThrottleRatio = rc.calculateThrottleRatio(snap.LoadLevel)
@@ -299,6 +331,14 @@ func InitGlobalRuntimeCollector(opts ...RuntimeCollectorOption) *RuntimeCollecto
 
 const snapshotMaxAge = 30 * time.Second
 
+func getCPUTime() time.Duration {
+	var rusage syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &rusage); err != nil {
+		return 0
+	}
+	return time.Duration(rusage.Utime.Nano()+rusage.Stime.Nano()) * time.Nanosecond
+}
+
 func GetRuntimeSnapshot() *RuntimeSnapshot {
 	c := globalRuntimeCollector.Load()
 	if c == nil {
@@ -309,8 +349,10 @@ func GetRuntimeSnapshot() *RuntimeSnapshot {
 		}
 	}
 	snap := c.Snapshot()
-	if time.Since(snap.CollectedAt) > snapshotMaxAge {
-		snap.Stale = true
+	if !c.running.Load() || time.Since(snap.CollectedAt) > snapshotMaxAge {
+		snapCopy := *snap
+		snapCopy.Stale = true
+		return &snapCopy
 	}
 	return snap
 }

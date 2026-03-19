@@ -28,6 +28,7 @@ type Uploader interface {
 	FPutObject(ctx context.Context, bucketName, objectName, filePath string, opts minio.PutObjectOptions) (minio.UploadInfo, error)
 	PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, opts minio.PutObjectOptions) (minio.UploadInfo, error)
 	GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) ([]byte, error)
+	GetObjectStream(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error)
 	RemoveObject(ctx context.Context, bucketName, objectName string, opts minio.RemoveObjectOptions) error
 	ListObjects(ctx context.Context, bucketName string, opts minio.ListObjectsOptions) <-chan minio.ObjectInfo
 	CopyObject(ctx context.Context, dest minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error)
@@ -201,6 +202,25 @@ func (m *MinioClientWrapper) GetObject(ctx context.Context, bucketName, objectNa
 		zap.String("object", objectName),
 		zap.Int("size", len(data)))
 	return data, nil
+}
+
+func (m *MinioClientWrapper) GetObjectStream(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
+	minioMetrics := metrics.NewMinIOMetrics("get_object_stream")
+	object, err := m.client.GetObject(ctx, bucketName, objectName, opts)
+	if err != nil {
+		minioMetrics.Finish("error")
+		m.logger.Sugar().Error("Failed to get object stream",
+			zap.Error(err),
+			zap.String("bucket", bucketName),
+			zap.String("object", objectName))
+		return nil, err
+	}
+
+	minioMetrics.Finish("success")
+	m.logger.Sugar().Info("Successfully retrieved object stream",
+		zap.String("bucket", bucketName),
+		zap.String("object", objectName))
+	return object, nil
 }
 
 // RemoveObject 删除对象

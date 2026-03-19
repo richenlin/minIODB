@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,6 +73,18 @@ func (m *mockExecutorUploader) GetObject(ctx context.Context, bucketName, object
 		return nil, errors.New("object not found")
 	}
 	return data, nil
+}
+
+func (m *mockExecutorUploader) GetObjectStream(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	key := bucketName + "/" + objectName
+	data, ok := m.objects[key]
+	if !ok {
+		return nil, errors.New("object not found")
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 func (m *mockExecutorUploader) RemoveObject(ctx context.Context, bucketName, objectName string, opts minio.RemoveObjectOptions) error {
@@ -476,6 +489,12 @@ func TestBackupTable_CopyError(t *testing.T) {
 	if result.ObjectCount != 0 {
 		t.Errorf("expected 0 objects due to copy error, got %d", result.ObjectCount)
 	}
+	if result.Status != "partial" {
+		t.Errorf("expected status 'partial' due to copy error, got %q", result.Status)
+	}
+	if result.FailedCount != 1 {
+		t.Errorf("expected FailedCount=1 due to copy error, got %d", result.FailedCount)
+	}
 }
 
 func TestCleanupExpiredBackups(t *testing.T) {
@@ -513,4 +532,113 @@ func TestCleanupExpiredBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestTableBackup_ErrorsPropagateToResult(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := &config.Config{}
+	mockPrimary := newMockExecutorUploader()
+	mockBackup := newMockExecutorUploader()
+
+	mockPrimary.buckets["test-primary"] = true
+	mockPrimary.objects["test-primary/test-table/file1.parquet"] = []byte("data1")
+	mockPrimary.listObjects = []storage.ObjectInfo{
+		{Name: "test-table/file1.parquet", Size: 100, LastModified: time.Now()},
+	}
+
+	backupTarget := &BackupTarget{
+		Uploader: mockBackup,
+		Bucket:   "test-backup",
+		Degraded: false,
+		Mode:     ModeBackupMinIO,
+	}
+
+	executor := NewExecutor(mockPrimary, backupTarget, nil, nil, nil, cfg, logger)
+	executor.nodeID = "test-node"
+
+	ctx := context.Background()
+	result, err := executor.TableBackup(ctx, "test-table", "")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if result.Status != "completed" {
+		t.Errorf("expected completed status, got %s", result.Status)
+	}
+
+	if result.Errors == nil {
+		result.Errors = []string{}
+	}
+
+	t.Logf("Backup completed with %d errors", len(result.Errors))
+}
+
+func TestTableBackup_UploadError_AddsToResultErrors(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := &config.Config{}
+	mockPrimary := newMockExecutorUploader()
+	mockBackup := newMockExecutorUploader()
+	mockBackup.putErr = errors.New("upload failed")
+
+	mockPrimary.buckets["test-primary"] = true
+	mockPrimary.objects["test-primary/test-table/file1.parquet"] = []byte("data1")
+	mockPrimary.listObjects = []storage.ObjectInfo{
+		{Name: "test-table/file1.parquet", Size: 100, LastModified: time.Now()},
+	}
+
+	backupTarget := &BackupTarget{
+		Uploader: mockBackup,
+		Bucket:   "test-backup",
+		Degraded: false,
+		Mode:     ModeBackupMinIO,
+	}
+
+	executor := NewExecutor(mockPrimary, backupTarget, nil, nil, nil, cfg, logger)
+	executor.nodeID = "test-node"
+
+	ctx := context.Background()
+	result, err := executor.TableBackup(ctx, "test-table", "")
+
+	if err == nil {
+		t.Fatal("expected error when manifest upload fails")
+	}
+
+	if result != nil {
+		t.Errorf("expected nil result when manifest upload fails, got %+v", result)
+	}
+}
+
+func TestMetadataBackup_NilMetadataManager(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := &config.Config{}
+	mockPrimary := newMockExecutorUploader()
+	mockBackup := newMockExecutorUploader()
+
+	backupTarget := &BackupTarget{
+		Uploader: mockBackup,
+		Bucket:   "test-backup",
+		Degraded: false,
+		Mode:     ModeBackupMinIO,
+	}
+
+	executor := NewExecutor(mockPrimary, backupTarget, nil, nil, nil, cfg, logger)
+
+	ctx := context.Background()
+	_, err := executor.MetadataBackup(ctx, "")
+
+	if err == nil {
+		t.Error("expected error for nil metadata manager")
+	}
+	if err != nil && !containsString(err.Error(), "metadata manager not available") {
+		t.Errorf("expected 'metadata manager not available' error, got %v", err)
+	}
+}
+
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsString(s[1:], substr) || s[:len(substr)] == substr)
 }

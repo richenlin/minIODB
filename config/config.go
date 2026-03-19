@@ -324,7 +324,8 @@ type ReplicationConfig struct {
 	RetryDelay          time.Duration `yaml:"retry_delay" json:"retry_delay"`                   // 重试延迟
 	CheckpointKeyPrefix string        `yaml:"checkpoint_key_prefix" json:"checkpoint_key_prefix"`
 	ActiveWindow        *TimeWindow   `yaml:"active_window,omitempty" json:"active_window,omitempty"`
-	SourceBucket        string        `yaml:"source_bucket" json:"source_bucket"` // 源 MinIO bucket 名称
+	SourceBucket        string        `yaml:"source_bucket" json:"source_bucket"`               // 源 MinIO bucket 名称
+	MaxObjectsPerSync   int           `yaml:"max_objects_per_sync" json:"max_objects_per_sync"` // 单次同步最大对象数，防止OOM
 }
 
 // BackupSchedule 备份计划配置

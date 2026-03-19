@@ -2,14 +2,19 @@ package replication
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"minIODB/pkg/pool"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
@@ -588,5 +593,106 @@ func TestCheckpointStore_ClearFileNotExist(t *testing.T) {
 	err := store.Clear(ctx, "nonexistent-bucket")
 	if err != nil {
 		t.Errorf("Clear should not fail when file does not exist: %v", err)
+	}
+}
+
+func TestSyncCheckpoint_PruneOldEntries_LargeDataset(t *testing.T) {
+	cp := NewSyncCheckpoint()
+	now := time.Now()
+	entryCount := 200000
+	keep := 50000
+
+	for i := 0; i < entryCount; i++ {
+		cp.ObjectVersions[fmt.Sprintf("obj%d", i)] = now.Add(time.Duration(i) * time.Millisecond)
+	}
+
+	assert.Equal(t, entryCount, len(cp.ObjectVersions))
+
+	cp.pruneOldEntries(keep)
+
+	assert.Equal(t, keep, len(cp.ObjectVersions), "Should keep exactly %d entries", keep)
+
+	for key := range cp.ObjectVersions {
+		idxStr := strings.TrimPrefix(key, "obj")
+		idx, err := strconv.Atoi(idxStr)
+		require.NoError(t, err, "Key should have numeric suffix")
+		assert.GreaterOrEqual(t, idx, entryCount-keep, "Should keep the most recent entries")
+	}
+}
+
+func TestSyncCheckpoint_PruneOldEntries_KeepsNewest(t *testing.T) {
+	cp := NewSyncCheckpoint()
+	now := time.Now()
+
+	cp.ObjectVersions["oldest"] = now.Add(-3 * time.Hour)
+	cp.ObjectVersions["middle"] = now.Add(-2 * time.Hour)
+	cp.ObjectVersions["newest"] = now.Add(-1 * time.Hour)
+	cp.ObjectVersions["brand-new"] = now
+
+	cp.pruneOldEntries(2)
+
+	assert.Equal(t, 2, len(cp.ObjectVersions))
+	assert.Contains(t, cp.ObjectVersions, "newest")
+	assert.Contains(t, cp.ObjectVersions, "brand-new")
+	assert.NotContains(t, cp.ObjectVersions, "oldest")
+	assert.NotContains(t, cp.ObjectVersions, "middle")
+}
+
+func TestCheckpointStore_LoadPrunesOversizedCheckpoint(t *testing.T) {
+	fallbackDir := t.TempDir()
+	logger := zap.NewNop()
+	store := NewCheckpointStore(nil, "test:prune", fallbackDir, logger)
+	ctx := context.Background()
+
+	largeCp := NewSyncCheckpoint()
+	now := time.Now()
+	entryCount := 150000
+	for i := 0; i < entryCount; i++ {
+		largeCp.ObjectVersions[fmt.Sprintf("obj%d", i)] = now.Add(time.Duration(i) * time.Millisecond)
+	}
+
+	err := store.Save(ctx, "test-bucket", largeCp)
+	require.NoError(t, err)
+
+	loaded, err := store.Load(ctx, "test-bucket")
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(loaded.ObjectVersions), maxCheckpointEntries,
+		"Loaded checkpoint should be pruned to maxCheckpointEntries")
+}
+
+func BenchmarkPruneOldEntries(b *testing.B) {
+	now := time.Now()
+
+	benchmarks := []struct {
+		name       string
+		entryCount int
+		keep       int
+	}{
+		{"1k_entries_keep_100", 1000, 100},
+		{"10k_entries_keep_1k", 10000, 1000},
+		{"50k_entries_keep_10k", 50000, 10000},
+		{"100k_entries_keep_50k", 100000, 50000},
+		{"200k_entries_keep_50k", 200000, 50000},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			cp := NewSyncCheckpoint()
+			for i := 0; i < bm.entryCount; i++ {
+				cp.ObjectVersions[fmt.Sprintf("obj%d", i)] = now.Add(time.Duration(i) * time.Millisecond)
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				cpCopy := &SyncCheckpoint{
+					ObjectVersions: make(map[string]time.Time, len(cp.ObjectVersions)),
+				}
+				for k, v := range cp.ObjectVersions {
+					cpCopy.ObjectVersions[k] = v
+				}
+				cpCopy.pruneOldEntries(bm.keep)
+			}
+		})
 	}
 }

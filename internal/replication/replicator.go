@@ -1,7 +1,7 @@
 package replication
 
 import (
-	"bytes"
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -28,7 +28,8 @@ const (
 	StatusError      ReplicatorStatus = "error"
 	StatusOverloaded ReplicatorStatus = "overloaded"
 
-	checkpointBatchSize = 100
+	checkpointBatchSize   = 100
+	defaultMaxObjectsSync = 10000
 )
 
 var (
@@ -37,11 +38,34 @@ var (
 	ErrDstUploaderNil    = errors.New("destination uploader is nil")
 )
 
+type objectToSync struct {
+	key          string
+	lastModified time.Time
+}
+
+type maxObjectHeap []objectToSync
+
+func (h maxObjectHeap) Len() int           { return len(h) }
+func (h maxObjectHeap) Less(i, j int) bool { return h[i].lastModified.Before(h[j].lastModified) }
+func (h maxObjectHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *maxObjectHeap) Push(x interface{}) {
+	*h = append(*h, x.(objectToSync))
+}
+
+func (h *maxObjectHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
 type Replicator struct {
-	srcPool          *pool.MinIOPool // Held to prevent pool from being GC'd while replicator is active
+	srcPool          *pool.MinIOPool
 	srcUploader      storage.Uploader
 	dstUploader      storage.Uploader
-	checkpoint       *CheckpointStore
+	checkpoint       CheckpointStoreInterface
 	throttler        *Throttler
 	cfg              *config.ReplicationConfig
 	logger           *zap.Logger
@@ -62,21 +86,21 @@ type Replicator struct {
 }
 
 type ReplicatorStats struct {
-	Status          ReplicatorStatus `json:"status"`
-	LastSyncTime    time.Time        `json:"last_sync_time"`
-	LastSyncCount   int64            `json:"last_sync_count"`
-	LastSyncSkipped int64            `json:"last_sync_skipped"`
-	LastSyncFailed  int64            `json:"last_sync_failed"`
-	CurrentBucket   string           `json:"current_bucket"`
-	SyncCycles      int64            `json:"sync_cycles"`
-	ErrorMsg        string           `json:"error_msg,omitempty"`
-	CheckpointStore *CheckpointStore `json:"-"`
-	Throttler       *Throttler       `json:"-"`
+	Status          ReplicatorStatus         `json:"status"`
+	LastSyncTime    time.Time                `json:"last_sync_time"`
+	LastSyncCount   int64                    `json:"last_sync_count"`
+	LastSyncSkipped int64                    `json:"last_sync_skipped"`
+	LastSyncFailed  int64                    `json:"last_sync_failed"`
+	CurrentBucket   string                   `json:"current_bucket"`
+	SyncCycles      int64                    `json:"sync_cycles"`
+	ErrorMsg        string                   `json:"error_msg,omitempty"`
+	CheckpointStore CheckpointStoreInterface `json:"-"`
+	Throttler       *Throttler               `json:"-"`
 }
 
 type ReplicatorOption func(*Replicator)
 
-func WithReplicatorCheckpoint(checkpoint *CheckpointStore) ReplicatorOption {
+func WithReplicatorCheckpoint(checkpoint CheckpointStoreInterface) ReplicatorOption {
 	return func(r *Replicator) {
 		if checkpoint != nil {
 			r.checkpoint = checkpoint
@@ -368,7 +392,14 @@ func (r *Replicator) detectIncremental(ctx context.Context, bucket string) (*Syn
 		checkpoint = NewSyncCheckpoint()
 	}
 
-	var objectsToSync []string
+	maxObjects := r.cfg.MaxObjectsPerSync
+	if maxObjects <= 0 {
+		maxObjects = defaultMaxObjectsSync
+	}
+
+	h := &maxObjectHeap{}
+	heap.Init(h)
+	var totalCount int
 
 	objectCh := r.srcUploader.ListObjects(ctx, bucket, minio.ListObjectsOptions{
 		Recursive: true,
@@ -385,8 +416,27 @@ func (r *Replicator) detectIncremental(ctx context.Context, bucket string) (*Syn
 
 		lastSynced, exists := checkpoint.GetObjectVersion(obj.Key)
 		if !exists || obj.LastModified.After(lastSynced) {
-			objectsToSync = append(objectsToSync, obj.Key)
+			totalCount++
+			entry := objectToSync{key: obj.Key, lastModified: obj.LastModified}
+			if h.Len() < maxObjects {
+				heap.Push(h, entry)
+			} else if obj.LastModified.After((*h)[0].lastModified) {
+				heap.Pop(h)
+				heap.Push(h, entry)
+			}
 		}
+	}
+
+	objectsToSync := make([]string, h.Len())
+	for i := h.Len() - 1; i >= 0; i-- {
+		objectsToSync[i] = heap.Pop(h).(objectToSync).key
+	}
+
+	if totalCount > maxObjects {
+		r.logger.Warn("Objects to sync exceeds limit, prioritizing most recent",
+			zap.Int("total", totalCount),
+			zap.Int("selected", len(objectsToSync)),
+			zap.Int("limit", maxObjects))
 	}
 
 	return checkpoint, objectsToSync, nil
@@ -398,18 +448,18 @@ func (r *Replicator) copyObject(ctx context.Context, bucket, objectKey string) e
 		return fmt.Errorf("stat object %s from source: %w", objectKey, err)
 	}
 
-	data, err := r.srcUploader.GetObject(ctx, bucket, objectKey, minio.GetObjectOptions{})
+	reader, err := r.srcUploader.GetObjectStream(ctx, bucket, objectKey, minio.GetObjectOptions{})
 	if err != nil {
-		return fmt.Errorf("get object %s from source: %w", objectKey, err)
+		return fmt.Errorf("get object stream %s from source: %w", objectKey, err)
 	}
+	defer reader.Close()
 
 	putOpts := minio.PutObjectOptions{
 		ContentType:  objInfo.ContentType,
 		UserMetadata: objInfo.UserMetadata,
 	}
 
-	_, err = r.dstUploader.PutObject(ctx, bucket, objectKey,
-		bytes.NewReader(data), int64(len(data)), putOpts)
+	_, err = r.dstUploader.PutObject(ctx, bucket, objectKey, reader, objInfo.Size, putOpts)
 	if err != nil {
 		return fmt.Errorf("put object %s to destination: %w", objectKey, err)
 	}
