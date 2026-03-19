@@ -68,7 +68,7 @@ auth:
   # 生产环境请将 secret 替换为高强度随机字符串（建议 32 字符以上）。
   api_key_pairs:
     - key: "admin"
-      secret: "miniodb-admin-secret"   # 生产环境必须替换
+      secret: "admin123456"   # 生产环境必须替换
       role: "root"
       display_name: "管理员"
 
@@ -189,7 +189,7 @@ table_management:
     backup_enabled: true
     id_strategy: "snowflake"       # uuid | snowflake | custom | user_provided
     id_prefix: ""
-    auto_generate_id: false
+    auto_generate_id: true
     id_validation:
       required: true
       max_length: 255

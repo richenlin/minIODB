@@ -525,7 +525,7 @@ func (q *Querier) createTableViewWithDBWithColumnPruning(db *sql.DB, tableName s
 	q.logger.Sugar().Infof("Executing CREATE VIEW SQL: %s", createViewSQL)
 
 	if _, err := db.Exec(createViewSQL); err != nil {
-		q.logger.Sugar().Infof("ERROR: Failed to create optimized view for table %s: %w", tableName, err)
+		q.logger.Sugar().Infof("ERROR: Failed to create optimized view for table %s: %v", tableName, err)
 		q.logger.Sugar().Infof("ERROR: SQL execution error: %v", err)
 		return fmt.Errorf("failed to create optimized view for table %s: %w", tableName, err)
 	}
@@ -561,17 +561,20 @@ func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string
 	// 获取对象信息以获取 ETag（用于完整性校验）
 	objInfo, err := q.minioClient.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
 	if err != nil {
+		q.logger.Sugar().Errorf("Failed to get object info for %s: %v", objectName, err)
 		return "", fmt.Errorf("failed to get object info for %s: %w", objectName, err)
 	}
 
 	// 使用正确的MinIO方法下载文件
 	data, err := q.minioClient.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
+		q.logger.Sugar().Errorf("Failed to download %s: %v", objectName, err)
 		return "", fmt.Errorf("failed to download %s: %w", objectName, err)
 	}
 
 	// 写入本地文件
 	if err := os.WriteFile(localPath, data, 0644); err != nil {
+		q.logger.Sugar().Errorf("Failed to write file %s: %v", localPath, err)
 		return "", fmt.Errorf("failed to write file %s: %w", localPath, err)
 	}
 
@@ -1099,6 +1102,172 @@ func (q *Querier) ExecuteUpdate(sqlStatement string) (int64, error) {
 	q.logger.Sugar().Infof("Update completed: %d rows affected in %v", rowsAffected, time.Since(startTime))
 
 	return rowsAffected, nil
+}
+
+// RewriteParquetForDelete 通过重写 parquet 文件实现物理删除记录。
+// 仅重写包含目标 ID 的文件，其余文件不受影响，适合低频删除场景。
+// 返回：实际删除的记录数、是否在持久化存储中找到该 ID、错误。
+func (q *Querier) RewriteParquetForDelete(ctx context.Context, tableName, id string) (int64, bool, error) {
+	if q.redisPool == nil || q.minioClient == nil {
+		return 0, false, nil // 单节点无 Redis/MinIO，无持久化数据可删
+	}
+
+	startTime := time.Now()
+	q.logger.Sugar().Infof("Starting parquet rewrite delete for table=%s id=%s", tableName, id)
+
+	redisClient := q.redisPool.GetClient()
+	pattern := fmt.Sprintf("index:table:%s:id:%s:*", tableName, id)
+	idIndexKeys, err := pool.ScanKeys(ctx, redisClient, pattern)
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to scan redis index for id %s: %w", id, err)
+	}
+	if len(idIndexKeys) == 0 {
+		q.logger.Sugar().Infof("No persisted index found for table=%s id=%s, nothing to rewrite", tableName, id)
+		return 0, false, nil
+	}
+
+	// 收集包含该 ID 的所有 parquet object names（一个文件可能被多个 id key 引用）
+	objectNameSet := make(map[string]struct{})
+	for _, key := range idIndexKeys {
+		members, err := redisClient.SMembers(ctx, key).Result()
+		if err != nil {
+			q.logger.Sugar().Warnf("Failed to get members for key %s: %v", key, err)
+			continue
+		}
+		for _, m := range members {
+			objectNameSet[m] = struct{}{}
+		}
+	}
+
+	if len(objectNameSet) == 0 {
+		// Redis 索引键存在但集合为空，仍视为找到（清理悬挂索引）
+		if err := redisClient.Del(ctx, idIndexKeys...).Err(); err != nil {
+			q.logger.Sugar().Warnf("Failed to delete empty redis index keys for id %s: %v", id, err)
+		}
+		return 0, true, nil
+	}
+
+	bucket := q.config.GetMinIO().Bucket
+	var totalDeleted int64
+
+	for objectName := range objectNameSet {
+		deleted, err := q.rewriteSingleParquet(ctx, bucket, objectName, tableName, id)
+		if err != nil {
+			q.logger.Sugar().Warnf("Failed to rewrite parquet %s: %v (skipping)", objectName, err)
+			continue
+		}
+		totalDeleted += deleted
+	}
+
+	// 删除该 ID 在 Redis 中的所有索引 key
+	if err := redisClient.Del(ctx, idIndexKeys...).Err(); err != nil {
+		q.logger.Sugar().Warnf("Failed to delete redis index keys for id %s: %v", id, err)
+	}
+
+	q.logger.Sugar().Infof("Parquet rewrite delete completed: table=%s id=%s deleted=%d elapsed=%v",
+		tableName, id, totalDeleted, time.Since(startTime))
+	return totalDeleted, true, nil
+}
+
+// rewriteSingleParquet 下载单个 parquet 文件，过滤掉指定 id 的行，再上传回 MinIO。
+// 如果过滤后文件为空，则删除 MinIO 对象并更新其他 ID 的索引引用。
+func (q *Querier) rewriteSingleParquet(ctx context.Context, bucket, objectName, tableName, deleteID string) (int64, error) {
+	// 1. 下载文件到本地
+	localPath, err := q.downloadToTemp(ctx, objectName)
+	if err != nil {
+		return 0, fmt.Errorf("download failed: %w", err)
+	}
+
+	// 2. 用临时 DuckDB 连接读取并过滤
+	tmpDB, err := sql.Open("duckdb", ":memory:")
+	if err != nil {
+		return 0, fmt.Errorf("failed to open tmp duckdb: %w", err)
+	}
+	defer tmpDB.Close()
+
+	quotedPath := security.DefaultSanitizer.QuoteLiteral(localPath)
+	quotedID := security.DefaultSanitizer.QuoteLiteral(deleteID)
+
+	// 统计将要删除的行数
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM read_parquet(%s) WHERE id = %s", quotedPath, quotedID)
+	var deletedCount int64
+	if err := tmpDB.QueryRowContext(ctx, countSQL).Scan(&deletedCount); err != nil {
+		return 0, fmt.Errorf("count query failed: %w", err)
+	}
+	if deletedCount == 0 {
+		return 0, nil // 该文件不包含此 ID，无需处理
+	}
+
+	// 检查过滤后是否还有剩余行
+	totalCountSQL := fmt.Sprintf("SELECT COUNT(*) FROM read_parquet(%s)", quotedPath)
+	var totalCount int64
+	if err := tmpDB.QueryRowContext(ctx, totalCountSQL).Scan(&totalCount); err != nil {
+		return 0, fmt.Errorf("total count query failed: %w", err)
+	}
+	remainingCount := totalCount - deletedCount
+
+	if remainingCount == 0 {
+		// 文件只包含此 ID 的数据，直接删除 MinIO 对象
+		q.logger.Sugar().Infof("Parquet file %s contains only records for id=%s, deleting object", objectName, deleteID)
+		if err := q.minioClient.RemoveObject(ctx, bucket, objectName, minio.RemoveObjectOptions{}); err != nil {
+			q.logger.Sugar().Warnf("Failed to remove empty parquet object %s: %v", objectName, err)
+		} else {
+			q.logger.Sugar().Infof("Removed parquet object %s from MinIO", objectName)
+		}
+		// 清理其他 ID 在 Redis 中对该文件的引用
+		q.removeObjectFromOtherIDIndexes(ctx, bucket, tableName, objectName, deleteID)
+	} else {
+		// 3. 将过滤后的数据写出到新临时文件
+		newLocalPath := localPath + ".rewrite"
+		copySQL := fmt.Sprintf(
+			"COPY (SELECT * FROM read_parquet(%s) WHERE id != %s) TO %s (FORMAT PARQUET, COMPRESSION SNAPPY)",
+			quotedPath, quotedID, security.DefaultSanitizer.QuoteLiteral(newLocalPath))
+		if _, err := tmpDB.ExecContext(ctx, copySQL); err != nil {
+			return 0, fmt.Errorf("copy to parquet failed: %w", err)
+		}
+		defer os.Remove(newLocalPath)
+
+		// 4. 上传覆盖原 MinIO 对象
+		_, err = q.minioClient.FPutObject(ctx, bucket, objectName, newLocalPath, minio.PutObjectOptions{
+			ContentType: "application/octet-stream",
+		})
+		if err != nil {
+			return 0, fmt.Errorf("upload rewritten parquet failed: %w", err)
+		}
+		q.logger.Sugar().Infof("Rewrote parquet object %s: removed %d rows for id=%s, %d rows remain",
+			objectName, deletedCount, deleteID, remainingCount)
+
+		// 5. 让文件缓存失效（删除本地缓存的旧文件，下次查询会重新下载）
+		os.Remove(localPath)
+	}
+
+	return deletedCount, nil
+}
+
+// removeObjectFromOtherIDIndexes 当 parquet 文件被完全删除时，
+// 清理所有其他 ID 在 Redis 中对该文件的引用，避免悬挂引用。
+func (q *Querier) removeObjectFromOtherIDIndexes(ctx context.Context, bucket, tableName, objectName, skipID string) {
+	if q.redisPool == nil {
+		return
+	}
+	redisClient := q.redisPool.GetClient()
+	// 扫描该表所有 ID 索引
+	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
+	keys, err := pool.ScanKeys(ctx, redisClient, pattern)
+	if err != nil {
+		q.logger.Sugar().Warnf("Failed to scan index keys for cleanup: %v", err)
+		return
+	}
+	skipPrefix := fmt.Sprintf("index:table:%s:id:%s:", tableName, skipID)
+	for _, key := range keys {
+		if strings.HasPrefix(key, skipPrefix) {
+			continue // 该 ID 的索引已由调用方删除
+		}
+		// 从集合中移除该 object name 引用
+		if err := redisClient.SRem(ctx, key, objectName).Err(); err != nil {
+			q.logger.Sugar().Warnf("Failed to remove object ref from key %s: %v", key, err)
+		}
+	}
 }
 
 // prepareTableDataWithDB 使用指定数据库连接为表准备数据

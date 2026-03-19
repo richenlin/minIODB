@@ -1,4 +1,3 @@
-
 package sse
 
 import (
@@ -155,6 +154,9 @@ func ServeSSE(c *gin.Context, hub *Hub, topics []string) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	// Disable buffering in reverse proxies (Nginx, Next.js rewrites, etc.)
+	// so events are delivered to the browser without delay.
+	c.Header("X-Accel-Buffering", "no")
 
 	channels := make([]chan Event, len(topics))
 	for i, topic := range topics {

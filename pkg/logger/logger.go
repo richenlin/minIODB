@@ -42,25 +42,29 @@ var DefaultLogConfig = LogConfig{
 var Logger *zap.Logger
 var Sugar *zap.SugaredLogger
 
+var core zapcore.Core
+var encoder zapcore.Encoder
+var level zapcore.Level
+var baseWriters []zapcore.WriteSyncer
+
 // contextKey 上下文键类型
 type contextKey string
 
 const (
-	traceIDKey    contextKey = "trace_id"
-	requestIDKey  contextKey = "request_id"
-	userIDKey     contextKey = "user_id"
-	operationKey  contextKey = "operation"
+	traceIDKey   contextKey = "trace_id"
+	requestIDKey contextKey = "request_id"
+	userIDKey    contextKey = "user_id"
+	operationKey contextKey = "operation"
 )
 
 // InitLogger 初始化日志器
 func InitLogger(config LogConfig) error {
-	// 解析日志级别
-	level, err := zapcore.ParseLevel(config.Level)
+	var err error
+	level, err = zapcore.ParseLevel(config.Level)
 	if err != nil {
 		return fmt.Errorf("invalid log level: %w", err)
 	}
 
-	// 创建编码器配置
 	var encoderConfig zapcore.EncoderConfig
 	if config.Format == "json" {
 		encoderConfig = zap.NewProductionEncoderConfig()
@@ -74,31 +78,24 @@ func InitLogger(config LogConfig) error {
 	encoderConfig.CallerKey = "caller"
 	encoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
 
-	// 创建编码器
-	var encoder zapcore.Encoder
 	if config.Format == "json" {
 		encoder = zapcore.NewJSONEncoder(encoderConfig)
 	} else {
 		encoder = zapcore.NewConsoleEncoder(encoderConfig)
 	}
 
-	// 创建写入器
-	var writers []zapcore.WriteSyncer
+	baseWriters = nil
 
-	// 标准输出
 	if config.Output == "stdout" || config.Output == "both" {
-		writers = append(writers, zapcore.AddSync(os.Stdout))
+		baseWriters = append(baseWriters, zapcore.AddSync(os.Stdout))
 	}
 
-	// 文件输出
 	if config.Output == "file" || config.Output == "both" {
-		// 确保日志目录存在
 		logDir := filepath.Dir(config.Filename)
 		if err := os.MkdirAll(logDir, 0755); err != nil {
 			return fmt.Errorf("failed to create log directory: %w", err)
 		}
 
-		// 配置日志轮转
 		fileWriter := &lumberjack.Logger{
 			Filename:   config.Filename,
 			MaxSize:    config.MaxSize,
@@ -106,17 +103,15 @@ func InitLogger(config LogConfig) error {
 			MaxAge:     config.MaxAge,
 			Compress:   config.Compress,
 		}
-		writers = append(writers, zapcore.AddSync(fileWriter))
+		baseWriters = append(baseWriters, zapcore.AddSync(fileWriter))
 	}
 
-	// 创建核心
-	core := zapcore.NewCore(
+	core = zapcore.NewCore(
 		encoder,
-		zapcore.NewMultiWriteSyncer(writers...),
+		zapcore.NewMultiWriteSyncer(baseWriters...),
 		level,
 	)
 
-	// 创建日志器
 	Logger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 	Sugar = Logger.Sugar()
 
@@ -223,7 +218,7 @@ func LogFatal(ctx context.Context, msg string, fields ...zap.Field) {
 // LogOperation 记录操作日志
 func LogOperation(ctx context.Context, operation string, duration time.Duration, err error, fields ...zap.Field) {
 	logger := WithContext(ctx)
-	
+
 	// 添加操作相关字段
 	fields = append(fields,
 		zap.String("operation", operation),
@@ -241,7 +236,7 @@ func LogOperation(ctx context.Context, operation string, duration time.Duration,
 // LogHTTPRequest 记录HTTP请求日志
 func LogHTTPRequest(ctx context.Context, method, path string, statusCode int, duration time.Duration, fields ...zap.Field) {
 	logger := WithContext(ctx)
-	
+
 	fields = append(fields,
 		zap.String("method", method),
 		zap.String("path", path),
@@ -259,7 +254,7 @@ func LogHTTPRequest(ctx context.Context, method, path string, statusCode int, du
 // LogGRPCRequest 记录gRPC请求日志
 func LogGRPCRequest(ctx context.Context, method string, duration time.Duration, err error, fields ...zap.Field) {
 	logger := WithContext(ctx)
-	
+
 	fields = append(fields,
 		zap.String("grpc_method", method),
 		zap.Duration("duration", duration),
@@ -276,7 +271,7 @@ func LogGRPCRequest(ctx context.Context, method string, duration time.Duration, 
 // LogQuery 记录查询日志
 func LogQuery(ctx context.Context, sql string, duration time.Duration, rowCount int, err error) {
 	logger := WithContext(ctx)
-	
+
 	// 清理SQL语句（移除多余空格和换行）
 	cleanSQL := strings.ReplaceAll(strings.TrimSpace(sql), "\n", " ")
 	if len(cleanSQL) > 200 {
@@ -300,7 +295,7 @@ func LogQuery(ctx context.Context, sql string, duration time.Duration, rowCount 
 // LogDataWrite 记录数据写入日志
 func LogDataWrite(ctx context.Context, dataID string, size int64, duration time.Duration, err error) {
 	logger := WithContext(ctx)
-	
+
 	fields := []zap.Field{
 		zap.String("data_id", dataID),
 		zap.Int64("size_bytes", size),
@@ -318,7 +313,7 @@ func LogDataWrite(ctx context.Context, dataID string, size int64, duration time.
 // LogBufferFlush 记录缓冲区刷新日志
 func LogBufferFlush(ctx context.Context, bufferType string, itemCount int, size int64, duration time.Duration, err error) {
 	logger := WithContext(ctx)
-	
+
 	fields := []zap.Field{
 		zap.String("buffer_type", bufferType),
 		zap.Int("item_count", itemCount),
@@ -372,4 +367,28 @@ func GetLogger() *zap.Logger {
 // GetSugaredLogger 获取全局糖化日志器实例
 func GetSugaredLogger() *zap.SugaredLogger {
 	return GetLogger().Sugar()
-} 
+}
+
+// SetCaptureWriter 替换日志器的 writer，用于捕获日志到缓冲区
+// 该方法在运行时替换底层 writer，将日志同时写入原始输出和捕获器
+func SetCaptureWriter(cw *CaptureWriter) {
+	if cw == nil || core == nil || encoder == nil {
+		return
+	}
+	core = zapcore.NewCore(
+		encoder,
+		cw,
+		level,
+	)
+	Logger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	Sugar = Logger.Sugar()
+}
+
+// NewMultiWriteSyncerFromBase 从初始化时保存的基础 writers 创建 MultiWriteSyncer
+// 用于 CaptureWriter 的 underlying writer
+func NewMultiWriteSyncerFromBase() zapcore.WriteSyncer {
+	if len(baseWriters) == 0 {
+		return zapcore.AddSync(os.Stdout)
+	}
+	return zapcore.NewMultiWriteSyncer(baseWriters...)
+}

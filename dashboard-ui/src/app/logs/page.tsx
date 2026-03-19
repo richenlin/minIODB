@@ -1,11 +1,13 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { DashboardLayout } from '@/components/layout/dashboard-layout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { logsApi } from '@/lib/api/logs'
 import { LogEntry, LogQueryParams } from '@/lib/api/types'
+import { useAuthStore } from '@/stores/auth-store'
 import { PlayIcon, PauseIcon, ReloadIcon } from '@radix-ui/react-icons'
 
 const LEVELS = ['all', 'debug', 'info', 'warn', 'error'] as const
@@ -36,6 +38,7 @@ function formatBytes(bytes: number): string {
 }
 
 export default function LogsPage() {
+  const token = useAuthStore(state => state.token)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -54,6 +57,14 @@ export default function LogsPage() {
   const esRef = useRef<EventSource | null>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
+
+  // 虚拟列表配置
+  const virtualizer = useVirtualizer({
+    count: logs.length,
+    getScrollElement: () => logsContainerRef.current,
+    estimateSize: () => 48, // 预估每行高度
+    overscan: 10, // 预渲染额外行数
+  })
 
   const fetchLogs = useCallback(async () => {
     setLoading(true)
@@ -89,8 +100,6 @@ export default function LogsPage() {
       return
     }
 
-    const stored = localStorage.getItem('miniodb-auth')
-    const token = stored ? JSON.parse(stored)?.state?.token : null
     const baseUrl = logsApi.streamLogs()
     const fullUrl = token ? `${baseUrl}?token=${token}` : baseUrl
 
@@ -101,7 +110,9 @@ export default function LogsPage() {
     es.onerror = () => setSseConnected(false)
     es.onmessage = (e) => {
       try {
-        const entry: LogEntry = JSON.parse(e.data)
+        const sseEvent = JSON.parse(e.data)
+        const entry: LogEntry = sseEvent.data
+        if (!entry) return
         if (levelFilter !== 'all' && entry.level !== levelFilter) return
         if (keyword && !entry.message.toLowerCase().includes(keyword.toLowerCase())) return
         setLogs(prev => {
@@ -112,21 +123,21 @@ export default function LogsPage() {
     }
 
     return () => { es.close(); setSseConnected(false) }
-  }, [sseEnabled, ssePaused, levelFilter, keyword])
+  }, [sseEnabled, ssePaused, levelFilter, keyword, token])
 
   useEffect(() => {
-    if (autoScroll && logsContainerRef.current) {
-      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight
+    if (autoScroll && logs.length > 0) {
+      virtualizer.scrollToIndex(logs.length - 1, { align: 'end' })
     }
-  }, [logs, autoScroll])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logs.length, autoScroll])
 
   const handleSearch = () => {
     setPage(1)
     if (sseEnabled) {
       setLogs([])
-    } else {
-      fetchLogs()
     }
+    // 不需要手动调用 fetchLogs()，useEffect 会自动触发
   }
 
   const handleReset = () => {
@@ -256,7 +267,7 @@ export default function LogsPage() {
 
         <div
           ref={logsContainerRef}
-          className="rounded-lg border border-border bg-card overflow-hidden font-mono text-xs max-h-[600px] overflow-y-auto"
+          className="rounded-lg border border-border bg-card overflow-x-hidden font-mono text-xs max-h-[600px] overflow-y-auto"
         >
           {loading && !sseEnabled ? (
             <div className="flex items-center justify-center py-16 text-muted-foreground">
@@ -270,30 +281,50 @@ export default function LogsPage() {
               </p>
             </div>
           ) : (
-            logs.map((log, i) => {
-              const cfg = levelConfig[log.level] || levelConfig.info
-              return (
-                <div
-                  key={`${log.timestamp}-${i}`}
-                  className={`flex items-start gap-3 px-4 py-2 border-b border-border last:border-0 hover:bg-muted/30 ${cfg.bg}`}
-                >
-                  <span className="text-muted-foreground shrink-0 w-32">
-                    {formatTimestamp(log.timestamp)}
-                  </span>
-                  <span className={`uppercase font-bold w-12 shrink-0 ${cfg.color}`}>
-                    {log.level}
-                  </span>
-                  <span className="text-foreground flex-1 break-all">{log.message}</span>
-                  {log.fields && Object.keys(log.fields).length > 0 && (
-                    <span className="text-muted-foreground shrink-0 text-right">
-                      {Object.entries(log.fields).slice(0, 3).map(([k, v]) => (
-                        <span key={k} className="ml-2">{k}={String(v)}</span>
-                      ))}
-                    </span>
-                  )}
-                </div>
-              )
-            })
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                width: '100%',
+                position: 'relative',
+              }}
+            >
+              {virtualizer.getVirtualItems().map((virtualItem) => {
+                const log = logs[virtualItem.index]
+                const cfg = levelConfig[log.level] || levelConfig.info
+                return (
+                  <div
+                    key={virtualItem.key}
+                    data-index={virtualItem.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualItem.start}px)`,
+                    }}
+                    className={`px-4 py-2 border-b border-border hover:bg-muted/30 ${cfg.bg}`}
+                  >
+                    <div className="flex items-baseline gap-2 min-w-0">
+                      <span className="text-muted-foreground shrink-0 w-32 text-xs">
+                        {formatTimestamp(log.timestamp)}
+                      </span>
+                      <span className={`uppercase font-bold w-10 shrink-0 text-xs ${cfg.color}`}>
+                        {log.level}
+                      </span>
+                      <span className="text-foreground min-w-0 break-all">{log.message}</span>
+                    </div>
+                    {log.fields && Object.keys(log.fields).length > 0 && (
+                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5 pl-[11rem] text-muted-foreground">
+                        {Object.entries(log.fields).slice(0, 5).map(([k, v]) => (
+                          <span key={k} className="truncate max-w-xs">{k}=<span className="text-foreground/70">{String(v)}</span></span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
 

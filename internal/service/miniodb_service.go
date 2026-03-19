@@ -243,8 +243,14 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 
 	s.logger.Sugar().Infof("Processing write request for table: %s, ID: %s", tableName, recordID)
 
-	// 验证请求
-	if err := s.validateWriteRequest(req); err != nil {
+	// 基础请求校验（不依赖表配置的部分）
+	if req.Data == nil {
+		err := status.Error(codes.InvalidArgument, "Data record is required")
+		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
+		return nil, err
+	}
+	if req.Data.Payload == nil {
+		err := status.Error(codes.InvalidArgument, "Payload is required")
 		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
 		return nil, err
 	}
@@ -260,7 +266,7 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		}, nil
 	}
 
-	// 确保表存在
+	// 确保表存在（在获取表配置之前，让表有机会被创建并初始化配置）
 	if err := s.tableManager.EnsureTableExists(ctx, tableName); err != nil {
 		s.logger.Sugar().Infof("ERROR: Failed to ensure table exists: %v", err)
 		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
@@ -270,8 +276,9 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		}, nil
 	}
 
-	// 获取表配置
+	// 获取表配置（在 EnsureTableExists 之后，确保新表配置已写入 Redis）
 	tableConfig := s.GetTableConfig(ctx, tableName)
+	s.logger.Sugar().Infof("WriteData: table=%s, AutoGenerateID=%v, providedID=%q", tableName, tableConfig.AutoGenerateID, recordID)
 
 	// 处理ID：如果ID为空且允许自动生成，则生成ID
 	recordID = req.Data.Id
@@ -286,11 +293,15 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 		s.logger.Sugar().Infof("Auto-generated ID for table %s: %s", tableName, recordID)
 	}
 
-	// 转换为内部写入请求格式
+	// 转换为内部写入请求格式，Timestamp 为空时自动补充当前时间
+	ts := req.Data.Timestamp
+	if ts == nil {
+		ts = timestamppb.Now()
+	}
 	ingestReq := &miniodb.WriteRequest{
 		Table:     tableName,
 		Id:        recordID,
-		Timestamp: req.Data.Timestamp,
+		Timestamp: ts,
 		Payload:   req.Data.Payload,
 	}
 
@@ -304,6 +315,15 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 	// 更新表的最后写入时间
 	if err := s.tableManager.UpdateLastWrite(ctx, tableName); err != nil {
 		s.logger.Sugar().Infof("WARN: Failed to update last write time for table %s: %v", tableName, err)
+	}
+
+	// 使查询缓存失效（写入数据后，之前的查询结果可能已过期）
+	if s.querier != nil {
+		if err := s.querier.InvalidateCache(ctx, []string{tableName}); err != nil {
+			s.logger.Sugar().Warnf("Failed to invalidate query cache for table %s: %v", tableName, err)
+		} else {
+			s.logger.Sugar().Infof("Invalidated query cache for table %s after write", tableName)
+		}
 	}
 
 	// 发布写入事件到订阅通道（异步，不影响主流程）
@@ -443,10 +463,6 @@ func (s *MinIODBService) validateWriteRequest(req *miniodb.WriteDataRequest) err
 		}
 	}
 
-	if req.Data.Timestamp == nil {
-		return status.Error(codes.InvalidArgument, "Timestamp is required")
-	}
-
 	if req.Data.Payload == nil {
 		return status.Error(codes.InvalidArgument, "Payload is required")
 	}
@@ -460,16 +476,20 @@ func (s *MinIODBService) GetTableConfig(ctx context.Context, tableName string) c
 	if s.metadataMgr != nil {
 		cfg, err := s.metadataMgr.GetTableConfig(ctx, tableName)
 		if err == nil && cfg != nil {
+			s.logger.Sugar().Debugf("GetTableConfig: using metadataMgr for table %s, AutoGenerateID=%v", tableName, cfg.AutoGenerateID)
 			return *cfg
 		}
 	}
 
 	// 后备：从configManager获取
 	if s.configManager != nil {
-		return s.configManager.GetTableConfig(ctx, tableName)
+		cfg := s.configManager.GetTableConfig(ctx, tableName)
+		s.logger.Sugar().Debugf("GetTableConfig: using configManager for table %s, AutoGenerateID=%v", tableName, cfg.AutoGenerateID)
+		return cfg
 	}
 
 	// 如果都不可用，返回默认配置
+	s.logger.Sugar().Debugf("GetTableConfig: using default config for table %s, AutoGenerateID=%v", tableName, s.cfg.Tables.DefaultConfig.AutoGenerateID)
 	return s.cfg.Tables.DefaultConfig
 }
 
@@ -669,40 +689,40 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 	}
 
 	// 2. INSERT 成功后，删除旧版本记录
+	removedIndexKeys := 0
+	if removed, err := s.removePersistedIndexByID(ctx, tableName, req.Id); err != nil {
+		s.logger.Sugar().Warnf("Failed to remove persisted index for table %s, ID %s: %v", tableName, req.Id, err)
+	} else {
+		removedIndexKeys = removed
+		if removedIndexKeys > 0 {
+			s.logger.Sugar().Infof("Removed %d persisted index keys for table %s, ID %s", removedIndexKeys, tableName, req.Id)
+		}
+	}
+
 	if s.querier != nil {
 		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
 		if err != nil {
 			// 构建删除语句失败，记录警告但不影响整体操作（新数据已插入）
 			s.logger.Sugar().Warnf("Failed to build safe delete SQL for cleanup: %v", err)
 		} else {
-			_, err = s.querier.ExecuteQuery(deleteSQL)
+			_, err = s.querier.ExecuteUpdate(deleteSQL)
 			if err != nil {
-				// DELETE 失败仅记录警告，不返回错误（新数据已成功插入，短暂重复可接受）
-				s.logger.Sugar().Warnf("Delete query during update failed (data may be duplicated temporarily): %v", err)
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "Can only delete from base table") {
+					s.logger.Sugar().Infof("Skip cleanup delete for view-based table %s (not supported)", tableName)
+				} else {
+					s.logger.Sugar().Warnf("Delete query during update failed (data may be duplicated temporarily): %v", err)
+				}
 			}
 		}
 	}
 
 	// 3. 清理相关的缓存
-	if s.redisPool != nil {
-		redisClient := s.redisPool.GetClient()
-
-		// 清理相关的缓存项
-		cachePattern := fmt.Sprintf("cache:table:%s:id:%s:*", tableName, req.Id)
-		if keys, err := pool.ScanKeys(ctx, redisClient, cachePattern); err == nil {
-			if len(keys) > 0 {
-				redisClient.Del(ctx, keys...)
-				s.logger.Sugar().Infof("Cleaned %d cache entries for updated record", len(keys))
-			}
-		}
-
-		// 清理查询缓存（因为数据已更新）
-		queryCachePattern := fmt.Sprintf("query_cache:*%s*", tableName)
-		if keys, err := pool.ScanKeys(ctx, redisClient, queryCachePattern); err == nil {
-			if len(keys) > 0 {
-				redisClient.Del(ctx, keys...)
-				s.logger.Sugar().Infof("Cleaned %d query cache entries for table %s", len(keys), tableName)
-			}
+	if s.querier != nil {
+		if err := s.querier.InvalidateCache(ctx, []string{tableName}); err != nil {
+			s.logger.Sugar().Warnf("Failed to invalidate query cache for table %s: %v", tableName, err)
+		} else {
+			s.logger.Sugar().Infof("Invalidated query cache for table %s after update", tableName)
 		}
 	}
 
@@ -713,8 +733,9 @@ func (s *MinIODBService) UpdateData(ctx context.Context, req *miniodb.UpdateData
 
 	// 记录成功的审计日志
 	s.auditLogger.LogUpdate(ctx, tableName, req.Id, true, nil, map[string]interface{}{
-		"has_timestamp": req.Timestamp != nil,
-		"payload_size":  len(req.Payload.GetFields()),
+		"has_timestamp":      req.Timestamp != nil,
+		"payload_size":       len(req.Payload.GetFields()),
+		"removed_index_keys": removedIndexKeys,
 	})
 
 	s.logger.Sugar().Infof("Successfully updated record %s in table %s", req.Id, tableName)
@@ -804,6 +825,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 	}()
 
 	deletedCount := int32(0)
+	foundInStorage := false
 
 	// 1. 从 Buffer 中移除未 flush 的数据
 	if s.ingester != nil {
@@ -814,39 +836,34 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 		}
 	}
 
-	// 2. 从已持久化的数据中删除（通过DuckDB执行DELETE语句）
+	// 2. 从已持久化的数据中删除（重写 parquet 文件，物理删除记录，同时清理 Redis 索引）
 	if s.querier != nil {
-		deleteSQL, err := security.DefaultSanitizer.BuildSafeDeleteSQL(tableName, req.Id)
+		// 通过重写 parquet 文件实现物理删除（不依赖 DuckDB DELETE，视图也支持）
+		rowsAffected, found, err := s.querier.RewriteParquetForDelete(ctx, tableName, req.Id)
 		if err != nil {
-			s.logger.Sugar().Infof("ERROR: Failed to build safe delete SQL: %v", err)
-			s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, map[string]interface{}{"phase": "build_sql"})
+			s.logger.Sugar().Warnf("WARN: Parquet rewrite delete failed for table %s id %s: %v", tableName, req.Id, err)
+			s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, map[string]interface{}{"phase": "rewrite_parquet"})
 			return &miniodb.DeleteDataResponse{
 				Success: false,
-				Message: fmt.Sprintf("Invalid parameters: %v", err),
+				Message: fmt.Sprintf("Failed to delete record from storage: %v", err),
 			}, nil
 		}
-
-		rowsAffected, err := s.querier.ExecuteUpdate(deleteSQL)
-		if err != nil {
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "does not exist") ||
-				strings.Contains(errMsg, "no data files") ||
-				strings.Contains(errMsg, query.ErrNoDataFiles.Error()) {
-				s.logger.Sugar().Infof("Table %s has no persisted data, only buffer data was removed", tableName)
-			} else {
-				s.logger.Sugar().Infof("WARN: Delete query failed: %v", err)
-				s.auditLogger.LogDelete(ctx, tableName, req.Id, false, err, map[string]interface{}{"phase": "execute_delete"})
-				return &miniodb.DeleteDataResponse{
-					Success: false,
-					Message: fmt.Sprintf("Failed to delete record from storage: %v", err),
-				}, nil
-			}
+		if found {
+			foundInStorage = true
 		}
-
-		deletedCount = int32(rowsAffected)
+		if rowsAffected > 0 {
+			deletedCount += int32(rowsAffected)
+		}
 	}
 
 	// 2. 清理相关的缓存和索引
+	if s.querier != nil {
+		if err := s.querier.InvalidateCache(ctx, []string{tableName}); err != nil {
+			s.logger.Sugar().Warnf("Failed to invalidate query cache for table %s: %v", tableName, err)
+		} else {
+			s.logger.Sugar().Infof("Invalidated query cache for table %s after delete", tableName)
+		}
+	}
 	if s.redisPool != nil {
 		redisClient := s.redisPool.GetClient()
 
@@ -860,7 +877,7 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 		}
 
 		// 更新表的记录计数（只有实际删除了行才递减）
-		if deletedCount > 0 {
+		if deletedCount > 0 || foundInStorage {
 			recordCountKey := fmt.Sprintf("table:%s:record_count", tableName)
 			redisClient.Decr(ctx, recordCountKey)
 		}
@@ -872,11 +889,11 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 	}
 
 	// 记录审计日志
-	if deletedCount > 0 {
+	if deletedCount > 0 || foundInStorage {
 		s.auditLogger.LogDelete(ctx, tableName, req.Id, true, nil, map[string]interface{}{
 			"deleted_count": deletedCount,
 		})
-		s.logger.Sugar().Infof("Successfully deleted %d records for ID %s from table %s", deletedCount, req.Id, tableName)
+		s.logger.Sugar().Infof("Successfully deleted records for ID %s from table %s", req.Id, tableName)
 		return &miniodb.DeleteDataResponse{
 			Success:      true,
 			Message:      fmt.Sprintf("Record %s deleted successfully from table %s", req.Id, tableName),
@@ -894,6 +911,26 @@ func (s *MinIODBService) DeleteData(ctx context.Context, req *miniodb.DeleteData
 			DeletedCount: 0,
 		}, nil
 	}
+}
+
+// removePersistedIndexByID 删除某条记录在 Redis 中的持久化索引，避免旧文件继续参与查询
+func (s *MinIODBService) removePersistedIndexByID(ctx context.Context, tableName, id string) (int, error) {
+	if s.redisPool == nil {
+		return 0, nil
+	}
+	redisClient := s.redisPool.GetClient()
+	pattern := fmt.Sprintf("index:table:%s:id:%s:*", tableName, id)
+	keys, err := pool.ScanKeys(ctx, redisClient, pattern)
+	if err != nil {
+		return 0, err
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	if err := redisClient.Del(ctx, keys...).Err(); err != nil {
+		return 0, err
+	}
+	return len(keys), nil
 }
 
 // validateDeleteRequest 验证删除请求
@@ -1321,7 +1358,11 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 		}
 	}
 
-	s.logger.Sugar().Infof("Successfully created table: %s with ID strategy: %s", req.TableName, tableConfig.IDStrategy)
+	idStrategy := ""
+	if tableConfig != nil {
+		idStrategy = tableConfig.IDStrategy
+	}
+	s.logger.Sugar().Infof("Successfully created table: %s with ID strategy: %s", req.TableName, idStrategy)
 	return &miniodb.CreateTableResponse{
 		Success: true,
 		Message: fmt.Sprintf("Table %s created successfully", req.TableName),
@@ -1780,6 +1821,10 @@ func (s *MinIODBService) HealthCheck(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *MinIODBService) GetRedisPool() *pool.RedisPool {
+	return s.redisPool
 }
 
 // GetStatus 获取状态

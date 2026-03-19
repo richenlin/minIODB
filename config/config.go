@@ -304,12 +304,85 @@ type WALConfig struct {
 	SyncOnWrite bool   `yaml:"sync_on_write"`
 }
 
+// BackupSchedule 备份计划配置
+type BackupSchedule struct {
+	ID            string        `yaml:"id" json:"id"`
+	Name          string        `yaml:"name" json:"name"`
+	Enabled       bool          `yaml:"enabled" json:"enabled"`
+	Interval      time.Duration `yaml:"interval" json:"interval"`
+	BackupType    string        `yaml:"backup_type" json:"backup_type"`
+	Tables        []string      `yaml:"tables" json:"tables"`
+	RetentionDays int           `yaml:"retention_days" json:"retention_days"`
+	CreatedAt     time.Time     `yaml:"created_at" json:"created_at"`
+	UpdatedAt     time.Time     `yaml:"updated_at" json:"updated_at"`
+
+	intervalRaw string
+}
+
+// UnmarshalYAML 自定义 YAML 解析以处理 Interval 字段（支持 24h, 1d, 30m, 90s 等格式）
+func (s *BackupSchedule) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type BackupScheduleRaw struct {
+		ID            string    `yaml:"id"`
+		Name          string    `yaml:"name"`
+		Enabled       bool      `yaml:"enabled"`
+		Interval      string    `yaml:"interval"`
+		BackupType    string    `yaml:"backup_type"`
+		Tables        []string  `yaml:"tables"`
+		RetentionDays int       `yaml:"retention_days"`
+		CreatedAt     time.Time `yaml:"created_at"`
+		UpdatedAt     time.Time `yaml:"updated_at"`
+	}
+
+	var raw BackupScheduleRaw
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	s.ID = raw.ID
+	s.Name = raw.Name
+	s.Enabled = raw.Enabled
+	s.intervalRaw = raw.Interval
+	s.BackupType = raw.BackupType
+	s.Tables = raw.Tables
+	s.RetentionDays = raw.RetentionDays
+	s.CreatedAt = raw.CreatedAt
+	s.UpdatedAt = raw.UpdatedAt
+
+	if raw.Interval != "" {
+		duration, err := parseDurationWithDays(raw.Interval)
+		if err != nil {
+			return fmt.Errorf("invalid interval '%s': %w", raw.Interval, err)
+		}
+		s.Interval = duration
+	}
+
+	return nil
+}
+
+// parseDurationWithDays 解析 duration 字符串，支持 "d" 后缀表示天
+func parseDurationWithDays(s string) (time.Duration, error) {
+	if len(s) == 0 {
+		return 0, nil
+	}
+
+	if s[len(s)-1] == 'd' {
+		daysStr := s[:len(s)-1]
+		days, err := strconv.ParseFloat(daysStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid days format: %s", daysStr)
+		}
+		return time.Duration(days * 24 * float64(time.Hour)), nil
+	}
+
+	return time.ParseDuration(s)
+}
+
 // BackupConfig 备份配置（备份 MinIO 连接仅配置在 network.pools.minio_backup）
 type BackupConfig struct {
-	Enabled  bool `yaml:"enabled"`
-	Interval int  `yaml:"interval"` // 秒，备份计划间隔
-
-	Metadata MetadataBackupConfig `yaml:"metadata"`
+	Enabled   bool                 `yaml:"enabled" json:"enabled"`
+	Interval  int                  `yaml:"interval" json:"interval"` // Deprecated: 保留向后兼容
+	Metadata  MetadataBackupConfig `yaml:"metadata" json:"metadata"`
+	Schedules []BackupSchedule     `yaml:"schedules" json:"schedules"`
 }
 
 // MetadataBackupConfig 元数据备份配置
@@ -844,6 +917,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	// 统一 MinIO 配置：若 yaml 中写了顶层 minio，则同步到 network.pools.minio
 	config.syncPoolsMinIOFromLegacy()
 
+	// 向后兼容：如果 schedules 为空但有 interval，创建默认计划
+	config.migrateBackupSchedule()
+
 	// 使用环境变量覆盖配置
 	config.overrideWithEnv()
 
@@ -1362,6 +1438,25 @@ func (c *Config) syncPoolsMinIOFromLegacy() {
 		c.Network.Pools.MinIO.SecretAccessKey = c.MinIO.SecretAccessKey
 		c.Network.Pools.MinIO.UseSSL = c.MinIO.UseSSL
 		c.Network.Pools.MinIO.Bucket = c.MinIO.Bucket
+	}
+}
+
+// migrateBackupSchedule 向后兼容：如果 schedules 为空但有 interval，创建默认计划
+func (c *Config) migrateBackupSchedule() {
+	if len(c.Backup.Schedules) == 0 && c.Backup.Interval > 0 {
+		c.Backup.Schedules = []BackupSchedule{
+			{
+				ID:            "default",
+				Name:          "Default Backup Schedule",
+				Enabled:       true,
+				Interval:      time.Duration(c.Backup.Interval) * time.Second,
+				BackupType:    "metadata",
+				Tables:        []string{},
+				RetentionDays: c.Backup.Metadata.RetentionDays,
+				CreatedAt:     time.Now(),
+				UpdatedAt:     time.Now(),
+			},
+		}
 	}
 }
 

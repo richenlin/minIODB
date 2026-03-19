@@ -104,6 +104,30 @@ export default function AnalyticsPage() {
     saveHistory([])
   }
 
+  const toCsvCell = (value: unknown): string => {
+    if (value === null || value === undefined) return ''
+    if (typeof value === 'string') {
+      const isoDateRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+      if (isoDateRe.test(value)) {
+        const d = new Date(value)
+        if (!isNaN(d.getTime())) {
+          value = d.toLocaleString('zh-CN', { hour12: false })
+        }
+      }
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value)
+    }
+    if (typeof value === 'object') {
+      value = JSON.stringify(value)
+    }
+    const str = String(value)
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
   const handleExport = () => {
     if (!sqlResult || sqlResult.rows.length === 0) return
     
@@ -111,14 +135,7 @@ export default function AnalyticsPage() {
     const csvContent = [
       columns.join(','),
       ...sqlResult.rows.map(row => 
-        columns.map(col => {
-          const value = row[col]
-          if (value === null || value === undefined) return ''
-          const str = String(value)
-          return str.includes(',') || str.includes('"') || str.includes('\n')
-            ? `"${str.replace(/"/g, '""')}"` 
-            : str
-        }).join(',')
+        columns.map(col => toCsvCell(row[col])).join(',')
       )
     ].join('\n')
     

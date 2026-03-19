@@ -27,10 +27,10 @@ const navItems: NavItem[] = [
   { name: '集群', href: '/cluster', icon: <CubeIcon /> },
   { name: '节点', href: '/nodes', icon: <PersonIcon /> },
   { name: '数据', href: '/data', icon: <LayersIcon /> },
-  { name: '日志', href: '/logs', icon: <FileTextIcon /> },
   { name: '备份', href: '/backup', icon: <ArchiveIcon /> },
-  { name: '监控', href: '/monitor', icon: <ActivityLogIcon /> },
   { name: '分析', href: '/analytics', icon: <BarChartIcon /> },
+  { name: '监控', href: '/monitor', icon: <ActivityLogIcon /> },
+  { name: '日志', href: '/logs', icon: <FileTextIcon /> },
 ]
 
 export function Sidebar() {

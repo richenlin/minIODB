@@ -46,6 +46,7 @@ import type {
   BrowseResult, 
   QueryResult,
   CreateTableRequest,
+  WriteRecordRequest,
 } from '@/lib/api/types'
 
 type ViewMode = 'data' | 'sql'
@@ -234,8 +235,23 @@ export default function DataPage() {
     setEditingRow(row)
     const formData: Record<string, string> = {}
     Object.entries(row).forEach(([key, value]) => {
-      formData[key] = value === null || value === undefined ? '' : String(value)
+      if (key === 'payload') {
+        if (typeof value === 'string') {
+          formData[key] = value
+        } else if (value === null || value === undefined) {
+          formData[key] = '{}'
+        } else {
+          try {
+            formData[key] = JSON.stringify(value, null, 2)
+          } catch {
+            formData[key] = String(value)
+          }
+        }
+      } else {
+        formData[key] = value === null || value === undefined ? '' : String(value)
+      }
     })
+    setNewRecordError('')
     setEditFormData(formData)
     setEditDialogOpen(true)
   }
@@ -247,12 +263,19 @@ export default function DataPage() {
     try {
       if (editingRow) {
         // 编辑模式
-        const payload: Record<string, unknown> = {}
-        Object.entries(editFormData).forEach(([key, value]) => {
-          if (key !== 'id' && key !== 'timestamp') {
-            payload[key] = value
+        let payload: Record<string, unknown> = {}
+        const payloadText = editFormData.payload?.trim() || '{}'
+        try {
+          const parsed = JSON.parse(payloadText)
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            payload = parsed as Record<string, unknown>
+          } else {
+            throw new Error('Payload 必须是 JSON 对象')
           }
-        })
+        } catch (e) {
+          setNewRecordError(e instanceof Error ? e.message : 'Payload JSON 格式错误')
+          return
+        }
         
         await dataApi.updateRecord(selectedTable, String(editingRow.id), {
           payload,
@@ -260,7 +283,7 @@ export default function DataPage() {
       } else {
         // 新增模式
         const payload = newRecordPayload ? JSON.parse(newRecordPayload) : {}
-        const recordData: Record<string, unknown> = {
+        const recordData: WriteRecordRequest = {
           payload,
         }
         
@@ -284,6 +307,10 @@ export default function DataPage() {
 
   // 打开删除确认
   const handleDeleteClick = (row: Record<string, unknown>) => {
+    if (row.id === null || row.id === undefined || String(row.id).trim() === '') {
+      console.error('Delete failed: missing row id', row)
+      return
+    }
     setDeletingRowId(String(row.id))
     setDeleteDialogOpen(true)
   }
@@ -305,6 +332,35 @@ export default function DataPage() {
   }
 
   // 导出数据
+  // 将任意值序列化为 CSV 单元格字符串
+  const toCsvCell = (value: unknown): string => {
+    if (value === null || value === undefined) return ''
+    // 日期字符串识别：ISO 8601 格式
+    if (typeof value === 'string') {
+      const isoDateRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+      if (isoDateRe.test(value)) {
+        const d = new Date(value)
+        if (!isNaN(d.getTime())) {
+          value = d.toLocaleString('zh-CN', { hour12: false })
+        }
+      }
+    }
+    // 数字/布尔直接转字符串
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value)
+    }
+    // 对象（含 payload）序列化为 JSON
+    if (typeof value === 'object') {
+      value = JSON.stringify(value)
+    }
+    const str = String(value)
+    // CSV 转义：含逗号、双引号或换行时用双引号包裹，内部双引号加倍
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
   const handleExport = () => {
     if (!browseData || browseData.rows.length === 0) return
     
@@ -312,12 +368,7 @@ export default function DataPage() {
     const csvContent = [
       columns.join(','),
       ...browseData.rows.map(row => 
-        columns.map(col => {
-          const value = row[col]
-          if (value === null || value === undefined) return ''
-          const str = String(value)
-          return str.includes(',') ? `"${str}"` : str
-        }).join(',')
+        columns.map(col => toCsvCell(row[col])).join(',')
       )
     ].join('\n')
     
@@ -655,31 +706,53 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                                 <TableCell className="text-muted-foreground">
                                   {(page - 1) * pageSize + i + 1}
                                 </TableCell>
-                                {Object.entries(row).map(([key, value]) => (
-                                  <TableCell key={key} className="max-w-xs truncate">
-                                    {value === null || value === undefined 
-                                      ? '' 
-                                      : typeof value === 'object' 
-                                        ? JSON.stringify(value) 
-                                        : String(value)
-                                    }
-                                  </TableCell>
-                                ))}
+                                 {Object.entries(row).map(([key, value]) => {
+                                   let display = ''
+                                   if (value === null || value === undefined) {
+                                     display = ''
+                                   } else if (typeof value === 'object') {
+                                     display = JSON.stringify(value)
+                                   } else {
+                                     display = String(value)
+                                   }
+                                   const truncated = display.length > 80 ? display.slice(0, 80) + '…' : display
+                                   return (
+                                     <TableCell
+                                       key={key}
+                                       className="max-w-xs"
+                                       title={display.length > 80 ? display : undefined}
+                                     >
+                                       <span className="block truncate font-mono text-xs">
+                                         {truncated}
+                                       </span>
+                                     </TableCell>
+                                   )
+                                 })}
                                 <TableCell>
                                   <div className="flex gap-1">
                                     <Button
+                                      type="button"
                                       variant="ghost"
                                       size="icon"
                                       className="h-7 w-7"
-                                      onClick={() => handleEditRow(row)}
+                                      onClick={(e) => {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        handleEditRow(row)
+                                      }}
                                     >
                                       <Pencil1Icon className="h-3.5 w-3.5" />
                                     </Button>
                                     <Button
+                                      type="button"
                                       variant="ghost"
                                       size="icon"
                                       className="h-7 w-7 text-destructive hover:text-destructive"
-                                      onClick={() => handleDeleteClick(row)}
+                                      onClick={(e) => {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        handleDeleteClick(row)
+                                      }}
                                     >
                                       <TrashIcon className="h-3.5 w-3.5" />
                                     </Button>
@@ -735,24 +808,83 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
           {editingRow ? (
             // 编辑模式：显示各字段输入框
             <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
+              {newRecordError && (
+                <p className="text-sm text-destructive">{newRecordError}</p>
+              )}
+              {/* 只读头部：表名 + ID */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">表</label>
+                  <input
+                    type="text"
+                    value={selectedTable || ''}
+                    disabled
+                    className="w-full px-3 py-2 border border-input rounded-md bg-muted text-muted-foreground"
+                  />
+                </div>
+                <div className="space-y-2 col-span-2">
+                  <label className="text-sm font-medium text-foreground">ID（不可修改）</label>
+                  <input
+                    type="text"
+                    value={String(editingRow.id ?? '')}
+                    disabled
+                    className="w-full px-3 py-2 border border-input rounded-md bg-muted text-muted-foreground font-mono text-sm"
+                  />
+                </div>
+              </div>
               {Object.entries(editFormData).map(([key, value]) => (
-                key !== 'id' && key !== 'timestamp' && (
+                key !== 'id' && key !== 'timestamp' && key !== 'table' && (
                   <div key={key} className="space-y-2">
                     <label className="text-sm font-medium text-foreground">
                       {key}
                     </label>
-                    <input
-                      type="text"
-                      value={value}
-                      onChange={(e) => setEditFormData(prev => ({
-                        ...prev,
-                        [key]: e.target.value
-                      }))}
-                      className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
+                    {key === 'payload' ? (
+                      <textarea
+                        value={value}
+                        onChange={(e) => {
+                          setNewRecordError('')
+                          setEditFormData(prev => ({
+                            ...prev,
+                            [key]: e.target.value
+                          }))
+                        }}
+                        rows={8}
+                        className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={value}
+                        onChange={(e) => setEditFormData(prev => ({
+                          ...prev,
+                          [key]: e.target.value
+                        }))}
+                        className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    )}
                   </div>
                 )
               ))}
+              {/* 数据预览 */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  完整数据预览
+                </label>
+                <pre className="p-3 bg-muted rounded-md text-xs font-mono overflow-x-auto text-foreground">
+                  {JSON.stringify({
+                    table: selectedTable,
+                    id: String(editingRow.id ?? ''),
+                    payload: (() => {
+                      try {
+                        const raw = editFormData.payload?.trim() || '{}'
+                        return JSON.parse(raw)
+                      } catch {
+                        return '(JSON 格式错误)'
+                      }
+                    })()
+                  }, null, 2)}
+                </pre>
+              </div>
             </div>
           ) : (
             // 新增模式：ID + JSON Payload 输入 + 预览
@@ -835,7 +967,15 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
       </Dialog>
 
       {/* 删除确认对话框 */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open)
+          if (!open) {
+            setDeletingRowId(null)
+          }
+        }}
+      >
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>确认删除</DialogTitle>
@@ -844,10 +984,11 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
             确定要删除这条记录吗？此操作无法撤销。
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setDeleteDialogOpen(false)}>
               取消
             </Button>
             <Button 
+              type="button"
               variant="destructive" 
               onClick={handleConfirmDelete}
               disabled={deleteLoading}

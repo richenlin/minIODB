@@ -7,22 +7,27 @@ import (
 	"net/http"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
+	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	miniodbv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
+	"minIODB/internal/dashboard/logbuffer"
 	"minIODB/internal/dashboard/model"
 	"minIODB/internal/dashboard/sse"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
+	"minIODB/internal/storage"
 	"minIODB/pkg/version"
-
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // statsRefreshInterval is configured per-instance via DashboardConfig.MetricsScrapeInterval.
@@ -68,13 +73,35 @@ type Server struct {
 	logger               *zap.Logger
 	authManager          *security.AuthManager
 	hub                  *sse.Hub
+	logBuffer            *logbuffer.LogBuffer
 	stats                *statsCache
 	stopStats            context.CancelFunc
 	statsRefreshInterval time.Duration
 }
 
+// getMinIOClient returns a MinIO client for backup bucket operations (uses backup pool config when set).
+// Caller must not cache the returned client if config can change.
+func (s *Server) getMinIOClient() *minio.Client {
+	s.cfgMu.RLock()
+	cfg := s.cfg
+	s.cfgMu.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	// Use backup MinIO config for backup object operations
+	minioCfg := cfg.GetBackupMinIO()
+	if minioCfg.Endpoint == "" {
+		minioCfg = cfg.GetMinIO()
+	}
+	wrapper, err := storage.NewMinioClientWrapper(minioCfg, s.logger)
+	if err != nil {
+		return nil
+	}
+	return wrapper.GetClient()
+}
+
 // NewServer creates a new Dashboard server and starts the background stats collector.
-func NewServer(svc *service.MinIODBService, cfg *config.Config, logger *zap.Logger, authManager *security.AuthManager) (*Server, error) {
+func NewServer(svc *service.MinIODBService, cfg *config.Config, logger *zap.Logger, authManager *security.AuthManager, logBuffer *logbuffer.LogBuffer) (*Server, error) {
 	hub := sse.NewHub()
 	statsCtx, cancel := context.WithCancel(context.Background())
 
@@ -89,6 +116,7 @@ func NewServer(svc *service.MinIODBService, cfg *config.Config, logger *zap.Logg
 		logger:               logger,
 		authManager:          authManager,
 		hub:                  hub,
+		logBuffer:            logBuffer,
 		stats:                &statsCache{},
 		stopStats:            cancel,
 		statsRefreshInterval: statsInterval,
@@ -209,6 +237,12 @@ func (s *Server) getMode() string {
 	return "standalone"
 }
 
+func (s *Server) isBackupAvailable() bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.Network.Pools.BackupMinIO != nil && s.cfg.Network.Pools.BackupMinIO.Endpoint != ""
+}
+
 // MountRoutes registers all dashboard routes on the given gin group.
 // The group should correspond to cfg.Dashboard.BasePath (e.g. "/dashboard").
 // Note: Frontend is served separately; this only registers API routes.
@@ -253,8 +287,20 @@ func (s *Server) MountRoutes(group *gin.RouterGroup) {
 		auth.GET("/logs/files", s.listLogFiles)
 
 		auth.GET("/backups", s.listBackups)
+		auth.GET("/backups/availability", s.getBackupAvailability)
 		auth.POST("/backups/metadata", s.triggerMetadataBackup)
 		auth.GET("/backups/schedule", s.getBackupSchedule)
+		auth.POST("/backups/full", s.triggerFullBackup)
+		auth.POST("/backups/table/:name", s.triggerTableBackup)
+		auth.POST("/backups/:id/restore", s.restoreBackup)
+		auth.GET("/backups/:id/download", s.downloadBackup)
+		auth.POST("/backups/:id/verify", s.verifyBackup)
+		auth.PUT("/backups/schedule", s.updateBackupSchedule)
+		auth.GET("/backups/:id", s.getBackup)
+		auth.DELETE("/backups/:id", s.deleteBackup)
+
+		auth.GET("/hot-backup/status", s.getHotBackupStatus)
+		auth.GET("/hot-backup/availability", s.getHotBackupAvailability)
 
 		auth.GET("/monitor/overview", s.monitorOverview)
 		auth.GET("/monitor/stream", s.monitorStream)
@@ -358,15 +404,26 @@ func (s *Server) changePassword(c *gin.Context) {
 }
 
 // requireAuth middleware validates the Bearer token on secured routes.
+// Supports both Authorization header and query parameter (for SSE).
 func (s *Server) requireAuth(c *gin.Context) {
+	token := ""
+
+	// First try Authorization header
 	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization required"})
-		return
+	if authHeader != "" {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+		if token == authHeader {
+			token = ""
+		}
 	}
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	if token == "" || token == authHeader {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
+
+	// Fallback to query parameter (for SSE which doesn't support custom headers)
+	if token == "" {
+		token = c.Query("token")
+	}
+
+	if token == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization required"})
 		return
 	}
 
@@ -581,10 +638,6 @@ func (s *Server) clusterFullConfig(c *gin.Context) {
 		MinioBackupRegion:          backupRegion,
 		MinioBackupBucket:          backupBucket,
 
-		// dashboard
-		CoreEndpoint:  cfg.Dashboard.CoreEndpoint,
-		DashboardPort: cfg.Dashboard.Port,
-
 		// log
 		LogLevel:    cfg.Log.Level,
 		LogFormat:   cfg.Log.Format,
@@ -689,12 +742,6 @@ func (s *Server) updateClusterConfig(c *gin.Context) {
 		if req.MinioBackupBucket != "" {
 			cfg.Network.Pools.BackupMinIO.Bucket = req.MinioBackupBucket
 		}
-	}
-	if req.CoreEndpoint != "" {
-		cfg.Dashboard.CoreEndpoint = req.CoreEndpoint
-	}
-	if req.DashboardPort != "" {
-		cfg.Dashboard.Port = req.DashboardPort
 	}
 	if req.LogLevel != "" {
 		cfg.Log.Level = req.LogLevel
@@ -1093,10 +1140,17 @@ func (s *Server) browseData(c *gin.Context) {
 
 	var total int64
 	quotedTable := security.DefaultSanitizer.QuoteIdentifier(name)
-	countSQL := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM %s", quotedTable)
+	baseWhere := ""
 	if params.Filter != "" {
-		countSQL += fmt.Sprintf(" WHERE %s", params.Filter)
+		baseWhere = fmt.Sprintf(" WHERE %s", params.Filter)
 	}
+
+	// Dashboard 数据浏览按 ID 展示最新版本（解决更新采用 append-only 带来的重复版本问题）
+	countSQL := fmt.Sprintf(
+		"SELECT COUNT(*) AS cnt FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY id ORDER BY timestamp DESC) AS _rn FROM %s%s) t WHERE _rn = 1",
+		quotedTable,
+		baseWhere,
+	)
 	countResp, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{Sql: countSQL})
 	if err == nil && countResp.ResultJson != "" {
 		var countRows []map[string]interface{}
@@ -1112,10 +1166,8 @@ func (s *Server) browseData(c *gin.Context) {
 		}
 	}
 
-	sql := fmt.Sprintf("SELECT * FROM %s", quotedTable)
-	if params.Filter != "" {
-		sql += fmt.Sprintf(" WHERE %s", params.Filter)
-	}
+	innerSQL := fmt.Sprintf("SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY timestamp DESC) AS _rn FROM %s%s", quotedTable, baseWhere)
+	sql := fmt.Sprintf("SELECT * EXCLUDE (_rn) FROM (%s) t WHERE _rn = 1", innerSQL)
 	if params.SortBy != "" {
 		order := "ASC"
 		if strings.ToUpper(params.SortOrder) == "DESC" {
@@ -1123,6 +1175,8 @@ func (s *Server) browseData(c *gin.Context) {
 		}
 		quotedSortBy := security.DefaultSanitizer.QuoteIdentifier(params.SortBy)
 		sql += fmt.Sprintf(" ORDER BY %s %s", quotedSortBy, order)
+	} else {
+		sql += " ORDER BY timestamp DESC"
 	}
 	sql += fmt.Sprintf(" LIMIT %d OFFSET %d", pageSize, offset)
 
@@ -1138,6 +1192,13 @@ func (s *Server) browseData(c *gin.Context) {
 			s.logger.Warn("browseData: failed to parse ResultJson", zap.String("table", name), zap.Error(err))
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse result: " + err.Error()})
 			return
+		}
+		for _, row := range rows {
+			if raw, ok := row["payload"]; ok {
+				if normalized, ok := normalizeDashboardPayloadField(raw); ok {
+					row["payload"] = normalized
+				}
+			}
 		}
 	}
 
@@ -1159,8 +1220,10 @@ func (s *Server) writeRecord(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	normalizedPayload := normalizeIncomingPayload(req.Payload, name)
+
 	// Convert payload to protobuf Struct
-	payload, err := structpb.NewStruct(req.Payload)
+	payload, err := structpb.NewStruct(normalizedPayload)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid payload: %v", err)})
 		return
@@ -1204,7 +1267,8 @@ func (s *Server) writeBatch(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	for _, req := range records {
-		payload, err := structpb.NewStruct(req.Payload)
+		normalizedPayload := normalizeIncomingPayload(req.Payload, name)
+		payload, err := structpb.NewStruct(normalizedPayload)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid payload: %v", err)})
 			return
@@ -1250,7 +1314,8 @@ func (s *Server) updateRecord(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	payload, err := structpb.NewStruct(req.Payload)
+	normalizedPayload := normalizeIncomingPayload(req.Payload, name)
+	payload, err := structpb.NewStruct(normalizedPayload)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid payload: %v", err)})
 		return
@@ -1280,6 +1345,49 @@ func (s *Server) updateRecord(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Record updated"})
+}
+
+// normalizeIncomingPayload 兼容 Dashboard 误传的 payload 包装格式
+// 兼容格式: {"payload":"{\"aa\":2}","table":"teststats"}
+func normalizeIncomingPayload(payload map[string]interface{}, tableName string) map[string]interface{} {
+	if payload == nil {
+		return map[string]interface{}{}
+	}
+
+	if len(payload) <= 2 {
+		rawPayload, hasPayload := payload["payload"]
+		rawTable, hasTable := payload["table"]
+		if hasPayload && hasTable {
+			if table, ok := rawTable.(string); ok && table == tableName {
+				switch v := rawPayload.(type) {
+				case string:
+					var decoded map[string]interface{}
+					if err := json.Unmarshal([]byte(v), &decoded); err == nil {
+						return decoded
+					}
+				case map[string]interface{}:
+					return v
+				}
+			}
+		}
+	}
+
+	return payload
+}
+
+// normalizeDashboardPayloadField 将查询结果中的 payload 字符串反序列化为对象，便于前端编辑
+func normalizeDashboardPayloadField(raw interface{}) (map[string]interface{}, bool) {
+	s, ok := raw.(string)
+	if !ok {
+		return nil, false
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(s), &decoded); err != nil {
+		return nil, false
+	}
+
+	return decoded, true
 }
 
 func (s *Server) deleteRecord(c *gin.Context) {
@@ -1343,13 +1451,35 @@ func (s *Server) querySQL(c *gin.Context) {
 }
 
 func (s *Server) queryLogs(c *gin.Context) {
-	// Log query is not implemented in service, return empty
-	c.JSON(http.StatusOK, gin.H{
-		"logs":     []interface{}{},
-		"total":    0,
-		"page":     1,
-		"pageSize": 20,
-	})
+	params := model.LogQueryParams{
+		Level:    c.Query("level"),
+		Keyword:  c.Query("keyword"),
+		Page:     1,
+		PageSize: 100,
+	}
+	if p := c.Query("page"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil && v > 0 {
+			params.Page = v
+		}
+	}
+	if ps := c.Query("page_size"); ps != "" {
+		if v, err := strconv.Atoi(ps); err == nil && v > 0 {
+			params.PageSize = v
+		}
+	}
+	if st := c.Query("start_time"); st != "" {
+		if v, err := strconv.ParseInt(st, 10, 64); err == nil {
+			params.StartTime = v
+		}
+	}
+	if et := c.Query("end_time"); et != "" {
+		if v, err := strconv.ParseInt(et, 10, 64); err == nil {
+			params.EndTime = v
+		}
+	}
+
+	result := s.logBuffer.Query(params)
+	c.JSON(http.StatusOK, result)
 }
 
 func (s *Server) streamLogs(c *gin.Context) {
@@ -1362,6 +1492,10 @@ func (s *Server) listLogFiles(c *gin.Context) {
 }
 
 func (s *Server) listBackups(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
 	ctx := c.Request.Context()
 	resp, err := s.svc.ListBackups(ctx, &miniodbv1.ListBackupsRequest{Days: 30})
 	if err != nil {
@@ -1378,9 +1512,15 @@ func (s *Server) listBackups(c *gin.Context) {
 		if b.LastModified != nil {
 			completedAt = b.LastModified.AsTime()
 		}
+		backupType := "metadata"
+		if strings.Contains(b.ObjectName, "/full-backup/") {
+			backupType = "full"
+		} else if strings.Contains(b.ObjectName, "/table-backup/") {
+			backupType = "table"
+		}
 		backups = append(backups, &model.BackupResult{
 			ID:          b.ObjectName,
-			Type:        "metadata",
+			Type:        backupType,
 			Status:      "completed",
 			SizeBytes:   b.Size,
 			CreatedAt:   timestamp,
@@ -1391,6 +1531,10 @@ func (s *Server) listBackups(c *gin.Context) {
 }
 
 func (s *Server) triggerMetadataBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
 	ctx := c.Request.Context()
 	resp, err := s.svc.BackupMetadata(ctx, &miniodbv1.BackupMetadataRequest{})
 	if err != nil {
@@ -1407,7 +1551,23 @@ func (s *Server) triggerMetadataBackup(c *gin.Context) {
 	})
 }
 
+func (s *Server) getBackupAvailability(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"available": s.isBackupAvailable(),
+		"message": func() string {
+			if s.isBackupAvailable() {
+				return "Backup service available"
+			}
+			return "Backup service unavailable: BackupMinIO not configured"
+		}(),
+	})
+}
+
 func (s *Server) getBackupSchedule(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
 	ctx := c.Request.Context()
 	resp, err := s.svc.GetMetadataStatus(ctx, &miniodbv1.GetMetadataStatusRequest{})
 	if err != nil {
@@ -1420,11 +1580,26 @@ func (s *Server) getBackupSchedule(c *gin.Context) {
 		lastBackup = resp.LastBackup.AsTime()
 	}
 
+	s.cfgMu.RLock()
+	backupInterval := s.cfg.Backup.Interval
+	backupEnabled := s.cfg.Backup.Enabled
+	metadataEnabled := s.cfg.Backup.Metadata.Enabled
+	metadataInterval := s.cfg.Backup.Metadata.Interval
+	s.cfgMu.RUnlock()
+
+	tablesResp, err := s.svc.ListTables(ctx, &miniodbv1.ListTablesRequest{})
+	tablesCount := 0
+	if err == nil && tablesResp != nil {
+		tablesCount = len(tablesResp.Tables)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"last_backup":     lastBackup,
-		"tables_count":    0,
-		"backup_enabled":  resp.BackupStatus["status"] == "enabled",
-		"backup_interval": 3600,
+		"last_backup":       lastBackup,
+		"tables_count":      tablesCount,
+		"backup_enabled":    backupEnabled,
+		"backup_interval":   backupInterval,
+		"metadata_enabled":  metadataEnabled,
+		"metadata_interval": metadataInterval.Seconds(),
 	})
 }
 
@@ -1564,4 +1739,421 @@ func (s *Server) Stop() {
 		s.stopStats()
 	}
 	s.hub.Close()
+}
+
+func (s *Server) triggerFullBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	ctx := c.Request.Context()
+	resp, err := s.svc.BackupMetadata(ctx, &miniodbv1.BackupMetadataRequest{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":   resp.Message,
+		"backup_id": resp.BackupId,
+		"type":      "metadata",
+		"note":      "Full backup is not yet implemented. This is a metadata backup.",
+	})
+}
+
+func (s *Server) triggerTableBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	tableName := c.Param("name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "table name is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	resp, err := s.svc.BackupMetadata(ctx, &miniodbv1.BackupMetadataRequest{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resp.Message})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":   resp.Message,
+		"backup_id": resp.BackupId,
+		"table":     tableName,
+		"type":      "metadata",
+		"note":      "Table backup is not yet implemented. This is a metadata backup.",
+	})
+}
+
+func (s *Server) restoreBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "backup id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	req := &miniodbv1.RestoreMetadataRequest{}
+	if id == "latest" || id == "" {
+		req.FromLatest = true
+	} else {
+		req.BackupFile = id
+	}
+	resp, err := s.svc.RestoreMetadata(ctx, req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       resp.Message,
+		"success":       resp.Success,
+		"backup_file":   resp.BackupFile,
+		"entries_total": resp.EntriesTotal,
+		"entries_ok":    resp.EntriesOk,
+		"entries_error": resp.EntriesError,
+		"duration":      resp.Duration,
+	})
+}
+
+func (s *Server) getBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "backup id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	backups, err := s.svc.ListBackups(ctx, &miniodbv1.ListBackupsRequest{Days: 365})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, b := range backups.Backups {
+		if b.ObjectName == id {
+			c.JSON(http.StatusOK, b)
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "backup not found"})
+}
+
+func (s *Server) downloadBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "backup id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	backups, err := s.svc.ListBackups(ctx, &miniodbv1.ListBackupsRequest{Days: 365})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, b := range backups.Backups {
+		if b.ObjectName == id {
+			minioClient := s.getMinIOClient()
+			if minioClient == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "MinIO client not available"})
+				return
+			}
+			s.cfgMu.RLock()
+			bucket := s.cfg.Backup.Metadata.Bucket
+			if bucket == "" {
+				bucket = s.cfg.GetMinIO().Bucket
+			}
+			s.cfgMu.RUnlock()
+
+			downloadURL, err := minioClient.Presign(ctx, "GET", bucket, id, 24*time.Hour, nil)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"download_url": downloadURL.String(),
+				"expires_at":   time.Now().Add(24 * time.Hour),
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "backup not found"})
+}
+
+func (s *Server) verifyBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "backup id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	backups, err := s.svc.ListBackups(ctx, &miniodbv1.ListBackupsRequest{Days: 365})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, b := range backups.Backups {
+		if b.ObjectName == id {
+			minioClient := s.getMinIOClient()
+			if minioClient == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "MinIO client not available"})
+				return
+			}
+			s.cfgMu.RLock()
+			bucket := s.cfg.Backup.Metadata.Bucket
+			if bucket == "" {
+				bucket = s.cfg.GetMinIO().Bucket
+			}
+			s.cfgMu.RUnlock()
+
+			obj, err := minioClient.GetObject(ctx, bucket, id, minio.GetObjectOptions{})
+			if err != nil {
+				c.JSON(http.StatusOK, gin.H{
+					"valid":      false,
+					"error":      err.Error(),
+					"size_bytes": 0,
+				})
+				return
+			}
+			defer obj.Close()
+
+			stat, err := obj.Stat()
+			if err != nil {
+				c.JSON(http.StatusOK, gin.H{
+					"valid":      false,
+					"error":      "failed to get object stats: " + err.Error(),
+					"size_bytes": 0,
+				})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"valid":         true,
+				"size_bytes":    stat.Size,
+				"last_modified": stat.LastModified,
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "backup not found"})
+}
+
+func (s *Server) deleteBackup(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "backup id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	backups, err := s.svc.ListBackups(ctx, &miniodbv1.ListBackupsRequest{Days: 365})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, b := range backups.Backups {
+		if b.ObjectName == id {
+			minioClient := s.getMinIOClient()
+			if minioClient == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "MinIO client not available"})
+				return
+			}
+			s.cfgMu.RLock()
+			bucket := s.cfg.Backup.Metadata.Bucket
+			if bucket == "" {
+				bucket = s.cfg.GetMinIO().Bucket
+			}
+			s.cfgMu.RUnlock()
+
+			err = minioClient.RemoveObject(ctx, bucket, id, minio.RemoveObjectOptions{})
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "backup deleted successfully"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "backup not found"})
+}
+
+func (s *Server) updateBackupSchedule(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup service unavailable: BackupMinIO not configured"})
+		return
+	}
+	var req struct {
+		BackupEnabled    *bool `json:"backup_enabled"`
+		BackupInterval   *int  `json:"backup_interval"`
+		MetadataEnabled  *bool `json:"metadata_enabled"`
+		MetadataInterval *int  `json:"metadata_interval"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	s.cfgMu.Lock()
+	if req.BackupEnabled != nil {
+		s.cfg.Backup.Enabled = *req.BackupEnabled
+	}
+	if req.BackupInterval != nil && *req.BackupInterval > 0 {
+		s.cfg.Backup.Interval = *req.BackupInterval
+	}
+	if req.MetadataEnabled != nil {
+		s.cfg.Backup.Metadata.Enabled = *req.MetadataEnabled
+	}
+	if req.MetadataInterval != nil && *req.MetadataInterval > 0 {
+		s.cfg.Backup.Metadata.Interval = time.Duration(*req.MetadataInterval) * time.Second
+	}
+	s.cfgMu.Unlock()
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "backup schedule updated successfully",
+		"backup_enabled":    s.cfg.Backup.Enabled,
+		"backup_interval":   s.cfg.Backup.Interval,
+		"metadata_enabled":  s.cfg.Backup.Metadata.Enabled,
+		"metadata_interval": s.cfg.Backup.Metadata.Interval.Seconds(),
+	})
+}
+
+func (s *Server) GetHub() *sse.Hub {
+	return s.hub
+}
+
+func (s *Server) GetLogBuffer() *logbuffer.LogBuffer {
+	return s.logBuffer
+}
+
+const (
+	hotBackupStateKey    = "miniodb:hot-backup:state"
+	hotBackupProgressKey = "miniodb:hot-backup:progress"
+)
+
+type hotBackupSyncState struct {
+	LastSyncTime   time.Time `json:"last_sync_time"`
+	LastSyncCount  int64     `json:"last_sync_count"`
+	LastSyncSize   int64     `json:"last_sync_size"`
+	LastSyncErrors []string  `json:"last_sync_errors,omitempty"`
+}
+
+type hotBackupProgress struct {
+	TotalObjects  int64     `json:"total_objects"`
+	SyncedObjects int64     `json:"synced_objects"`
+	TotalSize     int64     `json:"total_size"`
+	SyncedSize    int64     `json:"synced_size"`
+	StartTime     time.Time `json:"start_time"`
+	IsRunning     bool      `json:"is_running"`
+}
+
+func (s *Server) getHotBackupStatus(c *gin.Context) {
+	if !s.isBackupAvailable() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":     "Hot backup unavailable: BackupMinIO not configured",
+			"available": false,
+			"state":     nil,
+			"progress":  nil,
+		})
+		return
+	}
+
+	redisPool := s.svc.GetRedisPool()
+	if redisPool == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":     "Hot backup unavailable: Redis not configured",
+			"available": false,
+			"state":     nil,
+			"progress":  nil,
+		})
+		return
+	}
+
+	rdb := redisPool.GetRedisClient()
+	ctx := c.Request.Context()
+
+	var state *hotBackupSyncState
+	var progress *hotBackupProgress
+
+	stateData, err := rdb.Get(ctx, hotBackupStateKey).Bytes()
+	if err != nil && err != redis.Nil {
+		s.logger.Warn("failed to get hot backup state", zap.Error(err))
+	}
+	if err == nil {
+		var s hotBackupSyncState
+		if json.Unmarshal(stateData, &s) == nil {
+			state = &s
+		}
+	}
+
+	progressData, err := rdb.Get(ctx, hotBackupProgressKey).Bytes()
+	if err != nil && err != redis.Nil {
+		s.logger.Warn("failed to get hot backup progress", zap.Error(err))
+	}
+	if err == nil {
+		var p hotBackupProgress
+		if json.Unmarshal(progressData, &p) == nil {
+			progress = &p
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"available": true,
+		"state":     state,
+		"progress":  progress,
+	})
+}
+
+func (s *Server) getHotBackupAvailability(c *gin.Context) {
+	available := s.isBackupAvailable()
+
+	message := ""
+	if !available {
+		message = "BackupMinIO not configured. Hot backup requires BackupMinIO configuration in network.pools.minio_backup."
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"available": available,
+		"message":   message,
+	})
 }

@@ -1,13 +1,85 @@
 import { apiClient } from './client'
 import { BackupResult, MetadataStatusResult, RestoreOptions } from './types'
 
+export interface HotBackupSyncState {
+  last_sync_time: string
+  last_sync_count: number
+  last_sync_size: number
+  last_sync_errors?: string[]
+}
+
+export interface HotBackupProgress {
+  total_objects: number
+  synced_objects: number
+  total_size: number
+  synced_size: number
+  start_time: string
+  is_running: boolean
+}
+
+export interface HotBackupStatus {
+  available: boolean
+  state: HotBackupSyncState | null
+  progress: HotBackupProgress | null
+  error?: string
+}
+
+export interface HotBackupAvailability {
+  available: boolean
+  message: string
+}
+
+export interface DownloadResult {
+  download_url: string
+  expires_at: string
+}
+
+export interface VerifyResult {
+  valid: boolean
+  size_bytes: number
+  last_modified?: string
+  error?: string
+}
+
+export interface RestoreResult {
+  message: string
+  success: boolean
+  restored_tables?: string[]
+}
+
+export interface ScheduleUpdateRequest {
+  backup_enabled?: boolean
+  backup_interval?: number
+  metadata_enabled?: boolean
+  metadata_interval?: number
+}
+
+export interface AvailabilityResult {
+  available: boolean
+  message: string
+}
+
 export const backupApi = {
-  list: () => apiClient.get<BackupResult[]>('/backups'),
+  checkAvailability: () =>
+    apiClient.get<AvailabilityResult>('/backups/availability'),
+
+  getHotBackupStatus: () =>
+    apiClient.get<HotBackupStatus>('/hot-backup/status'),
+
+  getHotBackupAvailability: () =>
+    apiClient.get<HotBackupAvailability>('/hot-backup/availability'),
+
+  // Backend returns { backups: BackupResult[] }
+  list: () =>
+    apiClient.get<{ backups: BackupResult[] }>('/backups').then(r => r.backups ?? []),
   
   triggerMetadataBackup: () =>
     apiClient.post<BackupResult>('/backups/metadata', {}),
   
   getSchedule: () => apiClient.get<MetadataStatusResult>('/backups/schedule'),
+  
+  updateSchedule: (data: ScheduleUpdateRequest) =>
+    apiClient.put<MetadataStatusResult>('/backups/schedule', data),
   
   triggerFullBackup: () =>
     apiClient.post<BackupResult>('/backups/full', {}),
@@ -19,8 +91,14 @@ export const backupApi = {
     apiClient.get<BackupResult>(`/backups/${encodeURIComponent(id)}`),
   
   restore: (id: string, options?: RestoreOptions) =>
-    apiClient.post<void>(`/backups/${encodeURIComponent(id)}/restore`, options || {}),
+    apiClient.post<RestoreResult>(`/backups/${encodeURIComponent(id)}/restore`, options || {}),
   
   delete: (id: string) =>
     apiClient.delete<void>(`/backups/${encodeURIComponent(id)}`),
+  
+  download: (id: string) =>
+    apiClient.get<DownloadResult>(`/backups/${encodeURIComponent(id)}/download`),
+  
+  verify: (id: string) =>
+    apiClient.post<VerifyResult>(`/backups/${encodeURIComponent(id)}/verify`, {}),
 }
