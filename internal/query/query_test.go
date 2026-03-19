@@ -55,43 +55,43 @@ func TestExecuteQuery_SQLValidation(t *testing.T) {
 			name:        "DELETE语句",
 			sql:         "DELETE FROM users WHERE id = 1",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "only SELECT statements are allowed",
 		},
 		{
 			name:        "DROP语句",
 			sql:         "DROP TABLE users",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "only SELECT statements are allowed",
 		},
 		{
 			name:        "INSERT语句",
 			sql:         "INSERT INTO users VALUES (1, 'test')",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "only SELECT statements are allowed",
 		},
 		{
 			name:        "UPDATE语句",
 			sql:         "UPDATE users SET name = 'test'",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "only SELECT statements are allowed",
 		},
 		{
 			name:        "UNION注入",
 			sql:         "SELECT * FROM users UNION SELECT * FROM admins",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "UNION is not allowed",
 		},
 		{
 			name:        "注释注入",
 			sql:         "SELECT * FROM users--",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "SQL comments are not allowed",
 		},
 		{
 			name:        "多语句攻击",
 			sql:         "SELECT * FROM users; DELETE FROM users",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "only SELECT statements are allowed",
 		},
 	}
 
@@ -146,7 +146,7 @@ func TestExecuteQueryWithOptimization_SQLValidation(t *testing.T) {
 			name:        "注入攻击",
 			sql:         "SELECT * FROM users; DROP TABLE users",
 			wantErr:     true,
-			errContains: "not allowed",
+			errContains: "only SELECT statements are allowed",
 		},
 	}
 

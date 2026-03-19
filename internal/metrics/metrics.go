@@ -360,11 +360,15 @@ func Handler() http.Handler {
 }
 
 // SystemMonitor 系统监控器
+// Deprecated: Use RuntimeCollector instead. This type will be removed in a future version.
+// The RuntimeCollector provides unified runtime sampling and is more efficient.
+// See runtime_collector.go for the replacement implementation.
 type SystemMonitor struct {
 	stopCh chan struct{}
 }
 
 // NewSystemMonitor 创建系统监控器
+// Deprecated: Use NewRuntimeCollector with appropriate options instead.
 func NewSystemMonitor() *SystemMonitor {
 	return &SystemMonitor{
 		stopCh: make(chan struct{}),

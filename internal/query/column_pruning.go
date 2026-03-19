@@ -93,6 +93,10 @@ func (cp *ColumnPruner) ExtractRequiredColumns(sql string) []string {
 		return []string{"*"}
 	}
 
+	cp.cacheMu.Lock()
+	cp.cache[sql] = requiredColumns
+	cp.cacheMu.Unlock()
+
 	return requiredColumns
 }
 

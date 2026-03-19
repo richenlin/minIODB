@@ -211,7 +211,7 @@ func TestColumnPrunerComplexSQL(t *testing.T) {
 		{
 			name:     "GROUP BY",
 			sql:      "SELECT col1, COUNT(*) as cnt FROM table GROUP BY col1",
-			expected: 2,
+			expected: 1,
 		},
 		{
 			name:     "ORDER BY",

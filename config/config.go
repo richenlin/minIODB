@@ -304,12 +304,36 @@ type WALConfig struct {
 	SyncOnWrite bool   `yaml:"sync_on_write"`
 }
 
+// TimeWindow 时间窗口配置（用于限制复制活动时间）
+type TimeWindow struct {
+	Start    string `yaml:"start" json:"start"`       // 开始时间，格式 "01:00"
+	End      string `yaml:"end" json:"end"`           // 结束时间，格式 "06:00"
+	Timezone string `yaml:"timezone" json:"timezone"` // 时区，如 "Asia/Shanghai"
+}
+
+// ReplicationConfig 热备复制配置
+type ReplicationConfig struct {
+	Enabled             bool          `yaml:"enabled" json:"enabled"`
+	Interval            int           `yaml:"interval" json:"interval"`                         // 同步间隔（秒）
+	Workers             int           `yaml:"workers" json:"workers"`                           // 并发 worker 数量
+	MaxQPS              int           `yaml:"max_qps" json:"max_qps"`                           // MinIO API QPS 上限
+	MaxConnsToSource    int           `yaml:"max_conns_to_source" json:"max_conns_to_source"`   // 到源 MinIO 的最大连接数
+	FullVerifyInterval  int           `yaml:"full_verify_interval" json:"full_verify_interval"` // 每 N 次增量后全量校验
+	SyncDeletes         bool          `yaml:"sync_deletes" json:"sync_deletes"`                 // 是否同步删除
+	RetryMax            int           `yaml:"retry_max" json:"retry_max"`                       // 最大重试次数
+	RetryDelay          time.Duration `yaml:"retry_delay" json:"retry_delay"`                   // 重试延迟
+	CheckpointKeyPrefix string        `yaml:"checkpoint_key_prefix" json:"checkpoint_key_prefix"`
+	ActiveWindow        *TimeWindow   `yaml:"active_window,omitempty" json:"active_window,omitempty"`
+	SourceBucket        string        `yaml:"source_bucket" json:"source_bucket"` // 源 MinIO bucket 名称
+}
+
 // BackupSchedule 备份计划配置
 type BackupSchedule struct {
 	ID            string        `yaml:"id" json:"id"`
 	Name          string        `yaml:"name" json:"name"`
 	Enabled       bool          `yaml:"enabled" json:"enabled"`
 	Interval      time.Duration `yaml:"interval" json:"interval"`
+	CronExpr      string        `yaml:"cron_expr" json:"cron_expr"` // cron 表达式（优先于 Interval）
 	BackupType    string        `yaml:"backup_type" json:"backup_type"`
 	Tables        []string      `yaml:"tables" json:"tables"`
 	RetentionDays int           `yaml:"retention_days" json:"retention_days"`
@@ -326,6 +350,7 @@ func (s *BackupSchedule) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Name          string    `yaml:"name"`
 		Enabled       bool      `yaml:"enabled"`
 		Interval      string    `yaml:"interval"`
+		CronExpr      string    `yaml:"cron_expr"`
 		BackupType    string    `yaml:"backup_type"`
 		Tables        []string  `yaml:"tables"`
 		RetentionDays int       `yaml:"retention_days"`
@@ -342,6 +367,7 @@ func (s *BackupSchedule) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	s.Name = raw.Name
 	s.Enabled = raw.Enabled
 	s.intervalRaw = raw.Interval
+	s.CronExpr = raw.CronExpr
 	s.BackupType = raw.BackupType
 	s.Tables = raw.Tables
 	s.RetentionDays = raw.RetentionDays
@@ -379,10 +405,11 @@ func parseDurationWithDays(s string) (time.Duration, error) {
 
 // BackupConfig 备份配置（备份 MinIO 连接仅配置在 network.pools.minio_backup）
 type BackupConfig struct {
-	Enabled   bool                 `yaml:"enabled" json:"enabled"`
-	Interval  int                  `yaml:"interval" json:"interval"` // Deprecated: 保留向后兼容
-	Metadata  MetadataBackupConfig `yaml:"metadata" json:"metadata"`
-	Schedules []BackupSchedule     `yaml:"schedules" json:"schedules"`
+	Enabled     bool                 `yaml:"enabled" json:"enabled"`
+	Interval    int                  `yaml:"interval" json:"interval"` // Deprecated: 保留向后兼容
+	Metadata    MetadataBackupConfig `yaml:"metadata" json:"metadata"`
+	Replication ReplicationConfig    `yaml:"replication" json:"replication"` // 热备复制配置
+	Schedules   []BackupSchedule     `yaml:"schedules" json:"schedules"`
 }
 
 // MetadataBackupConfig 元数据备份配置
@@ -391,6 +418,51 @@ type MetadataBackupConfig struct {
 	Interval      time.Duration `yaml:"interval"`       // 备份间隔
 	RetentionDays int           `yaml:"retention_days"` // 保留天数
 	Bucket        string        `yaml:"bucket"`         // 存储桶
+}
+
+// UnmarshalYAML 自定义 YAML 解析以处理 RetryDelay 字段
+func (r *ReplicationConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type ReplicationConfigRaw struct {
+		Enabled             bool        `yaml:"enabled"`
+		Interval            int         `yaml:"interval"`
+		Workers             int         `yaml:"workers"`
+		MaxQPS              int         `yaml:"max_qps"`
+		MaxConnsToSource    int         `yaml:"max_conns_to_source"`
+		FullVerifyInterval  int         `yaml:"full_verify_interval"`
+		SyncDeletes         bool        `yaml:"sync_deletes"`
+		RetryMax            int         `yaml:"retry_max"`
+		RetryDelay          string      `yaml:"retry_delay"`
+		CheckpointKeyPrefix string      `yaml:"checkpoint_key_prefix"`
+		ActiveWindow        *TimeWindow `yaml:"active_window"`
+		SourceBucket        string      `yaml:"source_bucket"`
+	}
+
+	var raw ReplicationConfigRaw
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	r.Enabled = raw.Enabled
+	r.Interval = raw.Interval
+	r.Workers = raw.Workers
+	r.MaxQPS = raw.MaxQPS
+	r.MaxConnsToSource = raw.MaxConnsToSource
+	r.FullVerifyInterval = raw.FullVerifyInterval
+	r.SyncDeletes = raw.SyncDeletes
+	r.RetryMax = raw.RetryMax
+	r.CheckpointKeyPrefix = raw.CheckpointKeyPrefix
+	r.ActiveWindow = raw.ActiveWindow
+	r.SourceBucket = raw.SourceBucket
+
+	if raw.RetryDelay != "" {
+		duration, err := time.ParseDuration(raw.RetryDelay)
+		if err != nil {
+			return fmt.Errorf("invalid retry_delay '%s': %w", raw.RetryDelay, err)
+		}
+		r.RetryDelay = duration
+	}
+
+	return nil
 }
 
 // RateLimitTier 限流等级配置
@@ -1079,6 +1151,18 @@ func (c *Config) setDefaults() {
 			RetentionDays: 7,                // 保留7天
 			Bucket:        "olap-metadata",  // 默认元数据存储桶
 		},
+		Replication: ReplicationConfig{
+			Enabled:             false,
+			Interval:            3600, // 1小时同步一次
+			Workers:             4,    // 4个并发 worker
+			MaxQPS:              50,   // QPS 上限 50
+			MaxConnsToSource:    10,   // 到源最大 10 个连接
+			FullVerifyInterval:  24,   // 每 24 次增量后全量校验
+			SyncDeletes:         false,
+			RetryMax:            3,
+			RetryDelay:          5 * time.Second,
+			CheckpointKeyPrefix: "miniodb:replication:checkpoint",
+		},
 	}
 
 	// 安全默认配置
@@ -1753,6 +1837,13 @@ func (c *Config) validate() error {
 		return fmt.Errorf("CORS config validation failed: %w", err)
 	}
 
+	// 验证热备复制的时间窗口时区
+	if c.Backup.Replication.Enabled && c.Backup.Replication.ActiveWindow != nil {
+		if err := c.validateTimeWindow(c.Backup.Replication.ActiveWindow); err != nil {
+			return fmt.Errorf("replication active_window validation failed: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1781,6 +1872,60 @@ func (c *Config) validateCORSConfig() error {
 		if origin == "*" && cors.AllowCredentials {
 			return fmt.Errorf("allowed_origins contains '*' and allow_credentials is true - this violates CORS specification")
 		}
+	}
+
+	return nil
+}
+
+// validateTimeWindow 验证时间窗口配置
+func (c *Config) validateTimeWindow(tw *TimeWindow) error {
+	if tw == nil {
+		return nil
+	}
+
+	// 验证时区有效性
+	if tw.Timezone != "" {
+		if _, err := time.LoadLocation(tw.Timezone); err != nil {
+			return fmt.Errorf("invalid timezone '%s': %w", tw.Timezone, err)
+		}
+	}
+
+	// 验证时间格式 (HH:MM)
+	if tw.Start != "" {
+		if err := validateTimeFormat(tw.Start); err != nil {
+			return fmt.Errorf("invalid start time '%s': %w", tw.Start, err)
+		}
+	}
+	if tw.End != "" {
+		if err := validateTimeFormat(tw.End); err != nil {
+			return fmt.Errorf("invalid end time '%s': %w", tw.End, err)
+		}
+	}
+
+	return nil
+}
+
+// validateTimeFormat 验证时间格式是否为 HH:MM
+func validateTimeFormat(t string) error {
+	parts := strings.Split(t, ":")
+	if len(parts) != 2 {
+		return fmt.Errorf("time must be in HH:MM format, got '%s'", t)
+	}
+
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid hour in time '%s': %w", t, err)
+	}
+	if hour < 0 || hour > 23 {
+		return fmt.Errorf("hour must be between 0 and 23, got %d", hour)
+	}
+
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid minute in time '%s': %w", t, err)
+	}
+	if minute < 0 || minute > 59 {
+		return fmt.Errorf("minute must be between 0 and 59, got %d", minute)
 	}
 
 	return nil

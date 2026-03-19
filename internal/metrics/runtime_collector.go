@@ -1,0 +1,293 @@
+package metrics
+
+import (
+	"context"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"minIODB/pkg/throttle"
+)
+
+type LoadLevel = throttle.LoadLevel
+
+const (
+	LoadIdle       = throttle.LoadIdle
+	LoadNormal     = throttle.LoadNormal
+	LoadBusy       = throttle.LoadBusy
+	LoadOverloaded = throttle.LoadOverloaded
+)
+
+type LoadThresholds = throttle.LoadThresholds
+
+func DefaultLoadThresholds() LoadThresholds {
+	return throttle.DefaultLoadThresholds()
+}
+
+type RuntimeSnapshot struct {
+	Goroutines     int       `json:"goroutines"`
+	HeapAllocMB    float64   `json:"heap_alloc_mb"`
+	HeapSysMB      float64   `json:"heap_sys_mb"`
+	GCPauseMs      float64   `json:"gc_pause_ms"`
+	NumGC          uint32    `json:"num_gc"`
+	MinIOPoolUsage float64   `json:"minio_pool_usage"`
+	PendingWrites  int64     `json:"pending_writes"`
+	LoadLevel      LoadLevel `json:"load_level"`
+	ThrottleRatio  float64   `json:"throttle_ratio"`
+	CollectedAt    time.Time `json:"collected_at"`
+}
+
+func (s *RuntimeSnapshot) GetLoadLevel() LoadLevel {
+	return s.LoadLevel
+}
+
+func (s *RuntimeSnapshot) GetThrottleRatio() float64 {
+	return s.ThrottleRatio
+}
+
+type RuntimeCollector struct {
+	snapshot            atomic.Pointer[RuntimeSnapshot]
+	poolStatsProvider   func() (activeConns, maxConns int64)
+	bufferStatsProvider func() int64
+	thresholds          LoadThresholds
+	interval            time.Duration
+	stopCh              chan struct{}
+	stopOnce            sync.Once
+	wg                  sync.WaitGroup
+}
+
+var GlobalRuntimeCollector *RuntimeCollector
+
+func NewRuntimeCollector(opts ...RuntimeCollectorOption) *RuntimeCollector {
+	rc := &RuntimeCollector{
+		thresholds: DefaultLoadThresholds(),
+		interval:   5 * time.Second,
+		stopCh:     make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(rc)
+	}
+	rc.snapshot.Store(&RuntimeSnapshot{
+		LoadLevel:   LoadIdle,
+		CollectedAt: time.Now(),
+	})
+	return rc
+}
+
+type RuntimeCollectorOption func(*RuntimeCollector)
+
+func WithPoolStatsProvider(provider func() (activeConns, maxConns int64)) RuntimeCollectorOption {
+	return func(rc *RuntimeCollector) {
+		rc.poolStatsProvider = provider
+	}
+}
+
+func WithBufferStatsProvider(provider func() int64) RuntimeCollectorOption {
+	return func(rc *RuntimeCollector) {
+		rc.bufferStatsProvider = provider
+	}
+}
+
+func WithThresholds(thresholds LoadThresholds) RuntimeCollectorOption {
+	return func(rc *RuntimeCollector) {
+		rc.thresholds = thresholds
+	}
+}
+
+func WithInterval(interval time.Duration) RuntimeCollectorOption {
+	return func(rc *RuntimeCollector) {
+		rc.interval = interval
+	}
+}
+
+func (rc *RuntimeCollector) Start(ctx context.Context) {
+	rc.wg.Add(1)
+	go rc.collectLoop(ctx)
+}
+
+func (rc *RuntimeCollector) Stop() {
+	rc.stopOnce.Do(func() {
+		close(rc.stopCh)
+	})
+	rc.wg.Wait()
+}
+
+func (rc *RuntimeCollector) Snapshot() *RuntimeSnapshot {
+	return rc.snapshot.Load()
+}
+
+func (rc *RuntimeCollector) collectLoop(ctx context.Context) {
+	defer rc.wg.Done()
+
+	ticker := time.NewTicker(rc.interval)
+	defer ticker.Stop()
+
+	rc.collect()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-rc.stopCh:
+			return
+		case <-ticker.C:
+			rc.collect()
+		}
+	}
+}
+
+func (rc *RuntimeCollector) collect() {
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	snap := &RuntimeSnapshot{
+		Goroutines:  runtime.NumGoroutine(),
+		HeapAllocMB: float64(memStats.HeapAlloc) / 1024 / 1024,
+		HeapSysMB:   float64(memStats.HeapSys) / 1024 / 1024,
+		NumGC:       memStats.NumGC,
+		CollectedAt: time.Now(),
+	}
+
+	if memStats.NumGC > 0 {
+		lastPauseIdx := (memStats.NumGC + 255) % 256
+		snap.GCPauseMs = float64(memStats.PauseNs[lastPauseIdx]) / 1e6
+	}
+
+	if rc.poolStatsProvider != nil {
+		activeConns, maxConns := rc.poolStatsProvider()
+		if maxConns > 0 {
+			snap.MinIOPoolUsage = float64(activeConns) / float64(maxConns)
+		}
+	}
+
+	if rc.bufferStatsProvider != nil {
+		snap.PendingWrites = rc.bufferStatsProvider()
+	}
+
+	snap.LoadLevel = rc.determineLoadLevel(snap)
+	snap.ThrottleRatio = rc.calculateThrottleRatio(snap.LoadLevel)
+
+	rc.snapshot.Store(snap)
+
+	UpdateMemoryUsage(float64(memStats.HeapAlloc))
+	UpdateGoroutineCount(float64(snap.Goroutines))
+}
+
+func (rc *RuntimeCollector) determineLoadLevel(snap *RuntimeSnapshot) LoadLevel {
+	levels := make([]LoadLevel, 0, 5)
+
+	levels = append(levels, rc.classifyByGoroutines(snap.Goroutines))
+	levels = append(levels, rc.classifyByMemoryRatio(snap.HeapAllocMB, snap.HeapSysMB))
+	levels = append(levels, rc.classifyByPoolUsage(snap.MinIOPoolUsage))
+	levels = append(levels, rc.classifyByGCPause(snap.GCPauseMs))
+	levels = append(levels, rc.classifyByPendingWrites(snap.PendingWrites))
+
+	maxLevel := LoadIdle
+	for _, level := range levels {
+		if level > maxLevel {
+			maxLevel = level
+		}
+	}
+	return maxLevel
+}
+
+func (rc *RuntimeCollector) classifyByGoroutines(n int) LoadLevel {
+	switch {
+	case n >= rc.thresholds.GoroutineBusy:
+		return LoadOverloaded
+	case n >= rc.thresholds.GoroutineNormal:
+		return LoadBusy
+	case n >= rc.thresholds.GoroutineIdle:
+		return LoadNormal
+	default:
+		return LoadIdle
+	}
+}
+
+func (rc *RuntimeCollector) classifyByMemoryRatio(heapAllocMB, heapSysMB float64) LoadLevel {
+	if heapSysMB == 0 {
+		return LoadIdle
+	}
+	ratio := heapAllocMB / heapSysMB
+	switch {
+	case ratio >= rc.thresholds.MemoryRatioBusy:
+		return LoadOverloaded
+	case ratio >= rc.thresholds.MemoryRatioNormal:
+		return LoadBusy
+	case ratio >= rc.thresholds.MemoryRatioIdle:
+		return LoadNormal
+	default:
+		return LoadIdle
+	}
+}
+
+func (rc *RuntimeCollector) classifyByPoolUsage(usage float64) LoadLevel {
+	switch {
+	case usage >= rc.thresholds.PoolUsageBusy:
+		return LoadOverloaded
+	case usage >= rc.thresholds.PoolUsageNormal:
+		return LoadBusy
+	case usage >= rc.thresholds.PoolUsageIdle:
+		return LoadNormal
+	default:
+		return LoadIdle
+	}
+}
+
+func (rc *RuntimeCollector) classifyByGCPause(pauseMs float64) LoadLevel {
+	switch {
+	case pauseMs >= rc.thresholds.GCPauseMsBusy:
+		return LoadOverloaded
+	case pauseMs >= rc.thresholds.GCPauseMsNormal:
+		return LoadBusy
+	case pauseMs >= rc.thresholds.GCPauseMsIdle:
+		return LoadNormal
+	default:
+		return LoadIdle
+	}
+}
+
+func (rc *RuntimeCollector) classifyByPendingWrites(n int64) LoadLevel {
+	switch {
+	case n >= rc.thresholds.PendingWritesBusy:
+		return LoadOverloaded
+	case n >= rc.thresholds.PendingWritesNormal:
+		return LoadBusy
+	case n >= rc.thresholds.PendingWritesIdle:
+		return LoadNormal
+	default:
+		return LoadIdle
+	}
+}
+
+func (rc *RuntimeCollector) calculateThrottleRatio(level LoadLevel) float64 {
+	switch level {
+	case LoadIdle:
+		return 0.0
+	case LoadNormal:
+		return 0.3
+	case LoadBusy:
+		return 0.7
+	case LoadOverloaded:
+		return 1.0
+	default:
+		return 0.0
+	}
+}
+
+func InitGlobalRuntimeCollector(opts ...RuntimeCollectorOption) *RuntimeCollector {
+	rc := NewRuntimeCollector(opts...)
+	GlobalRuntimeCollector = rc
+	return rc
+}
+
+func GetRuntimeSnapshot() *RuntimeSnapshot {
+	if GlobalRuntimeCollector == nil {
+		return &RuntimeSnapshot{
+			LoadLevel:   LoadIdle,
+			CollectedAt: time.Now(),
+		}
+	}
+	return GlobalRuntimeCollector.Snapshot()
+}

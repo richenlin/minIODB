@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"runtime"
 	"sync"
 	"time"
 
 	"minIODB/config"
+	"minIODB/internal/metrics"
 	"minIODB/pkg/pool"
 
 	"github.com/minio/minio-go/v7"
@@ -225,12 +225,9 @@ func (hc *HealthChecker) checkSystemHealth(ctx context.Context) *HealthStatus {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// 获取系统资源信息
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+	snap := metrics.GetRuntimeSnapshot()
 
-	// 检查内存使用率
-	memUsageMB := float64(m.Alloc) / 1024 / 1024
+	memUsageMB := snap.HeapAllocMB
 	maxMemoryMB := float64(hc.cfg.System.MaxMemoryMB)
 
 	if maxMemoryMB > 0 && memUsageMB > maxMemoryMB {
@@ -241,8 +238,7 @@ func (hc *HealthChecker) checkSystemHealth(ctx context.Context) *HealthStatus {
 		}
 	}
 
-	// 检查Goroutine数量
-	numGoroutines := runtime.NumGoroutine()
+	numGoroutines := snap.Goroutines
 	maxGoroutines := hc.cfg.System.MaxGoroutines
 
 	if maxGoroutines > 0 && numGoroutines > maxGoroutines {

@@ -125,9 +125,13 @@ func TestValidateConfig_Enhanced(t *testing.T) {
 				Redis: RedisConfig{
 					Addr: "localhost:6379",
 				},
-				MinIO: MinioConfig{
-					Endpoint: "localhost:9000",
-					Bucket:   "olap-data",
+				Network: NetworkConfig{
+					Pools: PoolsConfig{
+						MinIO: EnhancedMinIOConfig{
+							Endpoint: "localhost:9000",
+							Bucket:   "olap-data",
+						},
+					},
 				},
 				TableManagement: TableManagementConfig{
 					MaxTables:        1000,

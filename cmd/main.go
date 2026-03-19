@@ -36,7 +36,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -45,11 +44,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/minio/minio-go/v7"
 	"golang.org/x/crypto/bcrypt"
 
 	"minIODB/config"
+	"minIODB/internal/backup"
 	"minIODB/internal/buffer"
 	"minIODB/internal/compaction"
 	"minIODB/internal/coordinator"
@@ -57,9 +55,10 @@ import (
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
 	"minIODB/internal/metrics"
-	_ "minIODB/internal/metrics" // 强制导入metrics包触发failover_metrics注册
+	_ "minIODB/internal/metrics"
 	"minIODB/internal/query"
 	"minIODB/internal/recovery"
+	"minIODB/internal/replication"
 	"minIODB/internal/service"
 	"minIODB/internal/storage"
 	"minIODB/internal/subscription"
@@ -71,6 +70,7 @@ import (
 
 	"minIODB/internal/dashboard"
 	"minIODB/internal/dashboard/logbuffer"
+	"minIODB/internal/dashboard/sse"
 )
 
 func main() {
@@ -191,14 +191,6 @@ func main() {
 		logger.Sugar.Fatalf("Failed to create primary MinIO client: %v", err)
 	}
 
-	var backupMinio storage.Uploader
-	if cfg.Backup.Enabled && cfg.GetBackupMinIO().Endpoint != "" {
-		backupMinio, err = storage.NewMinioClientWrapper(cfg.GetBackupMinIO(), logger.Logger)
-		if err != nil {
-			logger.Sugar.Fatalf("Failed to create backup MinIO client: %v", err)
-		}
-	}
-
 	// 初始化并发缓冲区
 	concurrentBuffer := buffer.NewConcurrentBuffer(
 		poolManager,
@@ -263,14 +255,35 @@ func main() {
 		}
 	}
 
+	// 初始化全局 RuntimeCollector（统一运行时采样）
+	poolStatsProvider := func() (activeConns, maxConns int64) {
+		minioPool := poolManager.GetMinIOPool()
+		if minioPool == nil {
+			return 0, 0
+		}
+		stats := minioPool.GetStats()
+		if stats == nil {
+			return 0, 0
+		}
+		return stats.ActiveConns, stats.ActiveConns + stats.IdleConns
+	}
+	bufferStatsProvider := func() int64 {
+		return int64(concurrentBuffer.PendingWrites())
+	}
+	metrics.InitGlobalRuntimeCollector(
+		metrics.WithPoolStatsProvider(poolStatsProvider),
+		metrics.WithBufferStatsProvider(bufferStatsProvider),
+		metrics.WithThresholds(metrics.DefaultLoadThresholds()),
+		metrics.WithInterval(5*time.Second),
+	)
+	metrics.GlobalRuntimeCollector.Start(ctx)
+	logger.Sugar.Info("RuntimeCollector started")
+
 	// 启动指标服务器和告警管理器（Dashboard 启用时由 9090 上的 dashboard 服务一并提供 /metrics）
 	var metricsServer *http.Server
-	var systemMonitor *metrics.SystemMonitor
 	if cfg.Metrics.Enabled && !cfg.Dashboard.Enabled {
 		metricsServer = startMetricsServer(cfg)
-		systemMonitor = metrics.NewSystemMonitor()
-		systemMonitor.Start()
-		logger.Sugar.Info("Metrics server and system monitor started")
+		logger.Sugar.Info("Metrics server started")
 	}
 
 	// 初始化并启动 Compaction Manager
@@ -427,18 +440,13 @@ func main() {
 		if err != nil {
 			logger.Sugar.Fatalf("Failed to create dashboard server: %v", err)
 		}
-
-		// 设置 SSE Hub，启用实时日志广播
 		if captureWriter != nil {
 			captureWriter.SetHub(dashSrv.GetHub())
 		}
-
 		dashSrv.MountRoutes(restServer.Router().Group(cfg.Dashboard.BasePath))
-
 		go func() {
 			dashSrv.Start(ctx)
 		}()
-
 		logger.Sugar.Infof("Dashboard mounted at %s on port %s", cfg.Dashboard.BasePath, cfg.Server.RestPort)
 	}
 
@@ -448,23 +456,89 @@ func main() {
 		}
 	}()
 
-	if cfg.Backup.Enabled {
-		go startBackupRoutine(ctx, primaryMinio, backupMinio, *cfg, redisPool)
+	var replicator *replication.Replicator
+	var backupScheduler *backup.Scheduler
+
+	if cfg.Backup.Replication.Enabled {
+		srcPool := poolManager.GetMinIOPool()
+		dstPool := poolManager.GetBackupMinIOPool()
+		if dstPool == nil {
+			dstPool = srcPool
+		}
+		dstUploader := storage.NewMinioClientWrapperFromClient(dstPool.GetClient(), logger.Logger)
+
+		var err error
+		replicator, err = replication.NewReplicator(
+			srcPool,
+			dstUploader,
+			&cfg.Backup.Replication,
+			redisPool,
+			logger.Logger,
+			replication.WithReplicatorSnapshotProvider(metrics.GetRuntimeSnapshot),
+		)
+		if err != nil {
+			logger.Sugar.Fatalf("Failed to create replicator: %v", err)
+		}
+		go replicator.Start(ctx)
+		logger.Sugar.Info("Replicator started")
+	}
+
+	if len(cfg.Backup.Schedules) > 0 || cfg.Backup.Enabled {
+		backupTarget := backup.ResolveBackupTarget(cfg, poolManager, logger.Logger)
+		if backupTarget == nil {
+			logger.Sugar.Warn("Backup target not available, scheduler disabled")
+		} else {
+			planStore := backup.NewRedisPlanStore(redisPool, logger.Logger)
+			executor := backup.NewExecutor(primaryMinio, backupTarget, metadataManager, redisPool, planStore, cfg, logger.Logger)
+
+			var hub *sse.Hub
+			if dashSrv != nil {
+				hub = dashSrv.GetHub()
+			}
+			backupScheduler = backup.NewScheduler(executor, planStore, hub, logger.Logger)
+
+			if dashSrv != nil {
+				dashSrv.SetBackupStore(planStore)
+			}
+
+			for i := range cfg.Backup.Schedules {
+				if cfg.Backup.Schedules[i].ID == "" {
+					cfg.Backup.Schedules[i].ID = fmt.Sprintf("schedule-%d", i)
+				}
+				if err := backupScheduler.AddPlan(&cfg.Backup.Schedules[i]); err != nil {
+					logger.Sugar.Warnf("Failed to add backup schedule %s: %v", cfg.Backup.Schedules[i].Name, err)
+				}
+			}
+
+			if err := backupScheduler.Start(ctx); err != nil {
+				logger.Sugar.Warnf("Failed to start backup scheduler: %v", err)
+			} else {
+				logger.Sugar.Infof("Backup scheduler started - plans: %d", len(cfg.Backup.Schedules))
+			}
+		}
+	}
+
+	if dashSrv != nil {
+		if replicator != nil {
+			dashSrv.SetReplicator(replicator)
+		}
+		if backupScheduler != nil {
+			dashSrv.SetBackupScheduler(backupScheduler)
+		}
 	}
 
 	logger.Sugar.Info("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, systemMonitor, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv)
+	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv, replicator, backupScheduler)
 	logger.Sugar.Info("MinIODB server stopped")
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
 	grpcService *grpcTransport.Server, restServer *restTransport.Server,
-	metricsServer *http.Server, systemMonitor *metrics.SystemMonitor,
-	metadataManager *metadata.Manager, redisPool *pool.RedisPool,
+	metricsServer *http.Server, metadataManager *metadata.Manager, redisPool *pool.RedisPool,
 	compactionManager *compaction.Manager, subscriptionManager *subscription.Manager,
-	dashSrv *dashboard.Server) {
+	dashSrv *dashboard.Server, replicator *replication.Replicator, backupScheduler *backup.Scheduler) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -506,6 +580,20 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 	}
 
 	// 3. 停止后台任务
+	// 停止 Replicator
+	if replicator != nil {
+		logger.Sugar.Info("Stopping replicator...")
+		replicator.Stop()
+		logger.Sugar.Info("Replicator stopped")
+	}
+
+	// 停止 Backup Scheduler
+	if backupScheduler != nil {
+		logger.Sugar.Info("Stopping backup scheduler...")
+		backupScheduler.Stop()
+		logger.Sugar.Info("Backup scheduler stopped")
+	}
+
 	// 停止订阅管理器
 	if subscriptionManager != nil {
 		logger.Sugar.Info("Stopping subscription manager...")
@@ -541,152 +629,6 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 	os.Exit(0)
 }
 
-const (
-	hotBackupStateKey    = "miniodb:hot-backup:state"
-	hotBackupProgressKey = "miniodb:hot-backup:progress"
-)
-
-type BackupSyncState struct {
-	LastSyncTime   time.Time `json:"last_sync_time"`
-	LastSyncCount  int64     `json:"last_sync_count"`
-	LastSyncSize   int64     `json:"last_sync_size"`
-	LastSyncErrors []string  `json:"last_sync_errors,omitempty"`
-}
-
-func (s *BackupSyncState) Save(ctx context.Context, rdb *redis.Client) error {
-	data, err := json.Marshal(s)
-	if err != nil {
-		return fmt.Errorf("marshal backup sync state: %w", err)
-	}
-	return rdb.Set(ctx, hotBackupStateKey, data, 0).Err()
-}
-
-func LoadBackupSyncState(ctx context.Context, rdb *redis.Client) (*BackupSyncState, error) {
-	data, err := rdb.Get(ctx, hotBackupStateKey).Bytes()
-	if err == redis.Nil {
-		return &BackupSyncState{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("load backup sync state: %w", err)
-	}
-	var state BackupSyncState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("unmarshal backup sync state: %w", err)
-	}
-	return &state, nil
-}
-
-type BackupProgress struct {
-	TotalObjects  int64     `json:"total_objects"`
-	SyncedObjects int64     `json:"synced_objects"`
-	TotalSize     int64     `json:"total_size"`
-	SyncedSize    int64     `json:"synced_size"`
-	StartTime     time.Time `json:"start_time"`
-	IsRunning     bool      `json:"is_running"`
-}
-
-func (p *BackupProgress) Save(ctx context.Context, rdb *redis.Client) error {
-	data, err := json.Marshal(p)
-	if err != nil {
-		return fmt.Errorf("marshal backup progress: %w", err)
-	}
-	return rdb.Set(ctx, hotBackupProgressKey, data, 0).Err()
-}
-
-func LoadBackupProgress(ctx context.Context, rdb *redis.Client) (*BackupProgress, error) {
-	data, err := rdb.Get(ctx, hotBackupProgressKey).Bytes()
-	if err == redis.Nil {
-		return &BackupProgress{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("load backup progress: %w", err)
-	}
-	var progress BackupProgress
-	if err := json.Unmarshal(data, &progress); err != nil {
-		return nil, fmt.Errorf("unmarshal backup progress: %w", err)
-	}
-	return &progress, nil
-}
-
-func getRedisClient(redisPool *pool.RedisPool) *redis.Client {
-	if redisPool == nil {
-		return nil
-	}
-	return redisPool.GetRedisClient()
-}
-
-func startBackupRoutine(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config, redisPool *pool.RedisPool) {
-	rdb := getRedisClient(redisPool)
-
-	if len(cfg.Backup.Schedules) > 0 {
-		var wg sync.WaitGroup
-		for _, schedule := range cfg.Backup.Schedules {
-			if !schedule.Enabled {
-				continue
-			}
-			wg.Add(1)
-			go func(s config.BackupSchedule) {
-				defer wg.Done()
-				startScheduleRoutine(ctx, primaryMinio, backupMinio, cfg, rdb, s)
-			}(schedule)
-		}
-		wg.Wait()
-		return
-	}
-
-	backupInterval := time.Duration(cfg.Backup.Interval) * time.Hour
-	if backupInterval == 0 {
-		backupInterval = 24 * time.Hour
-	}
-
-	ticker := time.NewTicker(backupInterval)
-	defer ticker.Stop()
-
-	logger.Sugar.Infof("Backup routine started - interval: %v", backupInterval)
-
-	for {
-		select {
-		case <-ticker.C:
-			logger.Sugar.Info("Starting scheduled backup...")
-			if err := performDataBackup(ctx, primaryMinio, backupMinio, cfg, rdb); err != nil {
-				logger.Sugar.Errorf("Backup failed: %v", err)
-			} else {
-				logger.Sugar.Info("Backup completed successfully")
-			}
-		case <-ctx.Done():
-			logger.Sugar.Info("Backup routine stopped gracefully")
-			return
-		}
-	}
-}
-
-func startScheduleRoutine(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config, rdb *redis.Client, schedule config.BackupSchedule) {
-	interval := schedule.Interval
-	if interval == 0 {
-		interval = 24 * time.Hour
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	logger.Sugar.Infof("Backup schedule '%s' started - interval: %v, type: %s", schedule.Name, interval, schedule.BackupType)
-
-	for {
-		select {
-		case <-ticker.C:
-			logger.Sugar.Infof("Starting scheduled backup for schedule '%s'...", schedule.Name)
-			if err := performDataBackup(ctx, primaryMinio, backupMinio, cfg, rdb); err != nil {
-				logger.Sugar.Errorf("Backup failed for schedule '%s': %v", schedule.Name, err)
-			} else {
-				logger.Sugar.Infof("Backup completed successfully for schedule '%s'", schedule.Name)
-			}
-		case <-ctx.Done():
-			logger.Sugar.Infof("Backup schedule '%s' stopped gracefully", schedule.Name)
-			return
-		}
-	}
-}
-
 func getMetricsHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
@@ -720,169 +662,3 @@ func startMetricsServer(cfg *config.Config) *http.Server {
 	}()
 	return metricsServer
 }
-
-func performDataBackup(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config, rdb *redis.Client) error {
-	maxRetries := 3
-	retryDelay := 5 * time.Second
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if attempt > 1 {
-			logger.Sugar.Warnf("Retry attempt %d/%d", attempt, maxRetries)
-			time.Sleep(retryDelay)
-			retryDelay *= 2
-		}
-
-		if err := executeBackupWithRetry(ctx, primaryMinio, backupMinio, cfg, rdb); err != nil {
-			if attempt == maxRetries {
-				return fmt.Errorf("backup failed after %d attempts: %w", maxRetries, err)
-			}
-			continue
-		}
-
-		return nil
-	}
-
-	return nil
-}
-
-func executeBackupWithRetry(ctx context.Context, primaryMinio, backupMinio storage.Uploader, cfg config.Config, rdb *redis.Client) error {
-	backupStartTime := time.Now()
-
-	bucket := cfg.GetMinIO().Bucket
-
-	var lastSyncTime time.Time
-	if rdb != nil {
-		state, err := LoadBackupSyncState(ctx, rdb)
-		if err != nil {
-			logger.Sugar.Warnf("Failed to load backup sync state: %v, using full sync", err)
-		} else {
-			lastSyncTime = state.LastSyncTime
-		}
-	}
-
-	if rdb != nil {
-		progress := &BackupProgress{
-			StartTime: backupStartTime,
-			IsRunning: true,
-		}
-		if err := progress.Save(ctx, rdb); err != nil {
-			logger.Sugar.Warnf("Failed to save initial progress: %v", err)
-		}
-	}
-
-	objectsCh := primaryMinio.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true})
-
-	var totalObjects int64
-	var totalSize int64
-	var backupCount int64
-	var syncedSize int64
-	var errors []string
-
-	var objectsToSync []minio.ObjectInfo
-	for object := range objectsCh {
-		if object.Err != nil {
-			errors = append(errors, fmt.Sprintf("List error: %v", object.Err))
-			continue
-		}
-		totalObjects++
-		totalSize += object.Size
-		if lastSyncTime.IsZero() || object.LastModified.After(lastSyncTime) {
-			objectsToSync = append(objectsToSync, object)
-		}
-	}
-
-	if rdb != nil {
-		progress := &BackupProgress{
-			TotalObjects:  totalObjects,
-			SyncedObjects: 0,
-			TotalSize:     totalSize,
-			SyncedSize:    0,
-			StartTime:     backupStartTime,
-			IsRunning:     true,
-		}
-		if err := progress.Save(ctx, rdb); err != nil {
-			logger.Sugar.Warnf("Failed to save progress: %v", err)
-		}
-	}
-
-	for _, object := range objectsToSync {
-		src := object.Key
-
-		if err := copyObject(ctx, primaryMinio, backupMinio, bucket, src); err != nil {
-			errors = append(errors, fmt.Sprintf("Copy error for %s: %v", src, err))
-			continue
-		}
-
-		backupCount++
-		syncedSize += object.Size
-
-		if rdb != nil && backupCount%100 == 0 {
-			progress := &BackupProgress{
-				TotalObjects:  totalObjects,
-				SyncedObjects: backupCount,
-				TotalSize:     totalSize,
-				SyncedSize:    syncedSize,
-				StartTime:     backupStartTime,
-				IsRunning:     true,
-			}
-			if err := progress.Save(ctx, rdb); err != nil {
-				logger.Sugar.Warnf("Failed to update progress: %v", err)
-			}
-		}
-	}
-
-	if rdb != nil {
-		state := &BackupSyncState{
-			LastSyncTime:   time.Now(),
-			LastSyncCount:  backupCount,
-			LastSyncSize:   syncedSize,
-			LastSyncErrors: errors,
-		}
-		if err := state.Save(ctx, rdb); err != nil {
-			logger.Sugar.Warnf("Failed to save backup sync state: %v", err)
-		}
-
-		progress := &BackupProgress{
-			TotalObjects:  totalObjects,
-			SyncedObjects: backupCount,
-			TotalSize:     totalSize,
-			SyncedSize:    syncedSize,
-			StartTime:     backupStartTime,
-			IsRunning:     false,
-		}
-		if err := progress.Save(ctx, rdb); err != nil {
-			logger.Sugar.Warnf("Failed to save final progress: %v", err)
-		}
-	}
-
-	if len(errors) > 0 {
-		logger.Sugar.Warnf("Backup completed with %d errors", len(errors))
-		for _, err := range errors {
-			logger.Sugar.Debugf("Backup error: %s", err)
-		}
-	}
-
-	duration := time.Since(backupStartTime)
-	logger.Sugar.Infof("Backup summary - total_objects: %d, synced_objects: %d, size: %d bytes, duration: %v, incremental: %v",
-		totalObjects, backupCount, syncedSize, duration, !lastSyncTime.IsZero())
-
-	if backupCount == 0 && totalObjects > 0 {
-		logger.Sugar.Info("No new objects to sync (all objects already up-to-date)")
-	}
-
-	return nil
-}
-
-func copyObject(ctx context.Context, primaryMinio, backupMinio storage.Uploader, bucket, objectName string) error {
-	srcOpts := minio.CopySrcOptions{
-		Bucket: bucket,
-		Object: objectName,
-	}
-
-	_, err := backupMinio.CopyObject(ctx, minio.CopyDestOptions{
-		Bucket: bucket,
-	}, srcOpts)
-	return err
-}
-
-// 下面的函数保持不变...

@@ -77,6 +77,18 @@ func NewMinioClientWrapper(cfg config.MinioConfig, logger *zap.Logger) (*MinioCl
 	}, nil
 }
 
+// NewMinioClientWrapperFromClient 从现有 minio.Client 创建 MinioClientWrapper
+// 用于从 PoolManager.GetBackupMinIOPool().GetClient() 或独立 MinIOPool 创建 Uploader
+func NewMinioClientWrapperFromClient(client *minio.Client, logger *zap.Logger) *MinioClientWrapper {
+	if client == nil {
+		panic("minio client is nil")
+	}
+	return &MinioClientWrapper{
+		client: client,
+		logger: logger,
+	}
+}
+
 // BucketExists 检查存储桶是否存在
 func (m *MinioClientWrapper) BucketExists(ctx context.Context, bucketName string) (bool, error) {
 	minioMetrics := metrics.NewMinIOMetrics("bucket_exists")
