@@ -287,12 +287,47 @@ func (c *SyncCheckpoint) UpdateObjectVersion(objectKey string, lastModified time
 	if c.ObjectVersions == nil {
 		c.ObjectVersions = make(map[string]time.Time)
 	}
+	if len(c.ObjectVersions) >= maxCheckpointEntries {
+		c.pruneOldEntries(maxCheckpointEntries / 2)
+	}
 	c.ObjectVersions[objectKey] = lastModified
 	c.SyncedCount++
 	c.LastSyncTime = time.Now()
 }
 
+type checkpointEntry struct {
+	key       string
+	timestamp time.Time
+}
+
+func (c *SyncCheckpoint) pruneOldEntries(keep int) {
+	if len(c.ObjectVersions) <= keep {
+		return
+	}
+
+	entries := make([]checkpointEntry, 0, len(c.ObjectVersions))
+	for k, v := range c.ObjectVersions {
+		entries = append(entries, checkpointEntry{key: k, timestamp: v})
+	}
+
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].timestamp.After(entries[i].timestamp) {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	newVersions := make(map[string]time.Time, keep)
+	for i := 0; i < keep && i < len(entries); i++ {
+		newVersions[entries[i].key] = entries[i].timestamp
+	}
+	c.ObjectVersions = newVersions
+}
+
 const MaxFailedObjects = 1000
+
+const maxCheckpointEntries = 100000
 
 func (c *SyncCheckpoint) AddFailedObject(objectKey string) {
 	for _, key := range c.FailedObjects {

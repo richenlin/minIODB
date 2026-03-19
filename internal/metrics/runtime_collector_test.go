@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -267,7 +268,7 @@ func TestClassifyByGoroutines(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("n=%d", tt.n), func(t *testing.T) {
 			if got := rc.classifyByGoroutines(tt.n); got != tt.expected {
 				t.Errorf("classifyByGoroutines(%d) = %v, want %v", tt.n, got, tt.expected)
 			}
@@ -317,7 +318,7 @@ func TestClassifyByPoolUsage(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("usage=%.1f", tt.usage), func(t *testing.T) {
 			if got := rc.classifyByPoolUsage(tt.usage); got != tt.expected {
 				t.Errorf("classifyByPoolUsage(%v) = %v, want %v", tt.usage, got, tt.expected)
 			}
@@ -342,7 +343,7 @@ func TestClassifyByGCPause(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("pauseMs=%.0f", tt.pauseMs), func(t *testing.T) {
 			if got := rc.classifyByGCPause(tt.pauseMs); got != tt.expected {
 				t.Errorf("classifyByGCPause(%v) = %v, want %v", tt.pauseMs, got, tt.expected)
 			}
@@ -367,7 +368,7 @@ func TestClassifyByPendingWrites(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("n=%d", tt.n), func(t *testing.T) {
 			if got := rc.classifyByPendingWrites(tt.n); got != tt.expected {
 				t.Errorf("classifyByPendingWrites(%d) = %v, want %v", tt.n, got, tt.expected)
 			}
@@ -398,24 +399,24 @@ func TestCalculateThrottleRatio(t *testing.T) {
 }
 
 func TestInitGlobalRuntimeCollector(t *testing.T) {
-	original := GlobalRuntimeCollector
-	defer func() { GlobalRuntimeCollector = original }()
+	original := globalRuntimeCollector.Load()
+	defer func() { globalRuntimeCollector.Store(original) }()
 
 	rc := InitGlobalRuntimeCollector(WithInterval(1 * time.Second))
 
 	if rc == nil {
 		t.Fatal("InitGlobalRuntimeCollector returned nil")
 	}
-	if GlobalRuntimeCollector != rc {
-		t.Error("GlobalRuntimeCollector not set correctly")
+	if globalRuntimeCollector.Load() != rc {
+		t.Error("globalRuntimeCollector not set correctly")
 	}
 }
 
 func TestGetRuntimeSnapshot(t *testing.T) {
-	original := GlobalRuntimeCollector
-	defer func() { GlobalRuntimeCollector = original }()
+	original := globalRuntimeCollector.Load()
+	defer func() { globalRuntimeCollector.Store(original) }()
 
-	GlobalRuntimeCollector = nil
+	globalRuntimeCollector.Store(nil)
 	snap := GetRuntimeSnapshot()
 	if snap == nil {
 		t.Fatal("GetRuntimeSnapshot returned nil when no global collector")
@@ -424,8 +425,9 @@ func TestGetRuntimeSnapshot(t *testing.T) {
 		t.Errorf("default snapshot LoadLevel = %v, want idle", snap.LoadLevel)
 	}
 
-	GlobalRuntimeCollector = NewRuntimeCollector()
-	GlobalRuntimeCollector.collect()
+	c := NewRuntimeCollector()
+	c.collect()
+	globalRuntimeCollector.Store(c)
 	snap = GetRuntimeSnapshot()
 	if snap == nil {
 		t.Fatal("GetRuntimeSnapshot returned nil")

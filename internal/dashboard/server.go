@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1041,6 +1040,7 @@ func (s *Server) getTable(c *gin.Context) {
 		result.RetentionDays = int(t.Config.RetentionDays)
 		result.BackupEnabled = t.Config.BackupEnabled
 		result.IDStrategy = t.Config.IdStrategy
+		result.AutoGenerateID = t.Config.AutoGenerateId
 	}
 
 	if t.Stats != nil {
@@ -1682,15 +1682,14 @@ func (s *Server) monitorOverview(c *gin.Context) {
 		return
 	}
 
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
+	snap := metrics.GetRuntimeSnapshot()
 
 	overview := &model.MonitorOverviewResult{
-		Goroutines:  runtime.NumGoroutine(),
-		MemAllocMB:  float64(memStats.Alloc) / 1024 / 1024,
-		GCPauseMs:   float64(memStats.PauseNs[(memStats.NumGC+255)%256]) / 1e6,
-		CPUPercent:  0,
-		UptimeHours: 0,
+		Goroutines:  snap.Goroutines,
+		MemAllocMB:  snap.HeapAllocMB,
+		GCPauseMs:   snap.GCPauseMs,
+		CPUPercent:  0, // TODO: RuntimeSnapshot does not track CPU usage; consider adding CPU metrics to RuntimeCollector
+		UptimeHours: 0, // Set from resp.SystemInfo["uptime_seconds"] below if available
 	}
 
 	if resp.SystemInfo != nil {
@@ -1791,11 +1790,11 @@ func (s *Server) startMetricsPush(ctx context.Context) {
 			case <-ticker.C:
 				resp, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{})
 				if err == nil {
-					var memStats runtime.MemStats
-					runtime.ReadMemStats(&memStats)
+					snap := metrics.GetRuntimeSnapshot()
 					s.hub.Publish("metrics", gin.H{
-						"goroutines":   runtime.NumGoroutine(),
-						"mem_alloc_mb": float64(memStats.Alloc) / 1024 / 1024,
+						"goroutines":   snap.Goroutines,
+						"mem_alloc_mb": snap.HeapAllocMB,
+						"load_level":   snap.LoadLevel,
 						"uptime_hours": resp.SystemInfo["uptime_seconds"],
 						"cpu_percent":  0,
 					})
@@ -2201,8 +2200,7 @@ func (s *Server) getHotBackupStatus(c *gin.Context) {
 	}
 
 	var poolStats interface{}
-	if metrics.GlobalRuntimeCollector != nil && metrics.GlobalRuntimeCollector.Snapshot() != nil {
-		snap := metrics.GlobalRuntimeCollector.Snapshot()
+	if snap := metrics.GetRuntimeSnapshot(); snap != nil {
 		poolStats = gin.H{
 			"minio_pool_usage": snap.MinIOPoolUsage,
 			"goroutines":       snap.Goroutines,
@@ -2268,6 +2266,22 @@ func (s *Server) listBackupPlans(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"plans": plans, "total": len(plans)})
 }
 
+var validBackupTypes = map[string]bool{
+	"metadata": true,
+	"full":     true,
+	"table":    true,
+}
+
+func validateBackupType(backupType string) error {
+	if backupType == "" {
+		return errors.New("backup_type is required")
+	}
+	if !validBackupTypes[backupType] {
+		return fmt.Errorf("invalid backup_type: %s, must be one of: metadata, full, table", backupType)
+	}
+	return nil
+}
+
 type createBackupPlanRequest struct {
 	ID            string   `json:"id" binding:"required"`
 	Name          string   `json:"name" binding:"required"`
@@ -2290,6 +2304,11 @@ func (s *Server) createBackupPlan(c *gin.Context) {
 
 	var req createBackupPlanRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validateBackupType(req.BackupType); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -2388,6 +2407,10 @@ func (s *Server) updateBackupPlan(c *gin.Context) {
 		existingPlan.Interval = interval
 	}
 	if req.BackupType != "" {
+		if err := validateBackupType(req.BackupType); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		existingPlan.BackupType = req.BackupType
 	}
 	if req.Tables != nil {

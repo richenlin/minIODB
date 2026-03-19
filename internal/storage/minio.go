@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -79,14 +80,14 @@ func NewMinioClientWrapper(cfg config.MinioConfig, logger *zap.Logger) (*MinioCl
 
 // NewMinioClientWrapperFromClient 从现有 minio.Client 创建 MinioClientWrapper
 // 用于从 PoolManager.GetBackupMinIOPool().GetClient() 或独立 MinIOPool 创建 Uploader
-func NewMinioClientWrapperFromClient(client *minio.Client, logger *zap.Logger) *MinioClientWrapper {
+func NewMinioClientWrapperFromClient(client *minio.Client, logger *zap.Logger) (*MinioClientWrapper, error) {
 	if client == nil {
-		panic("minio client is nil")
+		return nil, errors.New("minio client is nil")
 	}
 	return &MinioClientWrapper{
 		client: client,
 		logger: logger,
-	}
+	}, nil
 }
 
 // BucketExists 检查存储桶是否存在

@@ -39,8 +39,15 @@ func ResolveBackupTarget(cfg *config.Config, poolManager MinIOClientProvider, lo
 				zap.String("bucket", backupCfg.Bucket),
 				zap.String("endpoint", backupCfg.Endpoint))
 		}
+		uploader, err := storage.NewMinioClientWrapperFromClient(backupPool.GetClient(), logger)
+		if err != nil {
+			if logger != nil {
+				logger.Error("Failed to create uploader from backup pool", zap.Error(err))
+			}
+			return nil
+		}
 		return &BackupTarget{
-			Uploader: storage.NewMinioClientWrapperFromClient(backupPool.GetClient(), logger),
+			Uploader: uploader,
 			Bucket:   backupCfg.Bucket,
 			Degraded: false,
 			Mode:     ModeBackupMinIO,
@@ -64,8 +71,15 @@ func ResolveBackupTarget(cfg *config.Config, poolManager MinIOClientProvider, lo
 			zap.String("endpoint", primaryCfg.Endpoint))
 	}
 
+	uploader, err := storage.NewMinioClientWrapperFromClient(primaryPool.GetClient(), logger)
+	if err != nil {
+		if logger != nil {
+			logger.Error("Failed to create uploader from primary pool", zap.Error(err))
+		}
+		return nil
+	}
 	return &BackupTarget{
-		Uploader: storage.NewMinioClientWrapperFromClient(primaryPool.GetClient(), logger),
+		Uploader: uploader,
 		Bucket:   degradedBucket,
 		Degraded: true,
 		Mode:     ModePrimaryMinIOIsolated,

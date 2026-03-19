@@ -38,6 +38,9 @@ var ErrStorageUnavailable = errors.New("storage unavailable: failed to read data
 // ErrIntegrityCheckFailed is returned when file integrity check fails
 var ErrIntegrityCheckFailed = errors.New("file integrity check failed: ETag mismatch")
 
+// ErrFileNotFound is returned when a file referenced in metadata is not found in storage
+var ErrFileNotFound = errors.New("file referenced in metadata but not found in storage")
+
 // stmtEntry 预编译语句缓存条目
 type stmtEntry struct {
 	key  string
@@ -561,6 +564,13 @@ func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string
 	// 获取对象信息以获取 ETag（用于完整性校验）
 	objInfo, err := q.minioClient.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
 	if err != nil {
+		errResponse := minio.ToErrorResponse(err)
+		if errResponse.Code == "NoSuchKey" {
+			q.logger.Warn("Parquet file referenced in metadata but not found in MinIO",
+				zap.String("object", objectName),
+				zap.String("bucket", bucket))
+			return "", fmt.Errorf("file not found in storage: %s: %w", objectName, ErrFileNotFound)
+		}
 		q.logger.Sugar().Errorf("Failed to get object info for %s: %v", objectName, err)
 		return "", fmt.Errorf("failed to get object info for %s: %w", objectName, err)
 	}
@@ -1455,6 +1465,9 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 		return q.prepareTableDataWithCacheAndDB(ctx, db, tableName)
 	}
 
+	var fileNotFoundCount int
+	var otherErrorCount int
+
 	// 3. 使用查询优化器进行文件剪枝
 	var storageFiles []string
 	if q.queryOptimizer != nil && len(storageFilesMetadata) > 0 {
@@ -1467,6 +1480,10 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 				localPath, err := q.getFileWithCache(ctx, meta.FilePath)
 				if err == nil {
 					storageFiles = append(storageFiles, localPath)
+				} else if errors.Is(err, ErrFileNotFound) {
+					fileNotFoundCount++
+				} else {
+					otherErrorCount++
 				}
 			}
 		} else {
@@ -1475,6 +1492,10 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 				localPath, err := q.getFileWithCache(ctx, meta.FilePath)
 				if err == nil {
 					storageFiles = append(storageFiles, localPath)
+				} else if errors.Is(err, ErrFileNotFound) {
+					fileNotFoundCount++
+				} else {
+					otherErrorCount++
 				}
 			}
 			if optimized.FilesSkipped > 0 {
@@ -1491,6 +1512,10 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 			localPath, err := q.getFileWithCache(ctx, meta.FilePath)
 			if err == nil {
 				storageFiles = append(storageFiles, localPath)
+			} else if errors.Is(err, ErrFileNotFound) {
+				fileNotFoundCount++
+			} else {
+				otherErrorCount++
 			}
 		}
 	}
@@ -1500,8 +1525,18 @@ func (q *Querier) prepareTableDataWithPruning(ctx context.Context, db *sql.DB, t
 	if len(allFiles) == 0 {
 		candidatesCount := len(bufferFiles) + len(storageFilesMetadata)
 		if candidatesCount > 0 {
-			q.logger.Sugar().Infof("Table %s has %d file(s) but all failed to read (e.g. MinIO auth error)", tableName, candidatesCount)
-			return ErrStorageUnavailable
+			if otherErrorCount > 0 {
+				q.logger.Sugar().Infof("Table %s has %d file(s) but all failed to read (e.g. MinIO auth error)", tableName, candidatesCount)
+				return ErrStorageUnavailable
+			}
+			if fileNotFoundCount > 0 {
+				q.logger.Warn("All data files for table are missing from storage (metadata may be stale)",
+					zap.String("table", tableName),
+					zap.Int("missing_files", fileNotFoundCount))
+				return ErrNoDataFiles
+			}
+			q.logger.Sugar().Infof("No data files found for table: %s", tableName)
+			return ErrNoDataFiles
 		}
 		q.logger.Sugar().Infof("No data files found for table: %s", tableName)
 		return ErrNoDataFiles

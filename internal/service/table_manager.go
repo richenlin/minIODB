@@ -17,11 +17,12 @@ import (
 
 // TableManager 表管理器
 type TableManager struct {
-	redisPool    *pool.RedisPool
-	primaryMinio *minio.Client
-	backupMinio  *minio.Client
-	cfg          *config.Config
-	logger       *zap.Logger
+	redisPool        *pool.RedisPool
+	primaryMinio     *minio.Client
+	backupMinio      *minio.Client
+	minioConfigStore *MinioConfigStore // standalone 模式下表配置的 MinIO 持久化层
+	cfg              *config.Config
+	logger           *zap.Logger
 }
 
 // TableManagerInfo 表管理器表信息
@@ -42,15 +43,28 @@ type TableManagerStats struct {
 	NewestRecord string `json:"newest_record"`
 }
 
-// NewTableManager 创建表管理器
+// NewTableManager 创建表管理器。
+// 当 redisPool 为 nil 时（standalone 模式），若提供了 primaryMinio，将自动初始化
+// MinioConfigStore 以把表配置持久化到 MinIO bucket 中。
 func NewTableManager(redisPool *pool.RedisPool, primaryMinio *minio.Client,
 	backupMinio *minio.Client, cfg *config.Config, logger *zap.Logger) *TableManager {
+
+	var minioConfigStore *MinioConfigStore
+	if redisPool == nil && primaryMinio != nil {
+		bucket := cfg.GetMinIO().Bucket
+		minioConfigStore = NewMinioConfigStore(primaryMinio, bucket, logger)
+		if minioConfigStore != nil {
+			logger.Sugar().Infof("TableManager: standalone mode, table configs will be persisted to MinIO bucket %q", bucket)
+		}
+	}
+
 	return &TableManager{
-		redisPool:    redisPool,
-		primaryMinio: primaryMinio,
-		backupMinio:  backupMinio,
-		cfg:          cfg,
-		logger:       logger,
+		redisPool:        redisPool,
+		primaryMinio:     primaryMinio,
+		backupMinio:      backupMinio,
+		minioConfigStore: minioConfigStore,
+		cfg:              cfg,
+		logger:           logger,
 	}
 }
 
@@ -114,9 +128,17 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 		}
 	}
 
-	// 如果Redis连接池为空，跳过Redis操作
+	// standalone 模式（无 Redis）：将配置持久化到 MinIO
 	if tm.redisPool == nil {
-		tm.logger.Sugar().Infof("Redis disabled, skipping Redis operations for table creation: %s", tableName)
+		if tm.minioConfigStore != nil {
+			if err := tm.minioConfigStore.Save(ctx, tableName, *tableConfig); err != nil {
+				tm.logger.Sugar().Warnf("TableManager: failed to save config to MinIO for table %s: %v", tableName, err)
+			} else {
+				tm.logger.Sugar().Infof("TableManager: saved config to MinIO for table %s", tableName)
+			}
+		} else {
+			tm.logger.Sugar().Infof("TableManager: Redis and MinIO config store both unavailable, config not persisted for table %s", tableName)
+		}
 		return nil
 	}
 
@@ -204,9 +226,13 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 		filesDeleted = int32(deletedCount)
 	}
 
-	// 如果Redis连接池为空，跳过Redis操作
+	// standalone 模式（无 Redis）：删除 MinIO 上的配置
 	if tm.redisPool == nil {
-		tm.logger.Sugar().Infof("Redis disabled, skipping Redis operations for table deletion: %s", tableName)
+		if tm.minioConfigStore != nil {
+			if err := tm.minioConfigStore.Delete(ctx, tableName); err != nil {
+				tm.logger.Sugar().Warnf("TableManager: failed to delete config from MinIO for table %s: %v", tableName, err)
+			}
+		}
 		return filesDeleted, nil
 	}
 
@@ -247,10 +273,9 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 
 // ListTables 列出表
 func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*TableManagerInfo, error) {
-	// 如果Redis连接池为空，返回空列表
+	// standalone 模式（无 Redis）：从 MinIO 列出
 	if tm.redisPool == nil {
-		tm.logger.Sugar().Infof("Redis disabled, returning empty table list")
-		return []*TableManagerInfo{}, nil
+		return tm.listTablesFromMinio(ctx, pattern)
 	}
 
 	redisClient := tm.redisPool.GetClient()
@@ -309,9 +334,18 @@ func (tm *TableManager) DescribeTable(ctx context.Context, tableName string) (*T
 
 // TableExists 检查表是否存在
 func (tm *TableManager) TableExists(ctx context.Context, tableName string) (bool, error) {
-	// 如果Redis连接池为空，假设表不存在
+	// standalone 模式（无 Redis）：检查 MinIO 上是否有配置
 	if tm.redisPool == nil {
-		return false, nil
+		if tm.minioConfigStore == nil {
+			return false, nil
+		}
+		cfg, err := tm.minioConfigStore.Get(ctx, tableName)
+		if err != nil {
+			// 查询失败时保守返回 false，触发 EnsureTableExists 创建
+			tm.logger.Sugar().Debugf("TableExists: MinIO lookup failed for %s: %v", tableName, err)
+			return false, nil
+		}
+		return cfg != nil, nil
 	}
 
 	redisClient := tm.redisPool.GetClient()
@@ -394,10 +428,20 @@ func (tm *TableManager) getTableInfo(ctx context.Context, tableName string) (*Ta
 	}, nil
 }
 
-// getTableConfigFromRedis 从Redis获取表配置
+// getTableConfigFromRedis 从 Redis 获取表配置；standalone 模式降级到 MinIO。
 func (tm *TableManager) getTableConfigFromRedis(ctx context.Context, tableName string) (*config.TableConfig, error) {
-	// 如果Redis连接池为空，返回默认配置
+	// standalone 模式（无 Redis）：从 MinIO 读取配置
 	if tm.redisPool == nil {
+		if tm.minioConfigStore != nil {
+			cfg, err := tm.minioConfigStore.Get(ctx, tableName)
+			if err != nil {
+				tm.logger.Sugar().Warnf("getTableConfigFromRedis: MinIO lookup failed for %s: %v", tableName, err)
+				return &tm.cfg.Tables.DefaultConfig, nil
+			}
+			if cfg != nil {
+				return cfg, nil
+			}
+		}
 		return &tm.cfg.Tables.DefaultConfig, nil
 	}
 
@@ -438,6 +482,28 @@ func (tm *TableManager) getTableConfigFromRedis(ctx context.Context, tableName s
 
 	if backupEnabledStr, ok := configData["backup_enabled"]; ok {
 		tableConfig.BackupEnabled = backupEnabledStr == "true" || backupEnabledStr == "1"
+	}
+
+	// 解析 ID 生成配置
+	if idStrategy, ok := configData["id_strategy"]; ok {
+		tableConfig.IDStrategy = idStrategy
+	}
+	if idPrefix, ok := configData["id_prefix"]; ok {
+		tableConfig.IDPrefix = idPrefix
+	}
+	if autoGenStr, ok := configData["auto_generate_id"]; ok {
+		tableConfig.AutoGenerateID = autoGenStr == "true" || autoGenStr == "1"
+	}
+	if maxLenStr, ok := configData["id_validation_max_length"]; ok {
+		if maxLen, err := strconv.Atoi(maxLenStr); err == nil {
+			tableConfig.IDValidation.MaxLength = maxLen
+		}
+	}
+	if pattern, ok := configData["id_validation_pattern"]; ok {
+		tableConfig.IDValidation.Pattern = pattern
+	}
+	if allowedChars, ok := configData["id_validation_allowed_chars"]; ok {
+		tableConfig.IDValidation.AllowedChars = allowedChars
 	}
 
 	// 解析属性
@@ -560,6 +626,38 @@ func (tm *TableManager) getTotalTableCount(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return int(count), nil
+}
+
+// listTablesFromMinio 在 standalone 模式下，通过 MinIO 配置存储列出所有已知表。
+// 每个在 MinIO 上有配置文件的表都被视为存在。
+func (tm *TableManager) listTablesFromMinio(ctx context.Context, pattern string) ([]*TableManagerInfo, error) {
+	if tm.minioConfigStore == nil {
+		tm.logger.Sugar().Infof("ListTables: MinIO config store not available, returning empty list")
+		return []*TableManagerInfo{}, nil
+	}
+
+	names, err := tm.minioConfigStore.ListTableNames(ctx)
+	if err != nil {
+		tm.logger.Sugar().Warnf("ListTables: failed to list tables from MinIO: %v", err)
+		return []*TableManagerInfo{}, nil
+	}
+
+	var tables []*TableManagerInfo
+	for _, name := range names {
+		if pattern != "" && !tm.matchPattern(name, pattern) {
+			continue
+		}
+		cfg, err := tm.minioConfigStore.Get(ctx, name)
+		if err != nil || cfg == nil {
+			cfg = &tm.cfg.Tables.DefaultConfig
+		}
+		tables = append(tables, &TableManagerInfo{
+			Name:   name,
+			Config: cfg,
+			Status: "active",
+		})
+	}
+	return tables, nil
 }
 
 // matchPattern 简单的模式匹配（支持*通配符）

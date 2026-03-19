@@ -1,9 +1,11 @@
 package metadata
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"minIODB/config"
@@ -11,6 +13,9 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
+
+// minioTableConfigPrefix 是表配置在 MinIO bucket 中的存储前缀（standalone 降级路径）。
+const minioTableConfigPrefix = "_system/table_configs/"
 
 // TableConfigMetadata 表配置元数据
 type TableConfigMetadata struct {
@@ -20,11 +25,13 @@ type TableConfigMetadata struct {
 	UpdatedAt string             `json:"updated_at"`
 }
 
-// SaveTableConfig 保存表配置到元数据
+// SaveTableConfig 保存表配置到元数据。
+// 优先写 Redis；Redis 不可用时降级写 MinIO。
 func (m *Manager) SaveTableConfig(ctx context.Context, tableName string, tableConfig config.TableConfig) error {
-	client, err := m.getRedisClient()
-	if err != nil {
-		return fmt.Errorf("failed to get redis client: %w", err)
+	client, redisErr := m.getRedisClient()
+	if redisErr != nil {
+		// Redis 不可用：降级到 MinIO
+		return m.saveTableConfigToMinio(ctx, tableName, tableConfig)
 	}
 
 	// 构建元数据
@@ -75,11 +82,13 @@ func (m *Manager) SaveTableConfig(ctx context.Context, tableName string, tableCo
 	return nil
 }
 
-// GetTableConfig 从元数据获取表配置
+// GetTableConfig 从元数据获取表配置。
+// 优先读 Redis；Redis 不可用时降级读 MinIO。
 func (m *Manager) GetTableConfig(ctx context.Context, tableName string) (*config.TableConfig, error) {
-	client, err := m.getRedisClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get redis client: %w", err)
+	client, redisErr := m.getRedisClient()
+	if redisErr != nil {
+		// Redis 不可用：降级到 MinIO
+		return m.getTableConfigFromMinio(ctx, tableName)
 	}
 
 	key := fmt.Sprintf("metadata:table_config:%s", tableName)
@@ -98,11 +107,12 @@ func (m *Manager) GetTableConfig(ctx context.Context, tableName string) (*config
 	return &metadata.Config, nil
 }
 
-// ListTableConfigs 列出所有表配置
+// ListTableConfigs 列出所有表配置。
+// 优先读 Redis；Redis 不可用时降级读 MinIO。
 func (m *Manager) ListTableConfigs(ctx context.Context) ([]string, error) {
-	client, err := m.getRedisClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get redis client: %w", err)
+	client, redisErr := m.getRedisClient()
+	if redisErr != nil {
+		return m.listTableConfigsFromMinio(ctx)
 	}
 
 	tables, err := client.SMembers(ctx, "metadata:table_configs").Result()
@@ -113,11 +123,12 @@ func (m *Manager) ListTableConfigs(ctx context.Context) ([]string, error) {
 	return tables, nil
 }
 
-// DeleteTableConfig 删除表配置
+// DeleteTableConfig 删除表配置。
+// 优先删 Redis；Redis 不可用时降级删 MinIO。
 func (m *Manager) DeleteTableConfig(ctx context.Context, tableName string) error {
-	client, err := m.getRedisClient()
-	if err != nil {
-		return fmt.Errorf("failed to get redis client: %w", err)
+	client, redisErr := m.getRedisClient()
+	if redisErr != nil {
+		return m.deleteTableConfigFromMinio(ctx, tableName)
 	}
 
 	key := fmt.Sprintf("metadata:table_config:%s", tableName)
@@ -136,11 +147,17 @@ func (m *Manager) DeleteTableConfig(ctx context.Context, tableName string) error
 	return nil
 }
 
-// GetTableConfigMetadata 获取表配置的完整元数据（包含时间戳等）
+// GetTableConfigMetadata 获取表配置的完整元数据（包含时间戳等）。
+// 优先读 Redis；Redis 不可用时降级读 MinIO。
 func (m *Manager) GetTableConfigMetadata(ctx context.Context, tableName string) (*TableConfigMetadata, error) {
-	client, err := m.getRedisClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get redis client: %w", err)
+	client, redisErr := m.getRedisClient()
+	if redisErr != nil {
+		// 降级到 MinIO
+		entry, err := m.loadTableConfigEntryFromMinio(ctx, tableName)
+		if err != nil {
+			return nil, err
+		}
+		return entry, nil
 	}
 
 	key := fmt.Sprintf("metadata:table_config:%s", tableName)
@@ -157,4 +174,144 @@ func (m *Manager) GetTableConfigMetadata(ctx context.Context, tableName string) 
 	}
 
 	return &metadata, nil
+}
+
+// ── MinIO 降级方法（standalone 模式，无 Redis） ──────────────────────────────
+
+// minioTableConfigBucket 返回用于存储表配置的 bucket 名。
+func (m *Manager) minioTableConfigBucket() string {
+	if m.config != nil && m.config.Backup.Bucket != "" {
+		return m.config.Backup.Bucket
+	}
+	return ""
+}
+
+// minioTableConfigKey 返回表配置在 MinIO 上的对象名。
+func minioTableConfigKey(tableName string) string {
+	return minioTableConfigPrefix + tableName + ".json"
+}
+
+// saveTableConfigToMinio 将表配置持久化到 MinIO。
+func (m *Manager) saveTableConfigToMinio(ctx context.Context, tableName string, tableConfig config.TableConfig) error {
+	if m.storage == nil {
+		return fmt.Errorf("metadata: no storage available for MinIO fallback")
+	}
+	bucket := m.minioTableConfigBucket()
+	if bucket == "" {
+		return fmt.Errorf("metadata: MinIO bucket not configured for table config fallback")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	entry := &TableConfigMetadata{
+		TableName: tableName,
+		Config:    tableConfig,
+		UpdatedAt: now,
+		CreatedAt: now,
+	}
+
+	// 尝试保留已有的 CreatedAt
+	if existing, err := m.loadTableConfigEntryFromMinio(ctx, tableName); err == nil && existing != nil {
+		entry.CreatedAt = existing.CreatedAt
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("metadata: marshal table config: %w", err)
+	}
+
+	key := minioTableConfigKey(tableName)
+	if err := m.storage.PutObject(ctx, bucket, key, bytes.NewReader(data), int64(len(data))); err != nil {
+		return fmt.Errorf("metadata: put table config to MinIO %q: %w", key, err)
+	}
+
+	m.logger.Info("Saved table config to MinIO (standalone fallback)", zap.String("table_name", tableName), zap.String("key", key))
+	return nil
+}
+
+// getTableConfigFromMinio 从 MinIO 读取表配置。
+func (m *Manager) getTableConfigFromMinio(ctx context.Context, tableName string) (*config.TableConfig, error) {
+	entry, err := m.loadTableConfigEntryFromMinio(ctx, tableName)
+	if err != nil || entry == nil {
+		return nil, err
+	}
+	return &entry.Config, nil
+}
+
+// deleteTableConfigFromMinio 从 MinIO 删除表配置。
+func (m *Manager) deleteTableConfigFromMinio(ctx context.Context, tableName string) error {
+	if m.storage == nil {
+		return fmt.Errorf("metadata: no storage available for MinIO fallback")
+	}
+	bucket := m.minioTableConfigBucket()
+	if bucket == "" {
+		return fmt.Errorf("metadata: MinIO bucket not configured")
+	}
+	key := minioTableConfigKey(tableName)
+	if err := m.storage.DeleteObject(ctx, bucket, key); err != nil {
+		return fmt.Errorf("metadata: delete table config from MinIO %q: %w", key, err)
+	}
+	m.logger.Info("Deleted table config from MinIO (standalone fallback)", zap.String("table_name", tableName))
+	return nil
+}
+
+// listTableConfigsFromMinio 从 MinIO 列出所有已持久化配置的表名。
+func (m *Manager) listTableConfigsFromMinio(ctx context.Context) ([]string, error) {
+	if m.storage == nil {
+		return nil, nil
+	}
+	bucket := m.minioTableConfigBucket()
+	if bucket == "" {
+		return nil, nil
+	}
+
+	objects, err := m.storage.ListObjectsSimple(ctx, bucket, minioTableConfigPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("metadata: list table configs from MinIO: %w", err)
+	}
+
+	var names []string
+	for _, obj := range objects {
+		name := strings.TrimPrefix(obj.Name, minioTableConfigPrefix)
+		name = strings.TrimSuffix(name, ".json")
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// loadTableConfigEntryFromMinio 读取 MinIO 上的完整表配置条目（含时间戳）。
+func (m *Manager) loadTableConfigEntryFromMinio(ctx context.Context, tableName string) (*TableConfigMetadata, error) {
+	if m.storage == nil {
+		return nil, nil
+	}
+	bucket := m.minioTableConfigBucket()
+	if bucket == "" {
+		return nil, nil
+	}
+
+	key := minioTableConfigKey(tableName)
+	data, err := m.storage.GetObjectBytes(ctx, bucket, key)
+	if err != nil {
+		// 对象不存在时不视为错误
+		if isMinioNotFoundErr(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("metadata: get table config from MinIO %q: %w", key, err)
+	}
+
+	var entry TableConfigMetadata
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil, fmt.Errorf("metadata: unmarshal table config from MinIO %q: %w", key, err)
+	}
+	return &entry, nil
+}
+
+// isMinioNotFoundErr 判断是否为 MinIO "对象不存在" 错误。
+func isMinioNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "NoSuchKey") || strings.Contains(msg, "The specified key does not exist") || strings.Contains(msg, "404")
 }

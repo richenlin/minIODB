@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,6 +27,8 @@ const (
 	StatusPaused     ReplicatorStatus = "paused"
 	StatusError      ReplicatorStatus = "error"
 	StatusOverloaded ReplicatorStatus = "overloaded"
+
+	checkpointBatchSize = 100
 )
 
 var (
@@ -129,9 +132,14 @@ func NewReplicator(
 		throttleCfg.MaxConcurrentCopies = DefaultThrottleConfig().MaxConcurrentCopies
 	}
 
+	srcUploader, err := storage.NewMinioClientWrapperFromClient(srcPool.GetClient(), logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create src uploader: %w", err)
+	}
+
 	r := &Replicator{
 		srcPool:     srcPool,
-		srcUploader: storage.NewMinioClientWrapperFromClient(srcPool.GetClient(), logger),
+		srcUploader: srcUploader,
 		dstUploader: dstUploader,
 		cfg:         cfg,
 		logger:      logger,
@@ -254,7 +262,7 @@ func (r *Replicator) syncOnce(ctx context.Context) error {
 	r.currentBucket = bucket
 	r.mu.Unlock()
 
-	objectsToSync, err := r.detectIncremental(ctx, bucket)
+	checkpoint, objectsToSync, err := r.detectIncremental(ctx, bucket)
 	if err != nil {
 		r.mu.Lock()
 		r.status = StatusError
@@ -274,26 +282,36 @@ func (r *Replicator) syncOnce(ctx context.Context) error {
 
 	var syncedCount, skippedCount, failedCount int64
 
-	for _, objectKey := range objectsToSync {
+	for i, objectKey := range objectsToSync {
 		select {
 		case <-ctx.Done():
+			if err := r.checkpoint.Save(ctx, bucket, checkpoint); err != nil {
+				r.logger.Warn("Failed to save checkpoint on context done", zap.Error(err))
+			}
 			return ctx.Err()
 		case <-r.stopCh:
+			if err := r.checkpoint.Save(ctx, bucket, checkpoint); err != nil {
+				r.logger.Warn("Failed to save checkpoint on stop", zap.Error(err))
+			}
 			return ErrReplicatorStopped
 		default:
 		}
 
 		if err := r.throttler.AdaptiveWait(ctx); err != nil {
 			if errors.Is(err, ErrThrottleOverloaded) {
+				skippedCount = int64(len(objectsToSync)) - syncedCount - failedCount
 				r.mu.Lock()
 				r.status = StatusThrottled
 				r.mu.Unlock()
 				r.logger.Warn("Sync paused due to system overload during copy",
-					zap.Int("synced", int(syncedCount)),
-					zap.Int("remaining", len(objectsToSync)-int(syncedCount)-int(skippedCount)-int(failedCount)))
+					zap.Int64("synced", syncedCount),
+					zap.Int64("skipped", skippedCount))
 				break
 			}
 			if errors.Is(err, ErrThrottleStopped) {
+				if saveErr := r.checkpoint.Save(ctx, bucket, checkpoint); saveErr != nil {
+					r.logger.Warn("Failed to save checkpoint on throttle stopped", zap.Error(saveErr))
+				}
 				return ErrReplicatorStopped
 			}
 			return fmt.Errorf("adaptive wait failed during copy: %w", err)
@@ -307,9 +325,22 @@ func (r *Replicator) syncOnce(ctx context.Context) error {
 				zap.Error(err))
 		} else {
 			syncedCount++
+			checkpoint.UpdateObjectVersion(objectKey, time.Now())
+
+			if (int64(i)+1)%checkpointBatchSize == 0 {
+				if saveErr := r.checkpoint.Save(ctx, bucket, checkpoint); saveErr != nil {
+					r.logger.Warn("Failed to save checkpoint batch",
+						zap.Int64("synced", syncedCount),
+						zap.Error(saveErr))
+				}
+			}
 		}
 
 		r.throttler.Release()
+	}
+
+	if err := r.checkpoint.Save(ctx, bucket, checkpoint); err != nil {
+		r.logger.Warn("Failed to save final checkpoint", zap.Error(err))
 	}
 
 	r.mu.Lock()
@@ -330,7 +361,7 @@ func (r *Replicator) syncOnce(ctx context.Context) error {
 	return nil
 }
 
-func (r *Replicator) detectIncremental(ctx context.Context, bucket string) ([]string, error) {
+func (r *Replicator) detectIncremental(ctx context.Context, bucket string) (*SyncCheckpoint, []string, error) {
 	checkpoint, err := r.checkpoint.Load(ctx, bucket)
 	if err != nil {
 		r.logger.Warn("Failed to load checkpoint, starting fresh", zap.Error(err))
@@ -345,7 +376,7 @@ func (r *Replicator) detectIncremental(ctx context.Context, bucket string) ([]st
 
 	for obj := range objectCh {
 		if obj.Err != nil {
-			return nil, fmt.Errorf("list objects error: %w", obj.Err)
+			return nil, nil, fmt.Errorf("list objects error: %w", obj.Err)
 		}
 
 		if obj.Key == "" {
@@ -358,35 +389,19 @@ func (r *Replicator) detectIncremental(ctx context.Context, bucket string) ([]st
 		}
 	}
 
-	return objectsToSync, nil
+	return checkpoint, objectsToSync, nil
 }
 
 func (r *Replicator) copyObject(ctx context.Context, bucket, objectKey string) error {
-	src := minio.CopySrcOptions{
-		Bucket: bucket,
-		Object: objectKey,
-	}
-	dst := minio.CopyDestOptions{
-		Bucket: bucket,
-		Object: objectKey,
-	}
-
-	_, err := r.dstUploader.CopyObject(ctx, dst, src)
+	data, err := r.srcUploader.GetObject(ctx, bucket, objectKey, minio.GetObjectOptions{})
 	if err != nil {
-		return fmt.Errorf("copy object %s: %w", objectKey, err)
+		return fmt.Errorf("get object %s from source: %w", objectKey, err)
 	}
 
-	checkpoint, loadErr := r.checkpoint.Load(ctx, bucket)
-	if loadErr != nil {
-		checkpoint = NewSyncCheckpoint()
-	}
-
-	checkpoint.UpdateObjectVersion(objectKey, time.Now())
-
-	if saveErr := r.checkpoint.Save(ctx, bucket, checkpoint); saveErr != nil {
-		r.logger.Warn("Failed to save checkpoint after copy",
-			zap.String("object", objectKey),
-			zap.Error(saveErr))
+	_, err = r.dstUploader.PutObject(ctx, bucket, objectKey,
+		bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("put object %s to destination: %w", objectKey, err)
 	}
 
 	return nil
@@ -443,7 +458,7 @@ func (r *Replicator) SyncBucket(ctx context.Context, bucket string) (*SyncResult
 		result.Duration = time.Since(startTime)
 	}()
 
-	objectsToSync, err := r.detectIncremental(ctx, bucket)
+	checkpoint, objectsToSync, err := r.detectIncremental(ctx, bucket)
 	if err != nil {
 		result.Error = err
 		return result, fmt.Errorf("detect incremental: %w", err)
@@ -451,12 +466,18 @@ func (r *Replicator) SyncBucket(ctx context.Context, bucket string) (*SyncResult
 
 	result.TotalObjects = int64(len(objectsToSync))
 
-	for _, objectKey := range objectsToSync {
+	for i, objectKey := range objectsToSync {
 		select {
 		case <-ctx.Done():
+			if saveErr := r.checkpoint.Save(ctx, bucket, checkpoint); saveErr != nil {
+				r.logger.Warn("Failed to save checkpoint on context done", zap.Error(saveErr))
+			}
 			result.Error = ctx.Err()
 			return result, ctx.Err()
 		case <-r.stopCh:
+			if saveErr := r.checkpoint.Save(ctx, bucket, checkpoint); saveErr != nil {
+				r.logger.Warn("Failed to save checkpoint on stop", zap.Error(saveErr))
+			}
 			result.Error = ErrReplicatorStopped
 			return result, ErrReplicatorStopped
 		default:
@@ -464,9 +485,11 @@ func (r *Replicator) SyncBucket(ctx context.Context, bucket string) (*SyncResult
 
 		if err := r.throttler.AdaptiveWait(ctx); err != nil {
 			if errors.Is(err, ErrThrottleOverloaded) {
+				result.SkippedCount = result.TotalObjects - result.SyncedCount - result.FailedCount
 				r.logger.Warn("Sync bucket paused due to overload",
 					zap.String("bucket", bucket),
-					zap.Int64("synced", result.SyncedCount))
+					zap.Int64("synced", result.SyncedCount),
+					zap.Int64("skipped", result.SkippedCount))
 				break
 			}
 			result.Error = err
@@ -481,9 +504,22 @@ func (r *Replicator) SyncBucket(ctx context.Context, bucket string) (*SyncResult
 				zap.Error(err))
 		} else {
 			result.SyncedCount++
+			checkpoint.UpdateObjectVersion(objectKey, time.Now())
+
+			if (int64(i)+1)%checkpointBatchSize == 0 {
+				if saveErr := r.checkpoint.Save(ctx, bucket, checkpoint); saveErr != nil {
+					r.logger.Warn("Failed to save checkpoint batch",
+						zap.Int64("synced", result.SyncedCount),
+						zap.Error(saveErr))
+				}
+			}
 		}
 
 		r.throttler.Release()
+	}
+
+	if err := r.checkpoint.Save(ctx, bucket, checkpoint); err != nil {
+		r.logger.Warn("Failed to save final checkpoint", zap.Error(err))
 	}
 
 	return result, nil

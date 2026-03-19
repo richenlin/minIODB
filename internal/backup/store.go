@@ -3,7 +3,9 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 	"time"
 
@@ -13,6 +15,21 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
+
+var planIDRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$`)
+
+func validatePlanID(id string) error {
+	if id == "" {
+		return errors.New("plan id cannot be empty")
+	}
+	if len(id) > 64 {
+		return errors.New("plan id too long (max 64 chars)")
+	}
+	if !planIDRegex.MatchString(id) {
+		return errors.New("plan id must contain only alphanumeric characters and hyphens")
+	}
+	return nil
+}
 
 type ExecutionStatus string
 
@@ -140,6 +157,9 @@ func (s *RedisPlanStore) listPlansFallback() ([]*config.BackupSchedule, error) {
 }
 
 func (s *RedisPlanStore) getPlanByID(ctx context.Context, id string) (*config.BackupSchedule, error) {
+	if err := validatePlanID(id); err != nil {
+		return nil, err
+	}
 	if !s.isRedisAvailable(ctx) {
 		return s.getPlanByIDFallback(id)
 	}
@@ -175,8 +195,8 @@ func (s *RedisPlanStore) SavePlan(ctx context.Context, plan *config.BackupSchedu
 	if plan == nil {
 		return fmt.Errorf("plan is nil")
 	}
-	if plan.ID == "" {
-		return fmt.Errorf("plan ID is required")
+	if err := validatePlanID(plan.ID); err != nil {
+		return err
 	}
 
 	now := time.Now()
@@ -217,6 +237,9 @@ func (s *RedisPlanStore) savePlanFallback(plan *config.BackupSchedule) error {
 }
 
 func (s *RedisPlanStore) DeletePlan(ctx context.Context, id string) error {
+	if err := validatePlanID(id); err != nil {
+		return err
+	}
 	if !s.isRedisAvailable(ctx) {
 		return s.deletePlanFallback(id)
 	}
@@ -245,6 +268,9 @@ func (s *RedisPlanStore) deletePlanFallback(id string) error {
 }
 
 func (s *RedisPlanStore) ListExecutions(ctx context.Context, planID string, limit int) ([]*BackupExecution, error) {
+	if err := validatePlanID(planID); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -305,8 +331,8 @@ func (s *RedisPlanStore) SaveExecution(ctx context.Context, exec *BackupExecutio
 	if exec.ID == "" {
 		return fmt.Errorf("execution ID is required")
 	}
-	if exec.PlanID == "" {
-		return fmt.Errorf("execution PlanID is required")
+	if err := validatePlanID(exec.PlanID); err != nil {
+		return err
 	}
 
 	now := time.Now()

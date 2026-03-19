@@ -55,7 +55,6 @@ import (
 	"minIODB/internal/ingest"
 	"minIODB/internal/metadata"
 	"minIODB/internal/metrics"
-	_ "minIODB/internal/metrics"
 	"minIODB/internal/query"
 	"minIODB/internal/recovery"
 	"minIODB/internal/replication"
@@ -71,6 +70,9 @@ import (
 	"minIODB/internal/dashboard"
 	"minIODB/internal/dashboard/logbuffer"
 	"minIODB/internal/dashboard/sse"
+
+	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -231,27 +233,46 @@ func main() {
 		logger.Logger,
 	)
 
-	// 启动元数据备份管理器
+	// 初始化元数据管理器
+	// - 完整模式（Redis + 元数据备份已启用）：全量元数据备份/恢复功能可用
+	// - standalone 模式（无 Redis）：元数据管理器仍然创建，但只用于表配置的
+	//   MinIO 降级存储；备份/恢复功能不可用（gracefully degraded）
 	var metadataManager *metadata.Manager
-	if cfg.Backup.Metadata.Enabled {
+	{
+		// 使用主 MinIO bucket 作为 standalone 降级存储的 bucket
+		standaloneBucket := cfg.GetMinIO().Bucket
+
+		// 备份 bucket 优先用配置的元数据专用 bucket，否则回落到主 bucket
+		backupBucket := cfg.Backup.Metadata.Bucket
+		if backupBucket == "" {
+			backupBucket = standaloneBucket
+		}
+
 		metadataConfig := metadata.Config{
 			NodeID: cfg.Server.NodeID,
 			Backup: metadata.BackupConfig{
+				Enabled:       cfg.Backup.Metadata.Enabled,
 				Interval:      cfg.Backup.Metadata.Interval,
 				RetentionDays: cfg.Backup.Metadata.RetentionDays,
-				Bucket:        cfg.Backup.Metadata.Bucket,
+				Bucket:        backupBucket,
 			},
 			Recovery: metadata.RecoveryConfig{
-				Bucket: cfg.Backup.Metadata.Bucket,
+				Bucket: backupBucket,
 			},
 		}
 
 		metadataManager = metadata.NewManager(storageInstance, storageInstance, &metadataConfig, logger.Logger)
 
-		if err := metadataManager.Start(); err != nil {
-			logger.Sugar.Warnf("Failed to start metadata manager: %v", err)
-		} else {
-			logger.Sugar.Info("Metadata manager started successfully")
+		if cfg.Backup.Metadata.Enabled {
+			if err := metadataManager.Start(); err != nil {
+				logger.Sugar.Warnf("Failed to start metadata manager: %v", err)
+			} else {
+				logger.Sugar.Info("Metadata manager started successfully")
+			}
+		} else if redisPool == nil {
+			// standalone 模式（无 Redis + 未启用元数据备份）：
+			// 仅用于表配置 MinIO 降级，不启动备份定时任务
+			logger.Sugar.Info("Metadata manager created in standalone mode (table config MinIO fallback only, no backup scheduler)")
 		}
 	}
 
@@ -270,13 +291,13 @@ func main() {
 	bufferStatsProvider := func() int64 {
 		return int64(concurrentBuffer.PendingWrites())
 	}
-	metrics.InitGlobalRuntimeCollector(
+	rc := metrics.InitGlobalRuntimeCollector(
 		metrics.WithPoolStatsProvider(poolStatsProvider),
 		metrics.WithBufferStatsProvider(bufferStatsProvider),
 		metrics.WithThresholds(metrics.DefaultLoadThresholds()),
 		metrics.WithInterval(5*time.Second),
 	)
-	metrics.GlobalRuntimeCollector.Start(ctx)
+	rc.Start(ctx)
 	logger.Sugar.Info("RuntimeCollector started")
 
 	// 启动指标服务器和告警管理器（Dashboard 启用时由 9090 上的 dashboard 服务一并提供 /metrics）
@@ -385,7 +406,12 @@ func main() {
 	}
 
 	// 创建MinIODB服务
-	miniodbService, err := service.NewMinIODBService(cfg, logger.Logger, ingesterService, querierService, redisPool, metadataManager)
+	// 在 standalone 模式（无 Redis）下，把 MinIO client 传给 service 层以持久化表配置
+	var serviceMinioClient *minio.Client
+	if minioPool := poolManager.GetMinIOPool(); minioPool != nil {
+		serviceMinioClient = minioPool.GetClient()
+	}
+	miniodbService, err := service.NewMinIODBService(cfg, logger.Logger, ingesterService, querierService, redisPool, metadataManager, serviceMinioClient)
 	if err != nil {
 		logger.Sugar.Fatalf("Failed to create MinIODB service: %v", err)
 	}
@@ -456,6 +482,34 @@ func main() {
 		}
 	}()
 
+	replicator, backupScheduler := initBackupSubsystem(
+		ctx,
+		cfg,
+		poolManager,
+		primaryMinio,
+		metadataManager,
+		redisPool,
+		dashSrv,
+		logger.Logger,
+	)
+
+	logger.Sugar.Info("MinIODB server started successfully")
+
+	// 等待中断信号
+	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv, replicator, backupScheduler)
+	logger.Sugar.Info("MinIODB server stopped")
+}
+
+func initBackupSubsystem(
+	ctx context.Context,
+	cfg *config.Config,
+	poolManager *pool.PoolManager,
+	primaryMinio storage.Uploader,
+	metadataManager *metadata.Manager,
+	redisPool *pool.RedisPool,
+	dashSrv *dashboard.Server,
+	zapLogger *zap.Logger,
+) (*replication.Replicator, *backup.Scheduler) {
 	var replicator *replication.Replicator
 	var backupScheduler *backup.Scheduler
 
@@ -465,37 +519,40 @@ func main() {
 		if dstPool == nil {
 			dstPool = srcPool
 		}
-		dstUploader := storage.NewMinioClientWrapperFromClient(dstPool.GetClient(), logger.Logger)
-
-		var err error
-		replicator, err = replication.NewReplicator(
-			srcPool,
-			dstUploader,
-			&cfg.Backup.Replication,
-			redisPool,
-			logger.Logger,
-			replication.WithReplicatorSnapshotProvider(metrics.GetRuntimeSnapshot),
-		)
+		dstUploader, err := storage.NewMinioClientWrapperFromClient(dstPool.GetClient(), zapLogger)
 		if err != nil {
-			logger.Sugar.Fatalf("Failed to create replicator: %v", err)
+			zapLogger.Sugar().Warnf("Failed to create dst uploader: %v, replication disabled", err)
+		} else {
+			replicator, err = replication.NewReplicator(
+				srcPool,
+				dstUploader,
+				&cfg.Backup.Replication,
+				redisPool,
+				zapLogger,
+				replication.WithReplicatorSnapshotProvider(metrics.GetRuntimeSnapshot),
+			)
+			if err != nil {
+				zapLogger.Sugar().Warnf("Failed to create replicator: %v, replication disabled", err)
+			} else {
+				go replicator.Start(ctx)
+				zapLogger.Sugar().Info("Replicator started")
+			}
 		}
-		go replicator.Start(ctx)
-		logger.Sugar.Info("Replicator started")
 	}
 
 	if len(cfg.Backup.Schedules) > 0 || cfg.Backup.Enabled {
-		backupTarget := backup.ResolveBackupTarget(cfg, poolManager, logger.Logger)
+		backupTarget := backup.ResolveBackupTarget(cfg, poolManager, zapLogger)
 		if backupTarget == nil {
-			logger.Sugar.Warn("Backup target not available, scheduler disabled")
+			zapLogger.Sugar().Warn("Backup target not available, scheduler disabled")
 		} else {
-			planStore := backup.NewRedisPlanStore(redisPool, logger.Logger)
-			executor := backup.NewExecutor(primaryMinio, backupTarget, metadataManager, redisPool, planStore, cfg, logger.Logger)
+			planStore := backup.NewRedisPlanStore(redisPool, zapLogger)
+			executor := backup.NewExecutor(primaryMinio, backupTarget, metadataManager, redisPool, planStore, cfg, zapLogger)
 
 			var hub *sse.Hub
 			if dashSrv != nil {
 				hub = dashSrv.GetHub()
 			}
-			backupScheduler = backup.NewScheduler(executor, planStore, hub, logger.Logger)
+			backupScheduler = backup.NewScheduler(executor, planStore, hub, zapLogger)
 
 			if dashSrv != nil {
 				dashSrv.SetBackupStore(planStore)
@@ -506,14 +563,14 @@ func main() {
 					cfg.Backup.Schedules[i].ID = fmt.Sprintf("schedule-%d", i)
 				}
 				if err := backupScheduler.AddPlan(&cfg.Backup.Schedules[i]); err != nil {
-					logger.Sugar.Warnf("Failed to add backup schedule %s: %v", cfg.Backup.Schedules[i].Name, err)
+					zapLogger.Sugar().Warnf("Failed to add backup schedule %s: %v", cfg.Backup.Schedules[i].Name, err)
 				}
 			}
 
 			if err := backupScheduler.Start(ctx); err != nil {
-				logger.Sugar.Warnf("Failed to start backup scheduler: %v", err)
+				zapLogger.Sugar().Warnf("Failed to start backup scheduler: %v", err)
 			} else {
-				logger.Sugar.Infof("Backup scheduler started - plans: %d", len(cfg.Backup.Schedules))
+				zapLogger.Sugar().Infof("Backup scheduler started - plans: %d", len(cfg.Backup.Schedules))
 			}
 		}
 	}
@@ -527,11 +584,7 @@ func main() {
 		}
 	}
 
-	logger.Sugar.Info("MinIODB server started successfully")
-
-	// 等待中断信号
-	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv, replicator, backupScheduler)
-	logger.Sugar.Info("MinIODB server stopped")
+	return replicator, backupScheduler
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,

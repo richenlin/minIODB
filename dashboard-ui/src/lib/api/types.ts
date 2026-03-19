@@ -62,6 +62,7 @@ export interface TableDetailResult extends TableResult {
   retention_days: number
   backup_enabled: boolean
   id_strategy: string
+  auto_generate_id: boolean
 }
 
 export interface ColumnStats {

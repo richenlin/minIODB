@@ -53,6 +53,7 @@ type TableManifest struct {
 	ObjectCount int64  `json:"object_count"`
 	TotalSize   int64  `json:"total_size"`
 	Status      string `json:"status"`
+	FailedCount int64  `json:"failed_count,omitempty"`
 }
 
 type BackupResult struct {
@@ -350,13 +351,17 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 
 	if tableConfig != nil {
 		configKey := fmt.Sprintf("backups/%s/table-config.json", backupID)
-		configBytes, _ := json.MarshalIndent(tableConfig, "", "  ")
-		_, err = e.backupTarget.Uploader.PutObject(ctx, e.backupTarget.Bucket, configKey,
-			toReader(configBytes), int64(len(configBytes)), minio.PutObjectOptions{
-				ContentType: "application/json",
-			})
+		configBytes, err := json.MarshalIndent(tableConfig, "", "  ")
 		if err != nil {
-			e.logger.Warn("Failed to upload table config", zap.Error(err))
+			e.logger.Warn("Failed to marshal table config", zap.Error(err))
+		} else {
+			_, err = e.backupTarget.Uploader.PutObject(ctx, e.backupTarget.Bucket, configKey,
+				toReader(configBytes), int64(len(configBytes)), minio.PutObjectOptions{
+					ContentType: "application/json",
+				})
+			if err != nil {
+				e.logger.Warn("Failed to upload table config", zap.Error(err))
+			}
 		}
 	}
 
@@ -369,13 +374,17 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 			result.Errors = append(result.Errors, fmt.Sprintf("redis metadata: %v", err))
 		} else if len(redisMetadata) > 0 {
 			metadataKey := fmt.Sprintf("backups/%s/redis-metadata.json", backupID)
-			metadataBytes, _ := json.MarshalIndent(redisMetadata, "", "  ")
-			_, err = e.backupTarget.Uploader.PutObject(ctx, e.backupTarget.Bucket, metadataKey,
-				toReader(metadataBytes), int64(len(metadataBytes)), minio.PutObjectOptions{
-					ContentType: "application/json",
-				})
+			metadataBytes, err := json.MarshalIndent(redisMetadata, "", "  ")
 			if err != nil {
-				e.logger.Warn("Failed to upload Redis metadata", zap.Error(err))
+				e.logger.Warn("Failed to marshal Redis metadata", zap.Error(err))
+			} else {
+				_, err = e.backupTarget.Uploader.PutObject(ctx, e.backupTarget.Bucket, metadataKey,
+					toReader(metadataBytes), int64(len(metadataBytes)), minio.PutObjectOptions{
+						ContentType: "application/json",
+					})
+				if err != nil {
+					e.logger.Warn("Failed to upload Redis metadata", zap.Error(err))
+				}
 			}
 		}
 	}
@@ -553,6 +562,8 @@ func (e *Executor) backupTable(ctx context.Context, tableName, backupID string) 
 		Status:      "completed",
 	}
 
+	var copiedCount, failedCount int64
+
 	for _, obj := range objects {
 		destKey := fmt.Sprintf("backups/%s/data/%s", backupID, obj.Name)
 
@@ -569,11 +580,21 @@ func (e *Executor) backupTable(ctx context.Context, tableName, backupID string) 
 			e.logger.Warn("Failed to copy object",
 				zap.String("object", obj.Name),
 				zap.Error(err))
+			failedCount++
 			continue
 		}
 
-		manifest.ObjectCount++
+		copiedCount++
 		manifest.TotalSize += obj.Size
+	}
+
+	manifest.ObjectCount = copiedCount
+
+	if failedCount > 0 {
+		manifest.Status = "partial"
+		manifest.FailedCount = failedCount
+	} else {
+		manifest.Status = "completed"
 	}
 
 	return manifest, nil

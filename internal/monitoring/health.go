@@ -227,6 +227,14 @@ func (hc *HealthChecker) checkSystemHealth(ctx context.Context) *HealthStatus {
 
 	snap := metrics.GetRuntimeSnapshot()
 
+	if snap.Stale {
+		return &HealthStatus{
+			Status:    "degraded",
+			Timestamp: now,
+			Message:   "runtime metrics are stale",
+		}
+	}
+
 	memUsageMB := snap.HeapAllocMB
 	maxMemoryMB := float64(hc.cfg.System.MaxMemoryMB)
 

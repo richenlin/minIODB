@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,13 @@ func DefaultLoadThresholds() LoadThresholds {
 	return throttle.DefaultLoadThresholds()
 }
 
+const (
+	throttleRatioIdle       = 0.0
+	throttleRatioNormal     = 0.3
+	throttleRatioBusy       = 0.7
+	throttleRatioOverloaded = 1.0
+)
+
 type RuntimeSnapshot struct {
 	Goroutines     int       `json:"goroutines"`
 	HeapAllocMB    float64   `json:"heap_alloc_mb"`
@@ -36,6 +44,7 @@ type RuntimeSnapshot struct {
 	LoadLevel      LoadLevel `json:"load_level"`
 	ThrottleRatio  float64   `json:"throttle_ratio"`
 	CollectedAt    time.Time `json:"collected_at"`
+	Stale          bool      `json:"stale"`
 }
 
 func (s *RuntimeSnapshot) GetLoadLevel() LoadLevel {
@@ -55,9 +64,10 @@ type RuntimeCollector struct {
 	stopCh              chan struct{}
 	stopOnce            sync.Once
 	wg                  sync.WaitGroup
+	running             atomic.Bool
 }
 
-var GlobalRuntimeCollector *RuntimeCollector
+var globalRuntimeCollector atomic.Pointer[RuntimeCollector]
 
 func NewRuntimeCollector(opts ...RuntimeCollectorOption) *RuntimeCollector {
 	rc := &RuntimeCollector{
@@ -101,9 +111,13 @@ func WithInterval(interval time.Duration) RuntimeCollectorOption {
 	}
 }
 
-func (rc *RuntimeCollector) Start(ctx context.Context) {
+func (rc *RuntimeCollector) Start(ctx context.Context) error {
+	if !rc.running.CompareAndSwap(false, true) {
+		return errors.New("runtime collector already running")
+	}
 	rc.wg.Add(1)
 	go rc.collectLoop(ctx)
+	return nil
 }
 
 func (rc *RuntimeCollector) Stop() {
@@ -111,6 +125,7 @@ func (rc *RuntimeCollector) Stop() {
 		close(rc.stopCh)
 	})
 	rc.wg.Wait()
+	rc.running.Store(false)
 }
 
 func (rc *RuntimeCollector) Snapshot() *RuntimeSnapshot {
@@ -264,30 +279,38 @@ func (rc *RuntimeCollector) classifyByPendingWrites(n int64) LoadLevel {
 func (rc *RuntimeCollector) calculateThrottleRatio(level LoadLevel) float64 {
 	switch level {
 	case LoadIdle:
-		return 0.0
+		return throttleRatioIdle
 	case LoadNormal:
-		return 0.3
+		return throttleRatioNormal
 	case LoadBusy:
-		return 0.7
+		return throttleRatioBusy
 	case LoadOverloaded:
-		return 1.0
+		return throttleRatioOverloaded
 	default:
-		return 0.0
+		return throttleRatioIdle
 	}
 }
 
 func InitGlobalRuntimeCollector(opts ...RuntimeCollectorOption) *RuntimeCollector {
-	rc := NewRuntimeCollector(opts...)
-	GlobalRuntimeCollector = rc
-	return rc
+	c := NewRuntimeCollector(opts...)
+	globalRuntimeCollector.Store(c)
+	return c
 }
 
+const snapshotMaxAge = 30 * time.Second
+
 func GetRuntimeSnapshot() *RuntimeSnapshot {
-	if GlobalRuntimeCollector == nil {
+	c := globalRuntimeCollector.Load()
+	if c == nil {
 		return &RuntimeSnapshot{
 			LoadLevel:   LoadIdle,
 			CollectedAt: time.Now(),
+			Stale:       true,
 		}
 	}
-	return GlobalRuntimeCollector.Snapshot()
+	snap := c.Snapshot()
+	if time.Since(snap.CollectedAt) > snapshotMaxAge {
+		snap.Stale = true
+	}
+	return snap
 }

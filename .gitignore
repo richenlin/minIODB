@@ -18,3 +18,4 @@ test/performance/test_results/
 
 internal/dashboard/static/_next/
 temp_parquet/
+-skipped

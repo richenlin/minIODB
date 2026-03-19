@@ -25,6 +25,8 @@ type Scheduler struct {
 	entryIDs map[string]cron.EntryID
 	running  bool
 	stopCh   chan struct{}
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 func NewScheduler(
@@ -52,6 +54,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if s.running {
 		return fmt.Errorf("scheduler already running")
 	}
+
+	s.stopCh = make(chan struct{})
+	s.ctx, s.cancel = context.WithCancel(ctx)
 
 	if s.store != nil {
 		plans, err := s.store.ListPlans(ctx)
@@ -91,6 +96,9 @@ func (s *Scheduler) Stop() {
 		return
 	}
 
+	if s.cancel != nil {
+		s.cancel()
+	}
 	close(s.stopCh)
 	s.cron.Stop()
 	s.running = false
@@ -277,8 +285,21 @@ func (s *Scheduler) schedulePlan(plan *config.BackupSchedule) error {
 		return fmt.Errorf("plan must have either cron_expr or interval")
 	}
 
+	planCopy := &config.BackupSchedule{
+		ID:            plan.ID,
+		Name:          plan.Name,
+		Enabled:       plan.Enabled,
+		Interval:      plan.Interval,
+		CronExpr:      plan.CronExpr,
+		BackupType:    plan.BackupType,
+		Tables:        append([]string{}, plan.Tables...),
+		RetentionDays: plan.RetentionDays,
+		CreatedAt:     plan.CreatedAt,
+		UpdatedAt:     plan.UpdatedAt,
+	}
+
 	entryID := s.cron.Schedule(schedule, cron.FuncJob(func() {
-		s.executePlan(plan)
+		s.executePlan(planCopy)
 	}))
 
 	s.entryIDs[plan.ID] = entryID
@@ -295,7 +316,7 @@ func (s *Scheduler) schedulePlan(plan *config.BackupSchedule) error {
 func (s *Scheduler) executePlan(plan *config.BackupSchedule) {
 	execID := fmt.Sprintf("exec-%s-%d", plan.ID, time.Now().Unix())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
 	go func() {

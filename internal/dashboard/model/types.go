@@ -58,12 +58,13 @@ type TableResult struct {
 
 type TableDetailResult struct {
 	TableResult
-	Config        config.TableConfig `json:"config"`
-	BufferSize    int                `json:"buffer_size"`
-	FlushInterval int64              `json:"flush_interval"`
-	RetentionDays int                `json:"retention_days"`
-	BackupEnabled bool               `json:"backup_enabled"`
-	IDStrategy    string             `json:"id_strategy"`
+	Config         config.TableConfig `json:"config"`
+	BufferSize     int                `json:"buffer_size"`
+	FlushInterval  int64              `json:"flush_interval"`
+	RetentionDays  int                `json:"retention_days"`
+	BackupEnabled  bool               `json:"backup_enabled"`
+	IDStrategy     string             `json:"id_strategy"`
+	AutoGenerateID bool               `json:"auto_generate_id"`
 }
 
 type ColumnStats struct {

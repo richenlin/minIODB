@@ -23,6 +23,7 @@ import (
 	"minIODB/pkg/pool"
 	"minIODB/pkg/version"
 
+	minioClient "github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -107,11 +108,16 @@ type MinIODBService struct {
 	startTime           time.Time
 }
 
-// NewMinIODBService 创建新的MinIODBService实例
+// NewMinIODBService 创建新的MinIODBService实例。
+// primaryMinio 仅在 standalone 模式（redisPool == nil）下用于持久化表配置到 MinIO；有 Redis 时忽略。
 func NewMinIODBService(cfg *config.Config, logger *zap.Logger, ingester *ingest.Ingester, querier *query.Querier,
-	redisPool *pool.RedisPool, metadataMgr *metadata.Manager) (*MinIODBService, error) {
+	redisPool *pool.RedisPool, metadataMgr *metadata.Manager, primaryMinio ...*minioClient.Client) (*MinIODBService, error) {
 
-	tableManager := NewTableManager(redisPool, nil, nil, cfg, logger)
+	var minioC *minioClient.Client
+	if len(primaryMinio) > 0 {
+		minioC = primaryMinio[0]
+	}
+	tableManager := NewTableManager(redisPool, minioC, nil, cfg, logger)
 
 	// 创建表配置管理器
 	var redisPoolForConfig *pool.RedisPool
@@ -280,17 +286,27 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 	tableConfig := s.GetTableConfig(ctx, tableName)
 	s.logger.Sugar().Infof("WriteData: table=%s, AutoGenerateID=%v, providedID=%q", tableName, tableConfig.AutoGenerateID, recordID)
 
-	// 处理ID：如果ID为空且允许自动生成，则生成ID
+	// 处理 ID：根据表配置的 id_strategy 决定行为
 	recordID = req.Data.Id
-	if recordID == "" && tableConfig.AutoGenerateID {
-		generatedID, err := s.GenerateID(ctx, tableName, tableConfig)
-		if err != nil {
-			s.logger.Sugar().Errorf("Failed to generate ID for table %s: %v", tableName, err)
+	if recordID == "" {
+		if idgen.IDGeneratorStrategy(tableConfig.IDStrategy) == idgen.StrategyUserProvided {
+			// 表明确要求用户提供 ID
+			err := status.Error(codes.InvalidArgument,
+				fmt.Sprintf("table %q requires a user-provided ID (id_strategy=user_provided); please specify an ID when writing data", tableName))
 			s.auditLogger.LogWrite(ctx, tableName, "", false, err, nil)
-			return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to generate ID: %v", err))
+			return nil, err
 		}
-		recordID = generatedID
-		s.logger.Sugar().Infof("Auto-generated ID for table %s: %s", tableName, recordID)
+		if tableConfig.AutoGenerateID {
+			generatedID, err := s.GenerateID(ctx, tableName, tableConfig)
+			if err != nil {
+				s.logger.Sugar().Errorf("Failed to generate ID for table %s: %v", tableName, err)
+				s.auditLogger.LogWrite(ctx, tableName, "", false, err, nil)
+				return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to generate ID: %v", err))
+			}
+			recordID = generatedID
+			s.logger.Sugar().Infof("Auto-generated ID for table %s: %s (strategy=%s)", tableName, recordID, tableConfig.IDStrategy)
+		}
+		// recordID 仍为空：允许（兼容某些遗留写入行为）
 	}
 
 	// 转换为内部写入请求格式，Timestamp 为空时自动补充当前时间
@@ -470,6 +486,15 @@ func (s *MinIODBService) validateWriteRequest(req *miniodb.WriteDataRequest) err
 	return nil
 }
 
+// systemDefaultTableConfig 返回配置缺失时的系统兜底配置。
+// 系统默认使用 snowflake + 自动生成 ID，确保数据总是能写入。
+func (s *MinIODBService) systemDefaultTableConfig() config.TableConfig {
+	base := s.cfg.Tables.DefaultConfig
+	base.IDStrategy = string(idgen.StrategySnowflake)
+	base.AutoGenerateID = true
+	return base
+}
+
 // GetTableConfig 获取表配置
 func (s *MinIODBService) GetTableConfig(ctx context.Context, tableName string) config.TableConfig {
 	// 优先从元数据管理器获取
@@ -478,6 +503,19 @@ func (s *MinIODBService) GetTableConfig(ctx context.Context, tableName string) c
 		if err == nil && cfg != nil {
 			s.logger.Sugar().Debugf("GetTableConfig: using metadataMgr for table %s, AutoGenerateID=%v", tableName, cfg.AutoGenerateID)
 			return *cfg
+		}
+		// 配置不存在（数据丢失、误操作等）：使用系统默认并自动补写，避免服务中断
+		if err == nil && cfg == nil {
+			recovered := s.systemDefaultTableConfig()
+			s.logger.Sugar().Warnf("GetTableConfig: table config missing for %s, recovering with system default (snowflake, auto_generate_id=true)", tableName)
+			go func() {
+				if saveErr := s.metadataMgr.SaveTableConfig(context.Background(), tableName, recovered); saveErr != nil {
+					s.logger.Sugar().Warnf("GetTableConfig: failed to persist recovered config for %s: %v", tableName, saveErr)
+				} else {
+					s.logger.Sugar().Infof("GetTableConfig: persisted recovered config for table %s", tableName)
+				}
+			}()
+			return recovered
 		}
 	}
 
@@ -488,9 +526,10 @@ func (s *MinIODBService) GetTableConfig(ctx context.Context, tableName string) c
 		return cfg
 	}
 
-	// 如果都不可用，返回默认配置
-	s.logger.Sugar().Debugf("GetTableConfig: using default config for table %s, AutoGenerateID=%v", tableName, s.cfg.Tables.DefaultConfig.AutoGenerateID)
-	return s.cfg.Tables.DefaultConfig
+	// 如果都不可用，返回系统默认配置（snowflake + 自动生成）
+	recovered := s.systemDefaultTableConfig()
+	s.logger.Sugar().Warnf("GetTableConfig: no config source available for table %s, using system default", tableName)
+	return recovered
 }
 
 // GenerateID 生成ID
@@ -1543,6 +1582,13 @@ func (s *MinIODBService) DeleteTable(ctx context.Context, req *miniodb.DeleteTab
 func (s *MinIODBService) BackupMetadata(ctx context.Context, req *miniodb.BackupMetadataRequest) (*miniodb.BackupMetadataResponse, error) {
 	s.logger.Sugar().Infof("Processing backup metadata request, force: %v", req.Force)
 
+	if s.metadataMgr == nil {
+		return &miniodb.BackupMetadataResponse{
+			Success: false,
+			Message: "Metadata manager not available (standalone mode or metadata backup disabled)",
+		}, nil
+	}
+
 	// 获取备份管理器
 	backupManager := s.metadataMgr.GetBackupManager()
 	if backupManager == nil {
@@ -1591,6 +1637,13 @@ func (s *MinIODBService) BackupMetadata(ctx context.Context, req *miniodb.Backup
 // RestoreMetadata 恢复元数据
 func (s *MinIODBService) RestoreMetadata(ctx context.Context, req *miniodb.RestoreMetadataRequest) (*miniodb.RestoreMetadataResponse, error) {
 	s.logger.Sugar().Infof("Processing restore metadata request, backup_file: %s, from_latest: %v", req.BackupFile, req.FromLatest)
+
+	if s.metadataMgr == nil {
+		return &miniodb.RestoreMetadataResponse{
+			Success: false,
+			Message: "Metadata manager not available (standalone mode or metadata backup disabled)",
+		}, nil
+	}
 
 	// 获取恢复管理器
 	recoveryManager := s.metadataMgr.GetRecoveryManager()
@@ -1685,6 +1738,13 @@ func (s *MinIODBService) RestoreMetadata(ctx context.Context, req *miniodb.Resto
 func (s *MinIODBService) ListBackups(ctx context.Context, req *miniodb.ListBackupsRequest) (*miniodb.ListBackupsResponse, error) {
 	s.logger.Sugar().Infof("Processing list backups request, days: %d", req.Days)
 
+	if s.metadataMgr == nil {
+		return &miniodb.ListBackupsResponse{
+			Backups: []*miniodb.BackupInfo{},
+			Total:   0,
+		}, nil
+	}
+
 	// 获取恢复管理器
 	recoveryManager := s.metadataMgr.GetRecoveryManager()
 	if recoveryManager == nil {
@@ -1734,6 +1794,13 @@ func (s *MinIODBService) ListBackups(ctx context.Context, req *miniodb.ListBacku
 // GetMetadataStatus 获取元数据状态
 func (s *MinIODBService) GetMetadataStatus(ctx context.Context, req *miniodb.GetMetadataStatusRequest) (*miniodb.GetMetadataStatusResponse, error) {
 	s.logger.Sugar().Infof("Processing get metadata status request")
+
+	if s.metadataMgr == nil {
+		return &miniodb.GetMetadataStatusResponse{
+			BackupStatus: map[string]string{"status": "not_configured"},
+			HealthStatus: "standalone",
+		}, nil
+	}
 
 	// 获取备份管理器和恢复管理器
 	backupManager := s.metadataMgr.GetBackupManager()

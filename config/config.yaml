@@ -45,13 +45,13 @@ network:
       bucket: "miniodb-data"
 
     # 备份 MinIO（唯一配置来源；backup.enabled: true 时生效，取消注释并填写）
-    # minio_backup:
-    #   endpoint: "localhost:9002"
-    #   access_key_id: "minioadmin"
-    #   secret_access_key: "minioadmin123"
-    #   use_ssl: false
-    #   region: "us-east-1"
-    #   bucket: "miniodb-backup"
+    minio_backup:
+      endpoint: "localhost:9002"
+      access_key_id: "minioadmin"
+      secret_access_key: "minioadmin123"
+      use_ssl: false
+      region: "us-east-1"
+      bucket: "miniodb-backup"
 
     # 故障切换开关（内部参数见 constants.go）
     failover:

@@ -21,8 +21,12 @@ import (
 type mockUploader struct {
 	objects   map[string]minio.ObjectInfo
 	copyCalls []string
+	putCalls  []string
+	getCalls  []string
 	mu        sync.Mutex
 	copyErr   error
+	getErr    error
+	putErr    error
 	listErr   error
 	copyDelay time.Duration
 }
@@ -46,11 +50,23 @@ func (m *mockUploader) FPutObject(ctx context.Context, bucketName, objectName, f
 }
 
 func (m *mockUploader) PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, opts minio.PutObjectOptions) (minio.UploadInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.putErr != nil {
+		return minio.UploadInfo{}, m.putErr
+	}
+	m.putCalls = append(m.putCalls, objectName)
 	return minio.UploadInfo{}, nil
 }
 
 func (m *mockUploader) GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) ([]byte, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	m.getCalls = append(m.getCalls, objectName)
+	return []byte("mock-data"), nil
 }
 
 func (m *mockUploader) RemoveObject(ctx context.Context, bucketName, objectName string, opts minio.RemoveObjectOptions) error {
@@ -121,7 +137,13 @@ func (m *mockUploader) addMockObject(key string, lastModified time.Time) {
 func (m *mockUploader) getCopyCalls() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.copyCalls
+	return append([]string{}, m.copyCalls...)
+}
+
+func (m *mockUploader) getPutCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.putCalls...)
 }
 
 func TestReplicatorStatus_String(t *testing.T) {
@@ -284,7 +306,7 @@ func TestReplicator_DetectIncremental_EmptyBucket(t *testing.T) {
 		status:      StatusIdle,
 	}
 
-	objects, err := r.detectIncremental(context.Background(), "test-bucket")
+	_, objects, err := r.detectIncremental(context.Background(), "test-bucket")
 	require.NoError(t, err)
 	assert.Empty(t, objects)
 }
@@ -321,7 +343,7 @@ func TestReplicator_DetectIncremental_NewObjects(t *testing.T) {
 		status:      StatusIdle,
 	}
 
-	objects, err := r.detectIncremental(context.Background(), "test-bucket")
+	_, objects, err := r.detectIncremental(context.Background(), "test-bucket")
 	require.NoError(t, err)
 	assert.Len(t, objects, 3)
 }
@@ -365,7 +387,7 @@ func TestReplicator_DetectIncremental_Incremental(t *testing.T) {
 		status:      StatusIdle,
 	}
 
-	objects, err := r.detectIncremental(context.Background(), "test-bucket")
+	_, objects, err := r.detectIncremental(context.Background(), "test-bucket")
 	require.NoError(t, err)
 	assert.Len(t, objects, 1)
 	assert.Equal(t, "obj3", objects[0])
@@ -407,7 +429,7 @@ func TestReplicator_DetectIncremental_ModifiedObject(t *testing.T) {
 		status:      StatusIdle,
 	}
 
-	objects, err := r.detectIncremental(context.Background(), "test-bucket")
+	_, objects, err := r.detectIncremental(context.Background(), "test-bucket")
 	require.NoError(t, err)
 	assert.Len(t, objects, 1)
 	assert.Equal(t, "obj1", objects[0])
@@ -444,7 +466,7 @@ func TestReplicator_DetectIncremental_ListError(t *testing.T) {
 		status:      StatusIdle,
 	}
 
-	_, err := r.detectIncremental(context.Background(), "test-bucket")
+	_, _, err := r.detectIncremental(context.Background(), "test-bucket")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "list objects error")
 }
@@ -452,8 +474,9 @@ func TestReplicator_DetectIncremental_ListError(t *testing.T) {
 func TestReplicator_CopyObject(t *testing.T) {
 	logger := zap.NewNop()
 
+	mockSrc := newMockUploader()
+	mockSrc.addMockObject("test-obj", time.Now())
 	mockDst := newMockUploader()
-	mockDst.addMockObject("test-obj", time.Now())
 
 	cfg := &config.ReplicationConfig{
 		MaxQPS:  100,
@@ -469,6 +492,7 @@ func TestReplicator_CopyObject(t *testing.T) {
 	checkpoint := NewCheckpointStore(nil, "test:checkpoint:copy", t.TempDir(), logger)
 
 	r := &Replicator{
+		srcUploader: mockSrc,
 		dstUploader: mockDst,
 		cfg:         cfg,
 		throttler:   throttler,
@@ -481,20 +505,16 @@ func TestReplicator_CopyObject(t *testing.T) {
 	err := r.copyObject(context.Background(), "test-bucket", "test-obj")
 	require.NoError(t, err)
 
-	calls := mockDst.getCopyCalls()
-	assert.Contains(t, calls, "test-obj")
-
-	cp, err := checkpoint.Load(context.Background(), "test-bucket")
-	require.NoError(t, err)
-	_, exists := cp.GetObjectVersion("test-obj")
-	assert.True(t, exists)
+	putCalls := mockDst.getPutCalls()
+	assert.Contains(t, putCalls, "test-obj")
 }
 
-func TestReplicator_CopyObject_Error(t *testing.T) {
+func TestReplicator_CopyObject_GetError(t *testing.T) {
 	logger := zap.NewNop()
 
+	mockSrc := newMockUploader()
+	mockSrc.getErr = errors.New("get failed")
 	mockDst := newMockUploader()
-	mockDst.copyErr = errors.New("copy failed")
 
 	cfg := &config.ReplicationConfig{
 		MaxQPS:  100,
@@ -507,9 +527,10 @@ func TestReplicator_CopyObject_Error(t *testing.T) {
 	}
 	throttler := NewThrottler(throttleCfg, WithLogger(logger))
 	defer throttler.Stop()
-	checkpoint := NewCheckpointStore(nil, "test:checkpoint:copyerr", t.TempDir(), logger)
+	checkpoint := NewCheckpointStore(nil, "test:checkpoint:geterr", t.TempDir(), logger)
 
 	r := &Replicator{
+		srcUploader: mockSrc,
 		dstUploader: mockDst,
 		cfg:         cfg,
 		throttler:   throttler,
@@ -521,7 +542,43 @@ func TestReplicator_CopyObject_Error(t *testing.T) {
 
 	err := r.copyObject(context.Background(), "test-bucket", "test-obj")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "copy failed")
+	assert.Contains(t, err.Error(), "get object")
+}
+
+func TestReplicator_CopyObject_PutError(t *testing.T) {
+	logger := zap.NewNop()
+
+	mockSrc := newMockUploader()
+	mockDst := newMockUploader()
+	mockDst.putErr = errors.New("put failed")
+
+	cfg := &config.ReplicationConfig{
+		MaxQPS:  100,
+		Workers: 4,
+	}
+
+	throttleCfg := ThrottleConfig{
+		MaxQPS:              cfg.MaxQPS,
+		MaxConcurrentCopies: cfg.Workers,
+	}
+	throttler := NewThrottler(throttleCfg, WithLogger(logger))
+	defer throttler.Stop()
+	checkpoint := NewCheckpointStore(nil, "test:checkpoint:puterr", t.TempDir(), logger)
+
+	r := &Replicator{
+		srcUploader: mockSrc,
+		dstUploader: mockDst,
+		cfg:         cfg,
+		throttler:   throttler,
+		checkpoint:  checkpoint,
+		logger:      logger,
+		stopCh:      make(chan struct{}),
+		status:      StatusIdle,
+	}
+
+	err := r.copyObject(context.Background(), "test-bucket", "test-obj")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "put object")
 }
 
 func TestReplicator_SyncBucket(t *testing.T) {
@@ -575,7 +632,7 @@ func TestReplicator_SyncBucket_WithFailure(t *testing.T) {
 	mockSrc.addMockObject("obj2", time.Now())
 
 	mockDst := newMockUploader()
-	mockDst.copyErr = errors.New("copy failed")
+	mockDst.putErr = errors.New("put failed")
 
 	cfg := &config.ReplicationConfig{
 		MaxQPS:   100,

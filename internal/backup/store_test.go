@@ -175,7 +175,7 @@ func TestRedisPlanStore_Validation(t *testing.T) {
 	t.Run("save plan with empty ID", func(t *testing.T) {
 		err := store.SavePlan(ctx, &config.BackupSchedule{})
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "ID is required")
+		assert.Contains(t, err.Error(), "plan id cannot be empty")
 	})
 
 	t.Run("save nil plan", func(t *testing.T) {
@@ -193,7 +193,7 @@ func TestRedisPlanStore_Validation(t *testing.T) {
 	t.Run("save execution with empty PlanID", func(t *testing.T) {
 		err := store.SaveExecution(ctx, &BackupExecution{ID: "exec-1"})
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "execution PlanID is required")
+		assert.Contains(t, err.Error(), "plan id cannot be empty")
 	})
 
 	t.Run("save nil execution", func(t *testing.T) {

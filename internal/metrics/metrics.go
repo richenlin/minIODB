@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"net/http"
-	"runtime"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -357,61 +356,6 @@ func UpdateGoroutineCount(count float64) {
 // Handler 返回Prometheus指标处理器
 func Handler() http.Handler {
 	return promhttp.Handler()
-}
-
-// SystemMonitor 系统监控器
-// Deprecated: Use RuntimeCollector instead. This type will be removed in a future version.
-// The RuntimeCollector provides unified runtime sampling and is more efficient.
-// See runtime_collector.go for the replacement implementation.
-type SystemMonitor struct {
-	stopCh chan struct{}
-}
-
-// NewSystemMonitor 创建系统监控器
-// Deprecated: Use NewRuntimeCollector with appropriate options instead.
-func NewSystemMonitor() *SystemMonitor {
-	return &SystemMonitor{
-		stopCh: make(chan struct{}),
-	}
-}
-
-// Start 启动系统监控
-func (sm *SystemMonitor) Start() {
-	go sm.collectSystemMetrics()
-}
-
-// Stop 停止系统监控
-func (sm *SystemMonitor) Stop() {
-	close(sm.stopCh)
-}
-
-// collectSystemMetrics 收集系统指标
-func (sm *SystemMonitor) collectSystemMetrics() {
-	ticker := time.NewTicker(10 * time.Second) // 每10秒收集一次
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-sm.stopCh:
-			return
-		case <-ticker.C:
-			sm.updateMetrics()
-		}
-	}
-}
-
-// updateMetrics 更新系统指标
-func (sm *SystemMonitor) updateMetrics() {
-	// 更新内存使用情况
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
-	UpdateMemoryUsage(float64(memStats.Alloc))
-
-	// 更新goroutine数量
-	UpdateGoroutineCount(float64(runtime.NumGoroutine()))
-
-	// 注意：CPU和磁盘使用情况需要更复杂的实现
-	// 这里只是示例，实际生产环境可能需要使用第三方库
 }
 
 // IncPanicRecovered 增加 panic 恢复计数

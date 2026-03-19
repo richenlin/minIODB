@@ -43,6 +43,7 @@ import {
 } from '@radix-ui/react-icons'
 import type { 
   TableResult, 
+  TableDetailResult,
   BrowseResult, 
   QueryResult,
   CreateTableRequest,
@@ -97,6 +98,9 @@ export default function DataPage() {
   const [deletingRowId, setDeletingRowId] = useState<string | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
   
+  // 当前选中表的详细配置（含 id_strategy 等）
+  const [tableDetail, setTableDetail] = useState<TableDetailResult | null>(null)
+
   // 创建表对话框状态
   const [createTableDialogOpen, setCreateTableDialogOpen] = useState(false)
   const [newTableName, setNewTableName] = useState('')
@@ -157,6 +161,17 @@ export default function DataPage() {
       loadTableData()
     }
   }, [viewMode, selectedTable, page, sortBy, sortOrder, loadTableData])
+
+  // 表切换时加载表详细配置（含 id_strategy）
+  useEffect(() => {
+    if (!selectedTable) {
+      setTableDetail(null)
+      return
+    }
+    dataApi.getTable(selectedTable)
+      .then(detail => setTableDetail(detail))
+      .catch(() => setTableDetail(null))
+  }, [selectedTable])
 
   // 执行 SQL
   const handleExecuteSql = async () => {
@@ -263,6 +278,12 @@ export default function DataPage() {
     try {
       if (editingRow) {
         // 编辑模式
+        const rowId = editingRow.id !== null && editingRow.id !== undefined ? String(editingRow.id).trim() : ''
+        if (!rowId) {
+          setNewRecordError('该记录缺少 ID，无法更新。请删除后重新写入。')
+          return
+        }
+
         let payload: Record<string, unknown> = {}
         const payloadText = editFormData.payload?.trim() || '{}'
         try {
@@ -277,16 +298,33 @@ export default function DataPage() {
           return
         }
         
-        await dataApi.updateRecord(selectedTable, String(editingRow.id), {
+        await dataApi.updateRecord(selectedTable, rowId, {
           payload,
         })
       } else {
         // 新增模式
-        const payload = newRecordPayload ? JSON.parse(newRecordPayload) : {}
-        const recordData: WriteRecordRequest = {
-          payload,
+        const strategy = tableDetail?.id_strategy ?? 'snowflake'
+        const autoGenerate = tableDetail?.auto_generate_id ?? true
+        const isRequired = strategy === 'user_provided' || !autoGenerate
+        if (isRequired && !newRecordId.trim()) {
+          setNewRecordError('该表要求手动指定 ID，请填写 ID 后再提交')
+          return
         }
-        
+
+        let payload: Record<string, unknown> = {}
+        try {
+          const parsed = JSON.parse(newRecordPayload || '{}')
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            payload = parsed as Record<string, unknown>
+          } else {
+            throw new Error('Payload 必须是 JSON 对象')
+          }
+        } catch (e) {
+          setNewRecordError(e instanceof Error ? e.message : 'Payload JSON 格式错误')
+          return
+        }
+
+        const recordData: WriteRecordRequest = { payload }
         if (newRecordId.trim()) {
           recordData.id = newRecordId.trim()
         }
@@ -735,6 +773,8 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                                       variant="ghost"
                                       size="icon"
                                       className="h-7 w-7"
+                                      disabled={row.id === null || row.id === undefined || String(row.id).trim() === ''}
+                                      title={row.id === null || row.id === undefined || String(row.id).trim() === '' ? '该记录缺少 ID，无法编辑' : undefined}
                                       onClick={(e) => {
                                         e.preventDefault()
                                         e.stopPropagation()
@@ -902,16 +942,35 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                   />
                 </div>
                 <div className="space-y-2 col-span-2">
-                  <label className="text-sm font-medium text-foreground">
-                    ID（可选）
-                  </label>
-                  <input
-                    type="text"
-                    value={newRecordId}
-                    onChange={(e) => setNewRecordId(e.target.value)}
-                    placeholder="留空则自动生成..."
-                    className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                  />
+                  {(() => {
+                    const strategy = tableDetail?.id_strategy ?? 'snowflake'
+                    const autoGenerate = tableDetail?.auto_generate_id ?? true
+                    const isRequired = strategy === 'user_provided' || !autoGenerate
+                    const strategyLabel: Record<string, string> = {
+                      uuid: 'UUID',
+                      snowflake: 'Snowflake',
+                      custom: '自定义',
+                      user_provided: '用户提供',
+                    }
+                    const hint = isRequired
+                      ? `必填 — 该表要求手动指定 ID（策略：${strategyLabel[strategy] ?? strategy}）`
+                      : `可选 — 留空将自动生成（策略：${strategyLabel[strategy] ?? strategy}）`
+                    return (
+                      <>
+                        <label className="text-sm font-medium text-foreground">
+                          ID{isRequired ? <span className="text-destructive ml-1">*</span> : <span className="text-muted-foreground text-xs ml-1">（可选）</span>}
+                        </label>
+                        <input
+                          type="text"
+                          value={newRecordId}
+                          onChange={(e) => setNewRecordId(e.target.value)}
+                          placeholder={isRequired ? '请输入 ID...' : '留空则自动生成...'}
+                          className={`w-full px-3 py-2 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${isRequired && !newRecordId.trim() ? 'border-destructive' : 'border-input'}`}
+                        />
+                        <p className="text-xs text-muted-foreground">{hint}</p>
+                      </>
+                    )
+                  })()}
                 </div>
               </div>
               
