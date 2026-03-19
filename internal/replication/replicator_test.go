@@ -28,6 +28,7 @@ type mockUploader struct {
 	getErr    error
 	putErr    error
 	listErr   error
+	statErr   error
 	copyDelay time.Duration
 }
 
@@ -107,6 +108,9 @@ func (m *mockUploader) CopyObject(ctx context.Context, dst minio.CopyDestOptions
 func (m *mockUploader) StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.statErr != nil {
+		return minio.ObjectInfo{}, m.statErr
+	}
 	if info, ok := m.objects[objectName]; ok {
 		return info, nil
 	}
@@ -131,6 +135,8 @@ func (m *mockUploader) addMockObject(key string, lastModified time.Time) {
 		Key:          key,
 		LastModified: lastModified,
 		Size:         1024,
+		ContentType:  "application/octet-stream",
+		UserMetadata: map[string]string{},
 	}
 }
 
@@ -513,6 +519,7 @@ func TestReplicator_CopyObject_GetError(t *testing.T) {
 	logger := zap.NewNop()
 
 	mockSrc := newMockUploader()
+	mockSrc.addMockObject("test-obj", time.Now())
 	mockSrc.getErr = errors.New("get failed")
 	mockDst := newMockUploader()
 
@@ -549,6 +556,7 @@ func TestReplicator_CopyObject_PutError(t *testing.T) {
 	logger := zap.NewNop()
 
 	mockSrc := newMockUploader()
+	mockSrc.addMockObject("test-obj", time.Now())
 	mockDst := newMockUploader()
 	mockDst.putErr = errors.New("put failed")
 

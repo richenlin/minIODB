@@ -393,13 +393,23 @@ func (r *Replicator) detectIncremental(ctx context.Context, bucket string) (*Syn
 }
 
 func (r *Replicator) copyObject(ctx context.Context, bucket, objectKey string) error {
+	objInfo, err := r.srcUploader.StatObject(ctx, bucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("stat object %s from source: %w", objectKey, err)
+	}
+
 	data, err := r.srcUploader.GetObject(ctx, bucket, objectKey, minio.GetObjectOptions{})
 	if err != nil {
 		return fmt.Errorf("get object %s from source: %w", objectKey, err)
 	}
 
+	putOpts := minio.PutObjectOptions{
+		ContentType:  objInfo.ContentType,
+		UserMetadata: objInfo.UserMetadata,
+	}
+
 	_, err = r.dstUploader.PutObject(ctx, bucket, objectKey,
-		bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{})
+		bytes.NewReader(data), int64(len(data)), putOpts)
 	if err != nil {
 		return fmt.Errorf("put object %s to destination: %w", objectKey, err)
 	}
