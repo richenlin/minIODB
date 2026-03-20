@@ -323,11 +323,13 @@ export default function DataPage() {
           payload,
         })
       } else {
-        // 新增模式：user_provided 策略必须由用户提供 ID，其余策略后端自动生成
+        // 新增模式
         const strategy = tableDetail?.id_strategy ?? 'snowflake'
-        const isRequired = strategy === 'user_provided'
-        if (isRequired && !newRecordId.trim()) {
-          setNewRecordError('该表要求手动指定 ID，请填写 ID 后再提交')
+        const isUserProvided = strategy === 'user_provided'
+
+        // user_provided 策略必须填写 ID
+        if (isUserProvided && !newRecordId.trim()) {
+          setNewRecordError('该表要求手动指定 ID，请填写后再提交')
           return
         }
 
@@ -345,10 +347,11 @@ export default function DataPage() {
         }
 
         const recordData: WriteRecordRequest = { payload }
-        if (newRecordId.trim()) {
+        // 只有 user_provided 策略才传 ID，其余策略不传，由后端自动生成
+        if (isUserProvided && newRecordId.trim()) {
           recordData.id = newRecordId.trim()
         }
-        
+
         await dataApi.writeRecord(selectedTable, recordData)
       }
       
@@ -1154,30 +1157,40 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                 <div className="space-y-2 col-span-2">
                   {(() => {
                     const strategy = tableDetail?.id_strategy ?? 'snowflake'
-                    // user_provided 策略才要求必填，其余策略后端自动生成
-                    const isRequired = strategy === 'user_provided'
+                    const isUserProvided = strategy === 'user_provided'
                     const strategyLabel: Record<string, string> = {
                       uuid: 'UUID',
                       snowflake: 'Snowflake',
-                      custom: '自定义（时间戳+随机）',
+                      custom: 'Custom',
                       user_provided: '用户提供',
                     }
-                    const hint = isRequired
-                      ? `必填 — 该表要求手动指定 ID`
-                      : `可选 — 留空将自动生成（策略：${strategyLabel[strategy] ?? strategy}）`
                     return (
                       <>
                         <label className="text-sm font-medium text-foreground">
-                          ID{isRequired ? <span className="text-destructive ml-1">*</span> : <span className="text-muted-foreground text-xs ml-1">（可选）</span>}
+                          ID
+                          {isUserProvided
+                            ? <span className="text-destructive ml-1">*</span>
+                            : <span className="text-muted-foreground text-xs ml-1">（系统自动生成）</span>
+                          }
                         </label>
                         <input
                           type="text"
-                          value={newRecordId}
-                          onChange={(e) => setNewRecordId(e.target.value)}
-                          placeholder={isRequired ? '请输入 ID...' : '留空则自动生成...'}
-                          className={`w-full px-3 py-2 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${isRequired && !newRecordId.trim() ? 'border-destructive' : 'border-input'}`}
+                          value={isUserProvided ? newRecordId : ''}
+                          onChange={(e) => isUserProvided && setNewRecordId(e.target.value)}
+                          disabled={!isUserProvided}
+                          placeholder={isUserProvided ? '请输入 ID...' : `由系统自动生成（${strategyLabel[strategy] ?? strategy}）`}
+                          className={`w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary
+                            ${isUserProvided
+                              ? `bg-background text-foreground ${!newRecordId.trim() ? 'border-destructive' : 'border-input'}`
+                              : 'bg-muted text-muted-foreground border-input cursor-not-allowed'
+                            }`}
                         />
-                        <p className="text-xs text-muted-foreground">{hint}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {isUserProvided
+                            ? '必填 — 该表要求手动指定 ID，写入时不可为空'
+                            : `系统将使用 ${strategyLabel[strategy] ?? strategy} 策略自动生成唯一 ID，利于系统索引`
+                          }
+                        </p>
                       </>
                     )
                   })()}
