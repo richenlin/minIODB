@@ -1428,6 +1428,43 @@ func (cb *ConcurrentBuffer) GetTableBufferKeys(tableName string) []string {
 	return cb.GetTableKeys(tableName)
 }
 
+// ClearTable 清除指定表在 buffer 中的所有数据（用于删表操作）
+// 同时清理 WAL 中该表的 tombstone 记录相关状态
+// 返回被移除的记录数
+func (cb *ConcurrentBuffer) ClearTable(tableName string) (removedCount int) {
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	cb.walSeqMutex.Lock()
+	defer cb.walSeqMutex.Unlock()
+
+	prefix := tableName + "/"
+	for bufferKey, rows := range cb.buffer {
+		if !strings.HasPrefix(bufferKey, prefix) {
+			continue
+		}
+		removedCount += len(rows)
+		delete(cb.buffer, bufferKey)
+		delete(cb.lastFlushedSeq, bufferKey)
+	}
+
+	if removedCount > 0 {
+		cb.pendingWrites.Add(-int64(removedCount))
+		cb.updateStats(func(stats *ConcurrentBufferStats) {
+			stats.BufferSize = int64(len(cb.buffer))
+			stats.PendingWrites = cb.pendingWrites.Load()
+		})
+	}
+
+	if removedCount > 0 {
+		cb.logger.Info("Cleared table from buffer",
+			zap.String("table", tableName),
+			zap.Int("removed_count", removedCount))
+	}
+
+	return removedCount
+}
+
 // Remove 从 buffer 中移除指定表和 ID 的所有记录
 // 用于 Delete/Update 操作时清理 buffer 中尚未 flush 的数据
 // 同时写入 WAL Tombstone 记录，确保崩溃恢复时不会"复活"已删除数据

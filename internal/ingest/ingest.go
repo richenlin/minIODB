@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -241,4 +242,14 @@ func (i *Ingester) RemoveFromBuffer(tableName, id string) int {
 		return 0
 	}
 	return i.buffer.Remove(tableName, id)
+}
+
+// ClearTableBuffer 清除指定表在 buffer 中的所有数据
+// 用于 DropTable 操作，确保删除表后内存中的数据也被清理
+func (i *Ingester) ClearTableBuffer(ctx context.Context, tableName string) int {
+	if i.buffer == nil {
+		return 0
+	}
+	_ = ctx // ClearTable 不需要 ctx，保留参数兼容性
+	return i.buffer.ClearTable(tableName)
 }

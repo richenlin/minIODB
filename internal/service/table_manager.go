@@ -224,14 +224,14 @@ func (tm *TableManager) DropTable(ctx context.Context, tableName string, ifExist
 
 	var filesDeleted int32
 
-	// 如果启用了cascade，删除表数据
-	if cascade {
-		deletedCount, err := tm.deleteTableData(ctx, tableName)
-		if err != nil {
-			return 0, fmt.Errorf("failed to delete table data: %w", err)
-		}
-		filesDeleted = int32(deletedCount)
+	deletedCount, err := tm.deleteTableData(ctx, tableName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete table data for %s: %w", tableName, err)
 	}
+	filesDeleted = int32(deletedCount)
+
+	// cascade 标记保留用于未来扩展（如删除关联视图、外键约束等）
+	_ = cascade
 
 	// standalone 模式（无 Redis）：删除 MinIO 上的配置
 	if tm.redisPool == nil {
@@ -577,53 +577,82 @@ func (tm *TableManager) getTableStats(ctx context.Context, tableName string) (*T
 	return stats, nil
 }
 
-// deleteTableData 删除表的所有数据
+// deleteTableData 删除表的所有数据（包括 MinIO 文件、Redis 索引、file_meta 和 metadata:file）
 func (tm *TableManager) deleteTableData(ctx context.Context, tableName string) (int, error) {
-	// 如果Redis连接池为空，跳过Redis操作
+	var totalDeleted int
+
+	// 1. 删除 MinIO 上的数据文件（按 tableName/ 前缀列出）
+	if tm.primaryMinio != nil {
+		objectsCh := tm.primaryMinio.ListObjects(ctx, tm.cfg.GetMinIO().Bucket, minio.ListObjectsOptions{
+			Prefix:    tableName + "/",
+			Recursive: true,
+		})
+		for obj := range objectsCh {
+			if obj.Err != nil {
+				tm.logger.Sugar().Warnf("Failed to list MinIO object: %v", obj.Err)
+				continue
+			}
+			if err := tm.primaryMinio.RemoveObject(ctx, tm.cfg.GetMinIO().Bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
+				tm.logger.Sugar().Warnf("Failed to delete MinIO object %s: %v", obj.Key, err)
+			} else {
+				totalDeleted++
+			}
+			// 同时删除备份 MinIO 上的文件
+			if tm.backupMinio != nil && tm.cfg.Backup.Enabled {
+				if err := tm.backupMinio.RemoveObject(ctx, tm.cfg.GetBackupMinIO().Bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
+					tm.logger.Sugar().Debugf("Failed to delete backup MinIO object %s: %v", obj.Key, err)
+				}
+			}
+		}
+	}
+
+	// 如果 Redis 连接池为空，跳过 Redis 操作
 	if tm.redisPool == nil {
-		return 0, nil
+		return totalDeleted, nil
 	}
 
 	redisClient := tm.redisPool.GetClient()
 
-	// 获取表的所有索引键
-	pattern := fmt.Sprintf("index:table:%s:id:*", tableName)
-	keys, err := redisClient.Keys(ctx, pattern).Result()
+	// 2. 删除 Redis 索引键 index:table:<tableName>:id:*
+	indexPattern := fmt.Sprintf("index:table:%s:id:*", tableName)
+	indexKeys, err := pool.ScanKeys(ctx, redisClient, indexPattern)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get table index keys: %w", err)
-	}
-
-	var totalDeleted int
-
-	// 删除每个索引对应的文件
-	for _, key := range keys {
-		files, err := redisClient.SMembers(ctx, key).Result()
-		if err != nil {
-			tm.logger.Sugar().Infof("WARN: failed to get files for key %s: %v", key, err)
-			continue
-		}
-
-		// 从MinIO删除文件
-		for _, file := range files {
-			if err := tm.primaryMinio.RemoveObject(ctx, tm.cfg.GetMinIO().Bucket, file, minio.RemoveObjectOptions{}); err != nil {
-				tm.logger.Sugar().Infof("WARN: failed to delete file %s from primary MinIO: %v", file, err)
-			} else {
-				totalDeleted++
-			}
-
-			// 从备份MinIO删除文件（如果存在）
-			if tm.backupMinio != nil && tm.cfg.Backup.Enabled {
-				if err := tm.backupMinio.RemoveObject(ctx, tm.cfg.GetBackupMinIO().Bucket, file, minio.RemoveObjectOptions{}); err != nil {
-					tm.logger.Sugar().Infof("WARN: failed to delete file %s from backup MinIO: %v", file, err)
-				}
+		tm.logger.Sugar().Warnf("Failed to scan index keys for table %s: %v", tableName, err)
+	} else {
+		for _, key := range indexKeys {
+			if err := redisClient.Del(ctx, key).Err(); err != nil {
+				tm.logger.Sugar().Warnf("Failed to delete index key %s: %v", key, err)
 			}
 		}
+	}
 
-		// 删除索引键
-		if err := redisClient.Del(ctx, key).Err(); err != nil {
-			tm.logger.Sugar().Infof("WARN: failed to delete index key %s: %v", key, err)
+	// 3. 删除 file_meta:<objectName> 键（objectName 以 tableName/ 开头）
+	fileMetaPattern := fmt.Sprintf("file_meta:%s/*", tableName)
+	fileMetaKeys, err := pool.ScanKeys(ctx, redisClient, fileMetaPattern)
+	if err != nil {
+		tm.logger.Sugar().Warnf("Failed to scan file_meta keys for table %s: %v", tableName, err)
+	} else {
+		for _, key := range fileMetaKeys {
+			if err := redisClient.Del(ctx, key).Err(); err != nil {
+				tm.logger.Sugar().Warnf("Failed to delete file_meta key %s: %v", key, err)
+			}
 		}
 	}
+
+	metadataFilePattern := fmt.Sprintf("metadata:file:%s/*", tableName)
+	metadataFileKeys, err := pool.ScanKeys(ctx, redisClient, metadataFilePattern)
+	if err != nil {
+		tm.logger.Sugar().Warnf("Failed to scan metadata:file keys for table %s: %v", tableName, err)
+	} else {
+		for _, key := range metadataFileKeys {
+			if err := redisClient.Del(ctx, key).Err(); err != nil {
+				tm.logger.Sugar().Warnf("Failed to delete metadata:file key %s: %v", key, err)
+			}
+		}
+	}
+
+	tm.logger.Sugar().Infof("Deleted table data for %s: files=%d, index_keys=%d, file_meta_keys=%d, metadata_file_keys=%d",
+		tableName, totalDeleted, len(indexKeys), len(fileMetaKeys), len(metadataFileKeys))
 
 	return totalDeleted, nil
 }

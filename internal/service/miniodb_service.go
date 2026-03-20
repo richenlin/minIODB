@@ -1635,6 +1635,18 @@ func (s *MinIODBService) DeleteTable(ctx context.Context, req *miniodb.DeleteTab
 		}, nil
 	}
 
+	// 清理内存 buffer 中该表的数据
+	if s.ingester != nil {
+		s.ingester.ClearTableBuffer(ctx, req.TableName)
+	}
+
+	// 使查询缓存失效
+	if s.querier != nil {
+		if err := s.querier.InvalidateCache(ctx, []string{req.TableName}); err != nil {
+			s.logger.Sugar().Warnf("Failed to invalidate query cache for table %s: %v", req.TableName, err)
+		}
+	}
+
 	return &miniodb.DeleteTableResponse{
 		Success:      true,
 		Message:      fmt.Sprintf("Table %s deleted successfully", req.TableName),
