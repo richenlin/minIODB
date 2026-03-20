@@ -684,7 +684,11 @@ export default function DataPage() {
 
   const getDisplayColumns = (rows: Record<string, unknown>[]): string[] => {
     if (rows.length === 0) return []
-    return Object.keys(expandRowPayload(rows[0]))
+    const allKeys = rows.reduce((acc, row) => {
+      Object.keys(expandRowPayload(row)).forEach(k => acc.add(k))
+      return acc
+    }, new Set<string>())
+    return Array.from(allKeys)
   }
 
   const formatBytes = (bytes: number): string => {
@@ -957,8 +961,8 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                         <TableBody>
                           {browseData.rows.length === 0 ? (
                             <TableRow>
-                              <TableCell 
-                                colSpan={browseData.rows.length > 0 ? getDisplayColumns(browseData.rows).length + 2 : 2}
+                              <TableCell
+                                colSpan={2}
                                 className="text-center text-muted-foreground py-8"
                               >
                                 暂无数据
@@ -970,7 +974,9 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                                 <TableCell className="text-muted-foreground">
                                   {(page - 1) * pageSize + i + 1}
                                 </TableCell>
-                                 {Object.entries(expandRowPayload(row)).map(([key, value]) => {
+                                 {getDisplayColumns(browseData.rows).map((key) => {
+                                   const expanded = expandRowPayload(row)
+                                   const value = expanded[key]
                                    let display = ''
                                    if (value === null || value === undefined) {
                                      display = ''
