@@ -8,7 +8,6 @@ import (
 	"minIODB/internal/buffer"
 	"minIODB/internal/security"
 
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -41,81 +40,15 @@ func (i *Ingester) SetEncryptionManager(manager *security.FieldEncryptionManager
 // IngestData converts the request and adds it to the buffer.
 // If field encryption is enabled, sensitive fields are encrypted before storage.
 func (i *Ingester) IngestData(req *olapv1.WriteRequest) error {
-	payload := req.Payload
+	fields := structpbStructToMap(req.Payload)
 
 	// Apply field encryption if enabled
 	if i.encryptionManager != nil && i.encryptionManager.IsEnabled() {
-		// Convert protobuf Struct to map for encryption
-		payloadMap := structpbStructToMap(req.Payload)
-
-		// Encrypt sensitive fields
-		encryptedPayload, err := i.encryptionManager.EncryptFields(payloadMap)
+		encryptedFields, err := i.encryptionManager.EncryptFields(fields)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt fields: %w", err)
 		}
-
-		// Convert back to protobuf Struct for marshaling
-		payload, err = mapToStructpbStruct(encryptedPayload)
-		if err != nil {
-			return fmt.Errorf("failed to convert encrypted payload: %w", err)
-		}
-	}
-
-	payloadBytes, err := protojson.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	// 使用请求中的表名，如果为空则使用默认值
-	tableName := req.Table
-	if tableName == "" {
-		tableName = "default" // protobuf注释中说明的默认值
-	}
-
-	row := buffer.DataRow{
-		Table:     tableName, // 设置表名，这样缓冲区键格式就正确了
-		ID:        req.Id,
-		Timestamp: req.Timestamp.AsTime().UnixNano(),
-		Payload:   string(payloadBytes),
-	}
-
-	if err := i.buffer.Add(row); err != nil {
-		return fmt.Errorf("failed to add data to buffer: %w", err)
-	}
-	return nil
-}
-
-// IngestDataWithTableConfig ingests data with table-specific encryption settings.
-func (i *Ingester) IngestDataWithTableConfig(req *olapv1.WriteRequest, tableEncryptionManager *security.FieldEncryptionManager) error {
-	payload := req.Payload
-
-	// Use table-specific encryption manager if provided
-	encryptionManager := tableEncryptionManager
-	if encryptionManager == nil {
-		encryptionManager = i.encryptionManager
-	}
-
-	// Apply field encryption if enabled
-	if encryptionManager != nil && encryptionManager.IsEnabled() {
-		// Convert protobuf Struct to map for encryption
-		payloadMap := structpbStructToMap(req.Payload)
-
-		// Encrypt sensitive fields
-		encryptedPayload, err := encryptionManager.EncryptFields(payloadMap)
-		if err != nil {
-			return fmt.Errorf("failed to encrypt fields: %w", err)
-		}
-
-		// Convert back to protobuf Struct for marshaling
-		payload, err = mapToStructpbStruct(encryptedPayload)
-		if err != nil {
-			return fmt.Errorf("failed to convert encrypted payload: %w", err)
-		}
-	}
-
-	payloadBytes, err := protojson.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		fields = encryptedFields
 	}
 
 	tableName := req.Table
@@ -127,7 +60,44 @@ func (i *Ingester) IngestDataWithTableConfig(req *olapv1.WriteRequest, tableEncr
 		Table:     tableName,
 		ID:        req.Id,
 		Timestamp: req.Timestamp.AsTime().UnixNano(),
-		Payload:   string(payloadBytes),
+		Fields:    fields,
+	}
+
+	if err := i.buffer.Add(row); err != nil {
+		return fmt.Errorf("failed to add data to buffer: %w", err)
+	}
+	return nil
+}
+
+// IngestDataWithTableConfig ingests data with table-specific encryption settings.
+func (i *Ingester) IngestDataWithTableConfig(req *olapv1.WriteRequest, tableEncryptionManager *security.FieldEncryptionManager) error {
+	fields := structpbStructToMap(req.Payload)
+
+	// Use table-specific encryption manager if provided
+	encryptionManager := tableEncryptionManager
+	if encryptionManager == nil {
+		encryptionManager = i.encryptionManager
+	}
+
+	// Apply field encryption if enabled
+	if encryptionManager != nil && encryptionManager.IsEnabled() {
+		encryptedFields, err := encryptionManager.EncryptFields(fields)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt fields: %w", err)
+		}
+		fields = encryptedFields
+	}
+
+	tableName := req.Table
+	if tableName == "" {
+		tableName = "default"
+	}
+
+	row := buffer.DataRow{
+		Table:     tableName,
+		ID:        req.Id,
+		Timestamp: req.Timestamp.AsTime().UnixNano(),
+		Fields:    fields,
 	}
 
 	if err := i.buffer.Add(row); err != nil {

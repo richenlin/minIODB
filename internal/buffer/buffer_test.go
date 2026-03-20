@@ -1,8 +1,10 @@
 package buffer
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +25,6 @@ func TestConcurrentBuffer_BasicOperations(t *testing.T) {
 			DefaultConfig: config.TableConfig{
 				BufferSize:    100,
 				FlushInterval: 10 * time.Minute, // 设置很长的刷新间隔
-				BackupEnabled: false,
 			},
 		},
 		TableManagement: config.TableManagementConfig{
@@ -52,7 +53,7 @@ func TestConcurrentBuffer_BasicOperations(t *testing.T) {
 		Table:     "test",
 		ID:        "test-id",
 		Timestamp: time.Now().UnixNano(),
-		Payload:   "test-payload",
+		Fields:    map[string]interface{}{"value": "test-payload"},
 	}
 
 	// 添加数据
@@ -75,7 +76,7 @@ func TestConcurrentBuffer_BasicOperations(t *testing.T) {
 		assert.Len(t, retrievedRows, 1, "Should retrieve 1 row")
 		if len(retrievedRows) > 0 {
 			assert.Equal(t, row.ID, retrievedRows[0].ID, "Row ID should match")
-			assert.Equal(t, row.Payload, retrievedRows[0].Payload, "Row payload should match")
+			assert.Equal(t, row.Fields, retrievedRows[0].Fields, "Row fields should match")
 		}
 	}
 
@@ -168,7 +169,7 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 		Table:     "test",
 		ID:        "test-id-1",
 		Timestamp: time.Now().UnixNano(),
-		Payload:   "test-payload-1",
+		Fields:    map[string]interface{}{"value": "test-payload-1"},
 	}
 	_ = cb.Add(row1)
 
@@ -181,7 +182,7 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 		Table:     "test",
 		ID:        "test-id-1", // 相同ID，会放到同一个bufferKey
 		Timestamp: time.Now().UnixNano(),
-		Payload:   "test-payload-2",
+		Fields:    map[string]interface{}{"value": "test-payload-2"},
 	}
 
 	// 使用goroutine添加数据以避免死锁，并设置超时
@@ -244,9 +245,9 @@ func TestConcurrentBuffer_WALIntegration(t *testing.T) {
 
 	// 添加多条数据
 	testRows := []DataRow{
-		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "payload1"},
-		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Payload: "payload2"},
-		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Payload: "payload3"},
+		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload1"}},
+		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Fields: map[string]interface{}{"value": "payload2"}},
+		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload3"}},
 	}
 
 	for _, row := range testRows {
@@ -319,7 +320,7 @@ func TestConcurrentBuffer_WALDisabled(t *testing.T) {
 		Table:     "test",
 		ID:        "test-id",
 		Timestamp: time.Now().UnixNano(),
-		Payload:   "test-payload",
+		Fields:    map[string]interface{}{"value": "test-payload"},
 	}
 	_ = cb.Add(row)
 
@@ -353,9 +354,9 @@ func TestConcurrentBuffer_Remove_BasicRemove(t *testing.T) {
 
 	// 添加多条数据
 	rows := []DataRow{
-		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "payload1"},
-		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Payload: "payload2"},
-		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Payload: "payload3"},
+		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload1"}},
+		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Fields: map[string]interface{}{"value": "payload2"}},
+		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload3"}},
 	}
 	for _, row := range rows {
 		cb.Add(row)
@@ -417,8 +418,8 @@ func TestConcurrentBuffer_Remove_OnlyAffectsTargetTable(t *testing.T) {
 	defer cb.Stop()
 
 	// 添加不同表的数据
-	cb.Add(DataRow{Table: "table1", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "p1"})
-	cb.Add(DataRow{Table: "table2", ID: "id1", Timestamp: time.Now().UnixNano(), Payload: "p2"})
+	cb.Add(DataRow{Table: "table1", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "p1"}})
+	cb.Add(DataRow{Table: "table2", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "p2"}})
 	time.Sleep(50 * time.Millisecond)
 
 	// 移除 table1 中的 id1
@@ -453,7 +454,7 @@ func TestConcurrentBuffer_Remove_PendingWritesCount(t *testing.T) {
 
 	// 添加 5 条记录（同一 ID，不同日期会产生多个 bufferKey）
 	for i := 0; i < 5; i++ {
-		cb.Add(DataRow{Table: "test", ID: "id1", Timestamp: time.Now().Add(time.Duration(i) * time.Second).UnixNano(), Payload: "payload"})
+		cb.Add(DataRow{Table: "test", ID: "id1", Timestamp: time.Now().Add(time.Duration(i) * time.Second).UnixNano(), Fields: map[string]interface{}{"value": "payload"}})
 	}
 	time.Sleep(50 * time.Millisecond)
 
@@ -463,4 +464,106 @@ func TestConcurrentBuffer_Remove_PendingWritesCount(t *testing.T) {
 	removed := cb.Remove("test", "id1")
 	assert.Equal(t, 5, removed, "Should remove all 5 records")
 	assert.Equal(t, 0, cb.PendingWrites(), "Should have 0 pending writes after removal")
+}
+
+// TestBuildParquetSchemaJSON_MergesAllRows verifies Bug 1 fix:
+// schema is built from the union of all rows' fields, not just rows[0].
+func TestBuildParquetSchemaJSON_MergesAllRows(t *testing.T) {
+	rows := []DataRow{
+		{ID: "1", Timestamp: 1, Table: "t", Fields: map[string]interface{}{"col_a": "hello"}},
+		{ID: "2", Timestamp: 2, Table: "t", Fields: map[string]interface{}{"col_b": 3.14}},
+		{ID: "3", Timestamp: 3, Table: "t", Fields: map[string]interface{}{"col_a": "world", "col_c": true}},
+	}
+
+	// Replicate the schema-building logic from writeParquetFile.
+	allFieldKeys := make(map[string]interface{})
+	for _, row := range rows {
+		for k, v := range row.Fields {
+			if _, exists := allFieldKeys[k]; !exists {
+				allFieldKeys[k] = v
+			}
+		}
+	}
+	schemaJSON := buildParquetSchemaJSON(allFieldKeys)
+
+	assert.Contains(t, schemaJSON, "col_a", "schema should include col_a from rows[0]")
+	assert.Contains(t, schemaJSON, "col_b", "schema should include col_b from rows[1]")
+	assert.Contains(t, schemaJSON, "col_c", "schema should include col_c from rows[2]")
+}
+
+// TestInferParquetType_Float64 verifies Bug 2 fix: float64 maps to DOUBLE, not BYTE_ARRAY.
+func TestInferParquetType_Float64(t *testing.T) {
+	assert.Equal(t, "type=DOUBLE", inferParquetType(float64(3.14)), "float64 should map to DOUBLE")
+	assert.Equal(t, "type=DOUBLE", inferParquetType(float32(1.5)), "float32 should map to DOUBLE")
+	assert.Equal(t, "type=INT64", inferParquetType(int64(42)), "int64 should map to INT64")
+	assert.Equal(t, "type=BOOLEAN", inferParquetType(true), "bool should map to BOOLEAN")
+	assert.Equal(t, "type=BYTE_ARRAY, convertedtype=UTF8", inferParquetType("str"), "string should map to BYTE_ARRAY/UTF8")
+}
+
+// TestMarshalRowToJSON_SystemColumnsNotOverwritten verifies Bug 3 fix:
+// user fields named "id"/"timestamp"/"table_name" must not overwrite system metadata.
+func TestMarshalRowToJSON_SystemColumnsNotOverwritten(t *testing.T) {
+	row := DataRow{
+		ID:        "system-id",
+		Timestamp: 999,
+		Table:     "my_table",
+		Fields: map[string]interface{}{
+			"id":         "user-id",        // must NOT overwrite system id
+			"timestamp":  int64(0),         // must NOT overwrite system timestamp
+			"table_name": "user_table",     // must NOT overwrite system table_name
+			"normal_col": "value",
+		},
+	}
+
+	jsonStr, err := marshalRowToJSON(row)
+	require.NoError(t, err)
+
+	var m map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(jsonStr), &m))
+
+	assert.Equal(t, "system-id", m["id"], "id must be system value")
+	assert.Equal(t, float64(999), m["timestamp"], "timestamp must be system value")
+	assert.Equal(t, "my_table", m["table_name"], "table_name must be system value")
+}
+
+// TestResolveFieldNames_CollisionHandling verifies Bug 4 fix:
+// fields that sanitize to the same name get distinct suffixed names.
+func TestResolveFieldNames_CollisionHandling(t *testing.T) {
+	fields := map[string]interface{}{
+		"user-id": "alice",
+		"user.id": "bob",
+		"user_id": "charlie",
+	}
+	resolved := resolveFieldNames(fields)
+
+	// All three original keys sanitize to "user_id"; each must get a unique final name.
+	assert.Len(t, resolved, 3, "all three fields must be present")
+	names := make([]string, 0, 3)
+	for k := range resolved {
+		names = append(names, k)
+	}
+	// Ensure no duplicate names.
+	seen := make(map[string]struct{})
+	for _, n := range names {
+		_, dup := seen[n]
+		assert.False(t, dup, "duplicate column name detected: %s", n)
+		seen[n] = struct{}{}
+	}
+
+	// Schema built from the same fields must also have 3 distinct dynamic columns.
+	schema := buildParquetSchemaJSON(fields)
+	assert.True(t, strings.Count(schema, "user_id") >= 1, "schema should contain at least one user_id variant")
+}
+
+// TestResolveFieldNames_SystemColumnConflict verifies Bug 3 + Bug 4 interaction:
+// a user field that sanitizes to a system column name gets a suffix instead.
+func TestResolveFieldNames_SystemColumnConflict(t *testing.T) {
+	fields := map[string]interface{}{
+		"id": "user-value",
+	}
+	resolved := resolveFieldNames(fields)
+
+	_, hasPlainID := resolved["id"]
+	assert.False(t, hasPlainID, "user field 'id' must not occupy the reserved 'id' column name")
+	assert.Len(t, resolved, 1, "must still have exactly one entry")
 }

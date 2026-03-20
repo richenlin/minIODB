@@ -154,11 +154,15 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 
 	// 设置表配置
 	configKey := fmt.Sprintf("table:%s:config", tableName)
+	backupEnabledVal := "false"
+	if tableConfig.BackupEnabled != nil && *tableConfig.BackupEnabled {
+		backupEnabledVal = "true"
+	}
 	configData := map[string]interface{}{
 		"buffer_size":    tableConfig.BufferSize,
 		"flush_interval": int64(tableConfig.FlushInterval.Seconds()),
 		"retention_days": tableConfig.RetentionDays,
-		"backup_enabled": tableConfig.BackupEnabled,
+		"backup_enabled": backupEnabledVal,
 		// ID生成配置
 		"id_strategy":                 tableConfig.IDStrategy,
 		"id_prefix":                   tableConfig.IDPrefix,
@@ -481,7 +485,8 @@ func (tm *TableManager) getTableConfigFromRedis(ctx context.Context, tableName s
 	}
 
 	if backupEnabledStr, ok := configData["backup_enabled"]; ok {
-		tableConfig.BackupEnabled = backupEnabledStr == "true" || backupEnabledStr == "1"
+		backupEnabled := backupEnabledStr == "true" || backupEnabledStr == "1"
+		tableConfig.BackupEnabled = &backupEnabled
 	}
 
 	// 解析 ID 生成配置
@@ -679,4 +684,99 @@ func (tm *TableManager) matchPattern(str, pattern string) bool {
 
 	// 精确匹配
 	return str == pattern
+}
+
+// UpdateTableConfig 更新表配置
+// 可修改字段：buffer_size, flush_interval, retention_days, backup_enabled, properties
+// 不可变字段：id_strategy, id_prefix（如果尝试修改这些字段将返回错误）
+func (tm *TableManager) UpdateTableConfig(ctx context.Context, tableName string, newConfig *config.TableConfig) error {
+	// 检查表是否存在
+	exists, err := tm.TableExists(ctx, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to check table existence: %w", err)
+	}
+
+	if !exists {
+		return fmt.Errorf("table %s does not exist", tableName)
+	}
+
+	// 获取当前配置
+	currentConfig, err := tm.getTableConfigFromRedis(ctx, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to get current table config: %w", err)
+	}
+
+	// 验证不可变字段不被修改
+	if newConfig.IDStrategy != "" && newConfig.IDStrategy != currentConfig.IDStrategy {
+		return fmt.Errorf("cannot modify immutable field 'id_strategy': current=%s, attempted=%s", currentConfig.IDStrategy, newConfig.IDStrategy)
+	}
+	if newConfig.IDPrefix != "" && newConfig.IDPrefix != currentConfig.IDPrefix {
+		return fmt.Errorf("cannot modify immutable field 'id_prefix': current=%s, attempted=%s", currentConfig.IDPrefix, newConfig.IDPrefix)
+	}
+
+	// 合并配置：只更新可修改的字段
+	updatedConfig := *currentConfig
+	if newConfig.BufferSize > 0 {
+		updatedConfig.BufferSize = newConfig.BufferSize
+	}
+	if newConfig.FlushInterval > 0 {
+		updatedConfig.FlushInterval = newConfig.FlushInterval
+	}
+	if newConfig.RetentionDays > 0 {
+		updatedConfig.RetentionDays = newConfig.RetentionDays
+	}
+	if newConfig.BackupEnabled != nil {
+		updatedConfig.BackupEnabled = newConfig.BackupEnabled
+	}
+	if newConfig.Properties != nil {
+		if updatedConfig.Properties == nil {
+			updatedConfig.Properties = make(map[string]string)
+		}
+		for k, v := range newConfig.Properties {
+			updatedConfig.Properties[k] = v
+		}
+	}
+
+	// standalone 模式（无 Redis）：将配置持久化到 MinIO
+	if tm.redisPool == nil {
+		if tm.minioConfigStore != nil {
+			if err := tm.minioConfigStore.Save(ctx, tableName, updatedConfig); err != nil {
+				return fmt.Errorf("failed to save config to MinIO for table %s: %w", tableName, err)
+			}
+			tm.logger.Sugar().Infof("TableManager: updated config saved to MinIO for table %s", tableName)
+		}
+		return nil
+	}
+
+	redisClient := tm.redisPool.GetClient()
+	configKey := fmt.Sprintf("table:%s:config", tableName)
+
+	updatedBackupEnabledVal := "false"
+	if updatedConfig.BackupEnabled != nil && *updatedConfig.BackupEnabled {
+		updatedBackupEnabledVal = "true"
+	}
+	configData := map[string]interface{}{
+		"buffer_size":    updatedConfig.BufferSize,
+		"flush_interval": int64(updatedConfig.FlushInterval.Seconds()),
+		"retention_days": updatedConfig.RetentionDays,
+		"backup_enabled": updatedBackupEnabledVal,
+		// ID生成配置（保持不变）
+		"id_strategy":                 currentConfig.IDStrategy,
+		"id_prefix":                   currentConfig.IDPrefix,
+		"auto_generate_id":            fmt.Sprintf("%t", currentConfig.AutoGenerateID),
+		"id_validation_max_length":    currentConfig.IDValidation.MaxLength,
+		"id_validation_pattern":       currentConfig.IDValidation.Pattern,
+		"id_validation_allowed_chars": currentConfig.IDValidation.AllowedChars,
+	}
+
+	for k, v := range updatedConfig.Properties {
+		configData["prop_"+k] = v
+	}
+
+	if err := redisClient.HMSet(ctx, configKey, configData).Err(); err != nil {
+		return fmt.Errorf("failed to update table config: %w", err)
+	}
+
+	tm.logger.Sugar().Infof("Updated table config: %s", tableName)
+	return nil
 }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,12 +58,13 @@ func normalizeObjectKey(key string) string {
 	return strings.Trim(path.Clean(key), "/")
 }
 
-// DataRow defines the structure for our Parquet file records
+// DataRow defines the structure for our Parquet file records.
+// Fields are written as top-level Parquet columns via JSONWriter for DuckDB compatibility.
 type DataRow struct {
-	ID        string `json:"id" parquet:"name=id, type=BYTE_ARRAY, convertedtype=UTF8"`
-	Timestamp int64  `json:"timestamp" parquet:"name=timestamp, type=INT64"`
-	Payload   string `json:"payload" parquet:"name=payload, type=BYTE_ARRAY, convertedtype=UTF8"`
-	Table     string `json:"table" parquet:"name=table, type=BYTE_ARRAY, convertedtype=UTF8"`
+	ID        string                 `json:"id"`
+	Timestamp int64                  `json:"timestamp"`
+	Table     string                 `json:"table"`
+	Fields    map[string]interface{} `json:"fields,omitempty"`
 }
 
 const tempDir = "temp_parquet"
@@ -503,28 +506,210 @@ func (w *Worker) flushData(bufferKey string, rows []DataRow) error {
 	return w.uploadToStorage(bufferKey, localFilePath)
 }
 
-// Worker.writeParquetFile 写入Parquet文件
+// Worker.writeParquetFile 写入Parquet文件（使用 JSONWriter 支持动态列 schema）
 func (w *Worker) writeParquetFile(filePath string, rows []DataRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
 	fw, err := local.NewLocalFileWriter(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to create local file writer: %w", err)
 	}
 	defer fw.Close()
 
-	pw, err := writer.NewParquetWriter(fw, new(DataRow), 4)
+	// Step 1: Merge all rows' field keys (union) with first-seen value for type inference.
+	allFieldKeys := make(map[string]interface{})
+	for _, row := range rows {
+		for k, v := range row.Fields {
+			if _, exists := allFieldKeys[k]; !exists {
+				allFieldKeys[k] = v
+			}
+		}
+	}
+
+	// Step 2: Compute the global mapping ONCE for the entire batch.
+	// Both the schema and every row's JSON must use this same mapping.
+	keyToColName := buildGlobalFieldMapping(allFieldKeys)
+
+	// Step 3: Build schema from the global mapping.
+	schemaJSON := buildParquetSchemaJSONFromMapping(keyToColName, allFieldKeys)
+
+	pw, err := writer.NewJSONWriter(schemaJSON, fw, 4)
 	if err != nil {
 		return fmt.Errorf("failed to create parquet writer: %w", err)
 	}
-	pw.RowGroupSize = 128 * 1024 * 1024 // 128M
+	pw.RowGroupSize = 128 * 1024 * 1024
 	pw.CompressionType = parquet.CompressionCodec_SNAPPY
 
+	// Step 4: Serialize every row using the SAME global mapping.
 	for _, row := range rows {
-		if err := pw.Write(row); err != nil {
+		rowJSON, err := marshalRowToJSONWithMapping(row, keyToColName)
+		if err != nil {
+			return fmt.Errorf("failed to marshal row: %w", err)
+		}
+		if err := pw.Write(rowJSON); err != nil {
 			return fmt.Errorf("failed to write row: %w", err)
 		}
 	}
 
 	return pw.WriteStop()
+}
+
+// sanitizeColumnNameRe matches characters that are not safe for Parquet column names
+var sanitizeColumnNameRe = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+
+// sanitizeColumnName converts an arbitrary string to a safe Parquet column name
+// (lowercase letters, digits, underscores; must start with a letter or underscore).
+func sanitizeColumnName(name string) string {
+	safe := sanitizeColumnNameRe.ReplaceAllString(name, "_")
+	if len(safe) == 0 {
+		return "_col"
+	}
+	if safe[0] >= '0' && safe[0] <= '9' {
+		safe = "_" + safe
+	}
+	return strings.ToLower(safe)
+}
+
+// inferParquetType infers the Parquet type tag string from a Go value.
+func inferParquetType(v interface{}) string {
+	switch val := v.(type) {
+	case bool:
+		return "type=BOOLEAN"
+	case int, int32, int64:
+		return "type=INT64"
+	case float32, float64:
+		return "type=DOUBLE"
+	case json.Number:
+		if _, err := val.Int64(); err == nil {
+			return "type=INT64"
+		}
+		return "type=DOUBLE"
+	default:
+		return "type=BYTE_ARRAY, convertedtype=UTF8"
+	}
+}
+
+// systemColumnNames is the set of reserved system column names that user fields must not overwrite.
+var systemColumnNames = map[string]struct{}{
+	"id":         {},
+	"timestamp":  {},
+	"table_name": {},
+}
+
+// resolveFieldNames sanitizes each field key and resolves collisions by appending a numeric
+// suffix (_2, _3, …) when two original keys map to the same sanitized name, or when a
+// sanitized name collides with a system column.  The returned map is keyed by the final
+// (collision-free) column name and valued by the original field value.
+func resolveFieldNames(fields map[string]interface{}) map[string]interface{} {
+	mapping := buildGlobalFieldMapping(fields)
+	result := make(map[string]interface{}, len(fields))
+	for origKey, colName := range mapping {
+		result[colName] = fields[origKey]
+	}
+	return result
+}
+
+// buildGlobalFieldMapping computes a stable mapping from original field keys to final
+// Parquet column names (after sanitization and collision resolution).  This mapping must
+// be computed once for the full batch so that both the schema and per-row serialization
+// use identical column names.
+//
+// Rules:
+//   - Keys are sorted for deterministic suffix assignment.
+//   - System column names ("id", "timestamp", "table_name") are pre-reserved; any user
+//     key that sanitizes to one of them gets a "_2" (or higher) suffix.
+//   - When two original keys produce the same sanitized name, subsequent ones get "_2",
+//     "_3", … suffixes (skipping any already-taken name).
+func buildGlobalFieldMapping(fields map[string]interface{}) map[string]string {
+	seen := make(map[string]int, len(fields))
+	result := make(map[string]string, len(fields))
+
+	// Deterministic ordering so the suffix assignment is stable across calls.
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		safe := sanitizeColumnName(k)
+		// Reserve system column names: treat them as already seen once.
+		if _, reserved := systemColumnNames[safe]; reserved {
+			if seen[safe] == 0 {
+				seen[safe] = 1
+			}
+		}
+		count := seen[safe]
+		var finalName string
+		if count == 0 {
+			finalName = safe
+		} else {
+			finalName = fmt.Sprintf("%s_%d", safe, count+1)
+		}
+		seen[safe]++
+		result[k] = finalName
+	}
+	return result
+}
+
+// buildParquetSchemaJSON constructs the JSON schema string for parquet-go's JSONWriter.
+// Fixed columns: id, timestamp, table_name. Dynamic columns are derived from fields after
+// conflict resolution via resolveFieldNames.
+func buildParquetSchemaJSON(fields map[string]interface{}) string {
+	mapping := buildGlobalFieldMapping(fields)
+	return buildParquetSchemaJSONFromMapping(mapping, fields)
+}
+
+// buildParquetSchemaJSONFromMapping constructs the JSON schema string using a pre-computed
+// global field mapping (original key → final column name) and the field values for type
+// inference.  This ensures the schema matches the column names used in per-row JSON.
+func buildParquetSchemaJSONFromMapping(mapping map[string]string, fields map[string]interface{}) string {
+	fixedFields := []string{
+		`{"Tag":"name=id, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=REQUIRED"}`,
+		`{"Tag":"name=timestamp, type=INT64, repetitiontype=REQUIRED"}`,
+		`{"Tag":"name=table_name, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=REQUIRED"}`,
+	}
+
+	dynamicFields := make([]string, 0, len(mapping))
+	for origKey, colName := range mapping {
+		parquetType := inferParquetType(fields[origKey])
+		dynamicFields = append(dynamicFields, fmt.Sprintf(`{"Tag":"name=%s, %s, repetitiontype=OPTIONAL"}`, colName, parquetType))
+	}
+	sort.Strings(dynamicFields)
+
+	allFields := append(fixedFields, dynamicFields...)
+	return fmt.Sprintf(`{"Tag":"name=parquet-go-root","Fields":[%s]}`, strings.Join(allFields, ","))
+}
+
+// marshalRowToJSON converts a DataRow to the JSON string expected by JSONWriter.
+// User fields are written first (with collision resolution), then system columns overwrite
+// any same-named entries to guarantee metadata integrity.
+// NOTE: This function computes a per-row mapping, which is correct only when all rows
+// have the same field set.  For mixed-field batches, use marshalRowToJSONWithMapping.
+func marshalRowToJSON(row DataRow) (string, error) {
+	return marshalRowToJSONWithMapping(row, buildGlobalFieldMapping(row.Fields))
+}
+
+// marshalRowToJSONWithMapping converts a DataRow to the JSON string expected by JSONWriter
+// using a pre-computed global field mapping (original key → final column name).
+// Fields absent from this row are simply omitted (JSONWriter treats missing OPTIONAL columns as null).
+func marshalRowToJSONWithMapping(row DataRow, keyToColName map[string]string) (string, error) {
+	m := make(map[string]interface{}, len(row.Fields)+3)
+	// Write user fields using the global mapping so column names match the schema.
+	for origKey, v := range row.Fields {
+		if colName, ok := keyToColName[origKey]; ok {
+			m[colName] = v
+		}
+		// Fields not in the global mapping (should not happen in normal usage) are dropped.
+	}
+	// System columns are written last so they always take precedence.
+	m["id"] = row.ID
+	m["timestamp"] = row.Timestamp
+	m["table_name"] = row.Table
+	b, err := json.Marshal(m)
+	return string(b), err
 }
 
 // Worker.syncTempFile 确保临时文件数据持久化到磁盘
@@ -1316,12 +1501,17 @@ func (cb *ConcurrentBuffer) Remove(tableName, id string) (removedCount int) {
 }
 
 // AddDataPoint 添加数据点到缓冲区（兼容bufferManager接口）
+// data 应为 JSON 编码的 map；若解析失败则以 "raw" 键存储原始内容。
 // 注意：此方法忽略 Add 返回的错误，保持向后兼容
 func (cb *ConcurrentBuffer) AddDataPoint(id string, data []byte, timestamp time.Time) {
+	var fields map[string]interface{}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		fields = map[string]interface{}{"raw": string(data)}
+	}
 	row := DataRow{
 		ID:        id,
 		Timestamp: timestamp.UnixNano(),
-		Payload:   string(data),
+		Fields:    fields,
 	}
 	_ = cb.Add(row) // 忽略错误，保持向后兼容
 }
