@@ -198,6 +198,8 @@ export default function AnalyticsPage() {
   const [tableStats, setTableStats] = useState<TableStats[]>([])
   const [tablesLoading, setTablesLoading] = useState(false)
   const [selectedTable, setSelectedTable] = useState<string>('')
+  const [tableColumns, setTableColumns] = useState<string[]>([])
+  const [selectedCol, setSelectedCol] = useState<string>('')
 
   useEffect(() => {
     setQueryHistory(loadHistory())
@@ -234,6 +236,20 @@ export default function AnalyticsPage() {
     }
     fetchTables()
   }, [])
+
+  // 当选中表变化时，拉取列名（执行 LIMIT 0 查询）
+  useEffect(() => {
+    if (!selectedTable) return
+    setTableColumns([])
+    setSelectedCol('')
+    dataApi.querySQL(`SELECT * FROM "${selectedTable}" LIMIT 0`)
+      .then(result => {
+        const cols = result.columns.filter(c => c !== 'id' && c !== 'table_name')
+        setTableColumns(cols)
+        if (cols.length > 0) setSelectedCol(cols[0])
+      })
+      .catch(() => { /* 静默失败，不影响主流程 */ })
+  }, [selectedTable])
 
   const handleExecuteSql = useCallback(async () => {
     if (!sqlQuery.trim()) return
@@ -280,9 +296,13 @@ export default function AnalyticsPage() {
   }
 
   const handleTemplateClick = (template: typeof QUERY_TEMPLATES[0]) => {
-    const sql = template.sql.replace(/{table}/g, selectedTable)
+    let sql = template.sql.replace(/{table}/g, selectedTable)
+    // 若有列名已选，直接替换 {col}；否则选中占位符让用户手填
+    if (selectedCol) {
+      sql = sql.replace(/{col}/g, selectedCol)
+    }
     setSqlQuery(sql)
-    // 若 SQL 中还含有 {xxx} 占位符，填入后自动选中第一个，让用户直接输入替换
+    // 还有未替换的占位符时，自动选中第一个
     if (/{[^}]+}/.test(sql)) {
       setTimeout(() => sqlEditorRef.current?.selectFirstPlaceholder(), 50)
     }
@@ -497,6 +517,18 @@ export default function AnalyticsPage() {
                             ))}
                           </SelectContent>
                         </Select>
+                        {tableColumns.length > 0 && (
+                          <Select value={selectedCol} onValueChange={setSelectedCol}>
+                            <SelectTrigger className="w-full">
+                              <SelectValue placeholder="选择列（用于字段统计）" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {tableColumns.map(col => (
+                                <SelectItem key={col} value={col}>{col}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
                         <div className="space-y-2">
                           {QUERY_TEMPLATES.map((tpl) => (
                             <Button
