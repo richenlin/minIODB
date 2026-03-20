@@ -52,6 +52,7 @@ export interface TableConfig {
   retention_days?: number
   backup_enabled?: boolean
   id_strategy?: string
+  id_prefix?: string
   auto_generate_id?: boolean
   [key: string]: unknown
 }

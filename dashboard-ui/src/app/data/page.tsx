@@ -109,6 +109,7 @@ export default function DataPage() {
   const [newTableRetentionDays, setNewTableRetentionDays] = useState<number>(30)
   const [newTableBackupEnabled, setNewTableBackupEnabled] = useState<boolean>(false)
   const [newTableIdStrategy, setNewTableIdStrategy] = useState<string>('snowflake')
+  const [newTableIdPrefix, setNewTableIdPrefix] = useState<string>('')
   const [newTableProperties, setNewTableProperties] = useState<{ key: string; value: string }[]>([])
   
   // 删除表确认对话框状态
@@ -321,10 +322,9 @@ export default function DataPage() {
           payload,
         })
       } else {
-        // 新增模式
+        // 新增模式：user_provided 策略必须由用户提供 ID，其余策略后端自动生成
         const strategy = tableDetail?.id_strategy ?? 'snowflake'
-        const autoGenerate = tableDetail?.auto_generate_id ?? true
-        const isRequired = strategy === 'user_provided' || !autoGenerate
+        const isRequired = strategy === 'user_provided'
         if (isRequired && !newRecordId.trim()) {
           setNewRecordError('该表要求手动指定 ID，请填写 ID 后再提交')
           return
@@ -464,6 +464,7 @@ export default function DataPage() {
     setNewTableRetentionDays(30)
     setNewTableBackupEnabled(false)
     setNewTableIdStrategy('snowflake')
+    setNewTableIdPrefix('')
     setNewTableProperties([])
     setCreateTableDialogOpen(true)
   }
@@ -472,6 +473,10 @@ export default function DataPage() {
   const handleCreateTable = async () => {
     if (!newTableName.trim()) {
       setCreateTableError('请输入表名')
+      return
+    }
+    if (newTableIdStrategy === 'custom' && !newTableIdPrefix.trim()) {
+      setCreateTableError('Custom 策略必须填写 ID 前缀')
       return
     }
     
@@ -484,8 +489,11 @@ export default function DataPage() {
         retention_days: newTableRetentionDays,
         backup_enabled: newTableBackupEnabled,
         id_strategy: newTableIdStrategy,
-        // user_provided 策略不自动生成，其余策略（snowflake/uuid/custom）默认自动生成
+        // user_provided 策略要求用户手动填写，其余策略自动生成
         auto_generate_id: newTableIdStrategy !== 'user_provided',
+      }
+      if (newTableIdPrefix.trim()) {
+        config.id_prefix = newTableIdPrefix.trim()
       }
       
       newTableProperties.forEach(prop => {
@@ -1144,16 +1152,16 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                 <div className="space-y-2 col-span-2">
                   {(() => {
                     const strategy = tableDetail?.id_strategy ?? 'snowflake'
-                    const autoGenerate = tableDetail?.auto_generate_id ?? true
-                    const isRequired = strategy === 'user_provided' || !autoGenerate
+                    // user_provided 策略才要求必填，其余策略后端自动生成
+                    const isRequired = strategy === 'user_provided'
                     const strategyLabel: Record<string, string> = {
                       uuid: 'UUID',
                       snowflake: 'Snowflake',
-                      custom: '自定义',
+                      custom: '自定义（时间戳+随机）',
                       user_provided: '用户提供',
                     }
                     const hint = isRequired
-                      ? `必填 — 该表要求手动指定 ID（策略：${strategyLabel[strategy] ?? strategy}）`
+                      ? `必填 — 该表要求手动指定 ID`
                       : `可选 — 留空将自动生成（策略：${strategyLabel[strategy] ?? strategy}）`
                     return (
                       <>
@@ -1296,14 +1304,32 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
               <p className="text-xs text-muted-foreground">创建后不可修改</p>
               <select
                 value={newTableIdStrategy}
-                onChange={(e) => setNewTableIdStrategy(e.target.value)}
+                onChange={(e) => { setNewTableIdStrategy(e.target.value); setNewTableIdPrefix('') }}
                 className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
               >
-                <option value="snowflake">Snowflake（默认）</option>
-                <option value="uuid">UUID</option>
-                <option value="custom">自定义</option>
-                <option value="user_provided">用户提供</option>
+                <option value="snowflake">Snowflake — 分布式递增数字 ID</option>
+                <option value="uuid">UUID — 随机唯一标识符</option>
+                <option value="custom">Custom — 前缀+时间戳+随机（需填前缀）</option>
+                <option value="user_provided">用户提供 — 写入时手动指定</option>
               </select>
+              {/* snowflake 可选前缀，custom 必须填前缀 */}
+              {(newTableIdStrategy === 'custom' || newTableIdStrategy === 'snowflake') && (
+                <div className="mt-2">
+                  <label className="text-sm font-medium text-foreground">
+                    ID 前缀{newTableIdStrategy === 'custom' && <span className="text-destructive ml-1">*</span>}
+                    <span className="text-muted-foreground font-normal ml-1 text-xs">
+                      {newTableIdStrategy === 'custom' ? '（生成格式：前缀-时间戳-随机）' : '（可选，生成格式：前缀-雪花ID）'}
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newTableIdPrefix}
+                    onChange={(e) => setNewTableIdPrefix(e.target.value)}
+                    placeholder={newTableIdStrategy === 'custom' ? '例：order、user...' : '例：node1（留空直接用数字）'}
+                    className="w-full mt-1 px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+              )}
             </div>
             
             {/* Buffer Size */}
