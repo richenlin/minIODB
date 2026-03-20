@@ -25,8 +25,10 @@ export default function MonitorPage() {
   const [slaError, setSlaError] = useState('')
   const [loading, setLoading] = useState(true)
 
-  // SSE 连接：实时更新卡片数据
-  const { data, connected } = useSSE<{ data?: MetricsPayload }>('/monitor/stream')
+  // 唯一的 SSE 连接——卡片和所有图表共享此连接的数据，不再各自建连接
+  const { data: sseMsg, connected } = useSSE<{ data?: MetricsPayload }>('/monitor/stream')
+  // sseMsg.data 是内层 metrics 对象，传给各 RealtimeChart
+  const sseMetrics = sseMsg?.data ?? null
 
   // 初始化：HTTP 拿一次数据立即渲染，不依赖 SSE 首条消息的延迟
   useEffect(() => {
@@ -43,12 +45,12 @@ export default function MonitorPage() {
     })
   }, [])
 
-  // SSE 推送时用更新的数据覆盖卡片（SSE payload 与 MonitorOverviewResult 字段一致）
+  // SSE 推送时更新卡片（SSE payload 字段与 MonitorOverviewResult 一致）
   useEffect(() => {
-    if (data?.data) {
-      setMetrics(prev => prev ? { ...prev, ...data.data } : data.data as MonitorOverviewResult)
+    if (sseMetrics) {
+      setMetrics(prev => prev ? { ...prev, ...sseMetrics } : sseMetrics as MonitorOverviewResult)
     }
-  }, [data])
+  }, [sseMetrics])
 
   return (
     <DashboardLayout>
@@ -91,26 +93,26 @@ export default function MonitorPage() {
               />
             </div>
 
-            {/* 实时折线图 */}
+            {/* 实时折线图：共享父组件的 SSE 数据，不各自建连接 */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart title="Goroutines" valueKey="goroutines" color="#6366f1" height={200} />
+                  <RealtimeChart title="Goroutines" valueKey="goroutines" latestData={sseMetrics} color="#6366f1" height={200} />
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart title="内存分配 (MB)" valueKey="mem_alloc_mb" unit=" MB" color="#22c55e" height={200} />
+                  <RealtimeChart title="内存分配 (MB)" valueKey="mem_alloc_mb" latestData={sseMetrics} unit=" MB" color="#22c55e" height={200} />
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart title="GC 暂停 (ms)" valueKey="gc_pause_ms" unit=" ms" color="#f59e0b" height={200} />
+                  <RealtimeChart title="GC 暂停 (ms)" valueKey="gc_pause_ms" latestData={sseMetrics} unit=" ms" color="#f59e0b" height={200} />
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart title="CPU 使用率 (%)" valueKey="cpu_percent" unit="%" color="#ef4444" height={200} />
+                  <RealtimeChart title="CPU 使用率 (%)" valueKey="cpu_percent" latestData={sseMetrics} unit="%" color="#ef4444" height={200} />
                 </CardContent>
               </Card>
             </div>

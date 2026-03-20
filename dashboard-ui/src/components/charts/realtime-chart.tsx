@@ -2,27 +2,34 @@
 
 import { useEffect, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
-import { useSSE } from '@/hooks/use-sse'
 
 interface RealtimeChartProps {
   title: string
   valueKey: string
+  /** 最新一帧数据（由父组件从 SSE 传入），变化时追加到历史 */
+  latestData?: Record<string, unknown> | null
   unit?: string
   color?: string
   height?: number
 }
 
-export function RealtimeChart({ title, valueKey, unit = '', color = '#6366f1', height = 200 }: RealtimeChartProps) {
-  const { data } = useSSE<{ data?: Record<string, unknown> }>('/monitor/stream')
+export function RealtimeChart({
+  title,
+  valueKey,
+  latestData,
+  unit = '',
+  color = '#6366f1',
+  height = 200,
+}: RealtimeChartProps) {
   const [history, setHistory] = useState<number[]>(Array(30).fill(0))
   const [labels, setLabels] = useState<string[]>(Array(30).fill(''))
 
   useEffect(() => {
-    if (!data?.data) return
-    const value = Number(data.data[valueKey] ?? 0)
+    if (!latestData) return
+    const value = Number(latestData[valueKey] ?? 0)
     setHistory(prev => [...prev.slice(1), value])
     setLabels(prev => [...prev.slice(1), new Date().toLocaleTimeString('zh-CN')])
-  }, [data, valueKey])
+  }, [latestData, valueKey])
 
   const option = {
     title: { text: title, textStyle: { fontSize: 13 } },
