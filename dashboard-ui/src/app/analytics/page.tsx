@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { DashboardLayout } from '@/components/layout/dashboard-layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ import {
   TableHeader, 
   TableRow 
 } from '@/components/ui/table'
-import { SqlEditor } from '@/components/code-editor/sql-editor'
+import { SqlEditor, SqlEditorHandle } from '@/components/code-editor/sql-editor'
 import { dataApi } from '@/lib/api/data'
 import { 
   PlayIcon,
@@ -185,6 +185,7 @@ function formatCount(n: number): string {
 }
 
 export default function AnalyticsPage() {
+  const sqlEditorRef = useRef<SqlEditorHandle>(null)
   const [sqlQuery, setSqlQuery] = useState('')
   const [sqlResult, setSqlResult] = useState<QueryResult | null>(null)
   const [sqlLoading, setSqlLoading] = useState(false)
@@ -281,6 +282,10 @@ export default function AnalyticsPage() {
   const handleTemplateClick = (template: typeof QUERY_TEMPLATES[0]) => {
     const sql = template.sql.replace(/{table}/g, selectedTable)
     setSqlQuery(sql)
+    // 若 SQL 中还含有 {xxx} 占位符，填入后自动选中第一个，让用户直接输入替换
+    if (/{[^}]+}/.test(sql)) {
+      setTimeout(() => sqlEditorRef.current?.selectFirstPlaceholder(), 50)
+    }
   }
 
   const toCsvCell = (value: unknown): string => {
@@ -381,6 +386,7 @@ export default function AnalyticsPage() {
                   </CardHeader>
                   <CardContent>
                     <SqlEditor
+                      ref={sqlEditorRef}
                       value={sqlQuery}
                       onChange={setSqlQuery}
                       onExecute={handleExecuteSql}

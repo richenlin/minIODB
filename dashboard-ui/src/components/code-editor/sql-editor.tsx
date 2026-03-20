@@ -1,12 +1,13 @@
 'use client'
 
-import { useRef } from 'react'
+import { useRef, useImperativeHandle, forwardRef } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { sql } from '@codemirror/lang-sql'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { Button } from '@/components/ui/button'
 import { keymap } from '@codemirror/view'
 import { EditorView } from '@codemirror/view'
+import { EditorSelection } from '@codemirror/state'
 
 interface SqlEditorProps {
   value: string
@@ -16,14 +17,36 @@ interface SqlEditorProps {
   loading?: boolean
 }
 
-export function SqlEditor({ 
+export interface SqlEditorHandle {
+  /** 选中编辑器内容中第一个 {placeholder} 占位符（如 {col}），使用户可直接输入替换 */
+  selectFirstPlaceholder: () => void
+}
+
+export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function SqlEditor({ 
   value, 
   onChange, 
   onExecute, 
   placeholder = 'SELECT * FROM table_name LIMIT 100',
   loading = false
-}: SqlEditorProps) {
+}, ref) {
   const editorRef = useRef<EditorView | null>(null)
+
+  useImperativeHandle(ref, () => ({
+    selectFirstPlaceholder() {
+      const editor = editorRef.current
+      if (!editor) return
+      const text = editor.state.doc.toString()
+      const match = text.match(/\{[^}]+\}/)
+      if (!match || match.index === undefined) return
+      const from = match.index
+      const to = from + match[0].length
+      editor.dispatch({
+        selection: EditorSelection.single(from, to),
+        scrollIntoView: true,
+      })
+      editor.focus()
+    }
+  }))
 
   const handleEditorCreated = (editor: EditorView) => {
     editorRef.current = editor
@@ -94,4 +117,4 @@ export function SqlEditor({
       </div>
     </div>
   )
-}
+})
