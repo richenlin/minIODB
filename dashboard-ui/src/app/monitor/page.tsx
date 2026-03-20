@@ -6,57 +6,52 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RealtimeChart } from '@/components/charts/realtime-chart'
 import { monitorApi } from '@/lib/api/monitor'
-import { MonitorOverviewResult, SLAResult } from '@/lib/api/types'
+import { SLAResult } from '@/lib/api/types'
 import { useSSE } from '@/hooks/use-sse'
 
+// SSE "metrics" 事件的数据结构（与后端 startMetricsPush 对齐）
+interface MetricsPayload {
+  goroutines: number
+  mem_alloc_mb: number
+  gc_pause_ms: number
+  cpu_percent: number
+  uptime_hours: number
+  load_level: string
+}
+
 export default function MonitorPage() {
-  const [overview, setOverview] = useState<MonitorOverviewResult | null>(null)
+  const [metrics, setMetrics] = useState<MetricsPayload | null>(null)
   const [sla, setSLA] = useState<SLAResult | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [slaError, setSlaError] = useState('')
 
-  // SSE connection status
-  const { connected } = useSSE('/monitor/stream')
+  // 单条 SSE 连接，卡片和图表共用
+  const { data, connected } = useSSE<{ data?: MetricsPayload }>('/monitor/stream')
 
+  // 每次 SSE 推送新数据时更新卡片
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [overviewData, slaData] = await Promise.all([
-          monitorApi.getOverview(),
-          monitorApi.getSLA(),
-        ])
-        setOverview(overviewData)
-        setSLA(slaData)
-        setError('')
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '数据加载失败')
-      } finally {
-        setLoading(false)
-      }
+    if (data?.data) {
+      setMetrics(data.data)
     }
-    fetchData()
-    // 每 10 秒轮询一次，保持卡片数据更新
-    const interval = setInterval(fetchData, 10_000)
-    return () => clearInterval(interval)
+  }, [data])
+
+  // SLA 数据只需一次性加载（变化慢，不需要实时刷新）
+  useEffect(() => {
+    monitorApi.getSLA()
+      .then(setSLA)
+      .catch(err => setSlaError(err instanceof Error ? err.message : '加载失败'))
   }, [])
+
+  const loading = metrics === null
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-muted-foreground">实时性能指标</p>
-          </div>
+          <p className="text-sm text-muted-foreground">实时性能指标</p>
           <Badge variant={connected ? 'success' : 'secondary'}>
             {connected ? 'SSE 已连接' : 'SSE 断开'}
           </Badge>
         </div>
-
-        {error && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
 
         {loading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -69,74 +64,56 @@ export default function MonitorPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <MetricCard
                 title="Goroutines"
-                value={String(overview?.goroutines ?? 0)}
+                value={String(metrics.goroutines)}
                 description="当前协程数"
               />
               <MetricCard
                 title="内存分配"
-                value={`${overview?.mem_alloc_mb?.toFixed(1) ?? 0} MB`}
+                value={`${metrics.mem_alloc_mb.toFixed(1)} MB`}
                 description="已分配内存"
               />
               <MetricCard
                 title="GC 暂停"
-                value={`${overview?.gc_pause_ms?.toFixed(2) ?? 0} ms`}
+                value={`${metrics.gc_pause_ms.toFixed(2)} ms`}
                 description="最近 GC 暂停"
               />
               <MetricCard
                 title="CPU 使用率"
-                value={`${overview?.cpu_percent?.toFixed(1) ?? 0}%`}
+                value={`${metrics.cpu_percent.toFixed(1)}%`}
                 description="CPU 占用"
               />
             </div>
 
-            {/* Realtime Charts */}
+            {/* 实时折线图 */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart
-                    title="Goroutines"
-                    valueKey="goroutines"
-                    color="#6366f1"
-                    height={200}
-                  />
+                  <RealtimeChart title="Goroutines" valueKey="goroutines" color="#6366f1" height={200} />
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart
-                    title="内存分配 (MB)"
-                    valueKey="mem_alloc_mb"
-                    unit=" MB"
-                    color="#22c55e"
-                    height={200}
-                  />
+                  <RealtimeChart title="内存分配 (MB)" valueKey="mem_alloc_mb" unit=" MB" color="#22c55e" height={200} />
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart
-                    title="GC 暂停 (ms)"
-                    valueKey="gc_pause_ms"
-                    unit=" ms"
-                    color="#f59e0b"
-                    height={200}
-                  />
+                  <RealtimeChart title="GC 暂停 (ms)" valueKey="gc_pause_ms" unit=" ms" color="#f59e0b" height={200} />
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
-                  <RealtimeChart
-                    title="CPU 使用率 (%)"
-                    valueKey="cpu_percent"
-                    unit="%"
-                    color="#ef4444"
-                    height={200}
-                  />
+                  <RealtimeChart title="CPU 使用率 (%)" valueKey="cpu_percent" unit="%" color="#ef4444" height={200} />
                 </CardContent>
               </Card>
             </div>
 
-            {/* SLA Metrics */}
+            {/* SLA 指标 */}
+            {slaError && (
+              <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
+                SLA 数据加载失败：{slaError}
+              </div>
+            )}
             {sla && (
               <Card>
                 <CardHeader>
@@ -162,14 +139,8 @@ export default function MonitorPage() {
               <CardContent>
                 <p className="text-sm text-muted-foreground">
                   原始 Prometheus 指标可通过{' '}
-                  <a
-                    href="/metrics"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline underline-offset-2"
-                  >
-                    /metrics
-                  </a>{' '}
+                  <a href="/metrics" target="_blank" rel="noopener noreferrer"
+                    className="text-primary underline underline-offset-2">/metrics</a>{' '}
                   端点访问，兼容 Prometheus / Grafana 采集。
                 </p>
               </CardContent>
