@@ -486,12 +486,15 @@ func (s *MinIODBService) GetTableConfig(ctx context.Context, tableName string) c
 	if s.metadataMgr != nil {
 		cfg, err := s.metadataMgr.GetTableConfig(ctx, tableName)
 		if err == nil && cfg != nil {
-			s.logger.Sugar().Debugf("GetTableConfig: using metadataMgr for table %s, AutoGenerateID=%v", tableName, cfg.AutoGenerateID)
-			return *cfg
+			out := *cfg
+			config.NormalizeAutoGenerateIDFromStrategy(&out)
+			s.logger.Sugar().Debugf("GetTableConfig: using metadataMgr for table %s, AutoGenerateID=%v", tableName, out.AutoGenerateID)
+			return out
 		}
 		// 配置不存在（数据丢失、误操作等）：使用系统默认并自动补写，避免服务中断
 		if err == nil && cfg == nil {
 			recovered := s.systemDefaultTableConfig()
+			config.NormalizeAutoGenerateIDFromStrategy(&recovered)
 			s.logger.Sugar().Warnf("GetTableConfig: table config missing for %s, recovering with system default (snowflake, auto_generate_id=true)", tableName)
 			go func() {
 				if saveErr := s.metadataMgr.SaveTableConfig(context.Background(), tableName, recovered); saveErr != nil {
@@ -507,12 +510,14 @@ func (s *MinIODBService) GetTableConfig(ctx context.Context, tableName string) c
 	// 后备：从configManager获取
 	if s.configManager != nil {
 		cfg := s.configManager.GetTableConfig(ctx, tableName)
+		config.NormalizeAutoGenerateIDFromStrategy(&cfg)
 		s.logger.Sugar().Debugf("GetTableConfig: using configManager for table %s, AutoGenerateID=%v", tableName, cfg.AutoGenerateID)
 		return cfg
 	}
 
 	// 如果都不可用，返回系统默认配置（snowflake + 自动生成）
 	recovered := s.systemDefaultTableConfig()
+	config.NormalizeAutoGenerateIDFromStrategy(&recovered)
 	s.logger.Sugar().Warnf("GetTableConfig: no config source available for table %s, using system default", tableName)
 	return recovered
 }
@@ -1413,6 +1418,7 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 			AutoGenerateID: req.Config.AutoGenerateId,
 			IDValidation:   idValidation,
 		}
+		config.NormalizeAutoGenerateIDFromStrategy(tableConfig)
 	}
 
 	// 创建表

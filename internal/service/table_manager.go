@@ -98,9 +98,10 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 		return fmt.Errorf("maximum number of tables (%d) reached", tm.cfg.TableManagement.MaxTables)
 	}
 
-	// 使用默认配置填充未设置的字段
+	// 使用默认配置填充未设置的字段（复制默认配置，避免修改全局 DefaultConfig）
 	if tableConfig == nil {
-		tableConfig = &tm.cfg.Tables.DefaultConfig
+		dc := tm.cfg.Tables.DefaultConfig
+		tableConfig = &dc
 	} else {
 		// 合并配置
 		defaultConfig := tm.cfg.Tables.DefaultConfig
@@ -127,6 +128,8 @@ func (tm *TableManager) CreateTable(ctx context.Context, tableName string, table
 			tableConfig.IDValidation.Pattern = defaultConfig.IDValidation.Pattern
 		}
 	}
+	// 根据 id_strategy 同步 auto_generate_id，再写入存储
+	config.NormalizeAutoGenerateIDFromStrategy(tableConfig)
 
 	// standalone 模式（无 Redis）：将配置持久化到 MinIO
 	if tm.redisPool == nil {
@@ -440,13 +443,18 @@ func (tm *TableManager) getTableConfigFromRedis(ctx context.Context, tableName s
 			cfg, err := tm.minioConfigStore.Get(ctx, tableName)
 			if err != nil {
 				tm.logger.Sugar().Warnf("getTableConfigFromRedis: MinIO lookup failed for %s: %v", tableName, err)
-				return &tm.cfg.Tables.DefaultConfig, nil
+				dc := tm.cfg.Tables.DefaultConfig
+				config.NormalizeAutoGenerateIDFromStrategy(&dc)
+				return &dc, nil
 			}
 			if cfg != nil {
+				config.NormalizeAutoGenerateIDFromStrategy(cfg)
 				return cfg, nil
 			}
 		}
-		return &tm.cfg.Tables.DefaultConfig, nil
+		dc := tm.cfg.Tables.DefaultConfig
+		config.NormalizeAutoGenerateIDFromStrategy(&dc)
+		return &dc, nil
 	}
 
 	redisClient := tm.redisPool.GetClient()
@@ -457,8 +465,9 @@ func (tm *TableManager) getTableConfigFromRedis(ctx context.Context, tableName s
 	}
 
 	if len(configData) == 0 {
-		// 如果没有配置，返回默认配置
-		return &tm.cfg.Tables.DefaultConfig, nil
+		dc := tm.cfg.Tables.DefaultConfig
+		config.NormalizeAutoGenerateIDFromStrategy(&dc)
+		return &dc, nil
 	}
 
 	tableConfig := &config.TableConfig{
@@ -519,6 +528,7 @@ func (tm *TableManager) getTableConfigFromRedis(ctx context.Context, tableName s
 		}
 	}
 
+	config.NormalizeAutoGenerateIDFromStrategy(tableConfig)
 	return tableConfig, nil
 }
 
@@ -736,6 +746,7 @@ func (tm *TableManager) UpdateTableConfig(ctx context.Context, tableName string,
 			updatedConfig.Properties[k] = v
 		}
 	}
+	config.NormalizeAutoGenerateIDFromStrategy(&updatedConfig)
 
 	// standalone 模式（无 Redis）：将配置持久化到 MinIO
 	if tm.redisPool == nil {
@@ -760,13 +771,13 @@ func (tm *TableManager) UpdateTableConfig(ctx context.Context, tableName string,
 		"flush_interval": int64(updatedConfig.FlushInterval.Seconds()),
 		"retention_days": updatedConfig.RetentionDays,
 		"backup_enabled": updatedBackupEnabledVal,
-		// ID生成配置（保持不变）
-		"id_strategy":                 currentConfig.IDStrategy,
-		"id_prefix":                   currentConfig.IDPrefix,
-		"auto_generate_id":            fmt.Sprintf("%t", currentConfig.AutoGenerateID),
-		"id_validation_max_length":    currentConfig.IDValidation.MaxLength,
-		"id_validation_pattern":       currentConfig.IDValidation.Pattern,
-		"id_validation_allowed_chars": currentConfig.IDValidation.AllowedChars,
+		// ID 策略字段不可变，但 auto_generate_id 与 id_strategy 需保持语义一致（已 Normalize）
+		"id_strategy":                 updatedConfig.IDStrategy,
+		"id_prefix":                   updatedConfig.IDPrefix,
+		"auto_generate_id":            fmt.Sprintf("%t", updatedConfig.AutoGenerateID),
+		"id_validation_max_length":    updatedConfig.IDValidation.MaxLength,
+		"id_validation_pattern":       updatedConfig.IDValidation.Pattern,
+		"id_validation_allowed_chars": updatedConfig.IDValidation.AllowedChars,
 	}
 
 	for k, v := range updatedConfig.Properties {

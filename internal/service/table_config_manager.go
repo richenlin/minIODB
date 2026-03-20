@@ -118,6 +118,7 @@ func (m *TableConfigManager) loadFromRedis(ctx context.Context, tableName string
 		tableConfig.IDValidation.Pattern = val
 	}
 
+	config.NormalizeAutoGenerateIDFromStrategy(&tableConfig)
 	return &tableConfig, nil
 }
 
@@ -129,6 +130,8 @@ func (m *TableConfigManager) saveToRedis(ctx context.Context, tableName string, 
 
 	redisClient := m.redisPool.GetClient()
 	key := fmt.Sprintf("table:%s:config", tableName)
+
+	config.NormalizeAutoGenerateIDFromStrategy(tableConfig)
 
 	// 构建配置映射
 	configMap := map[string]interface{}{

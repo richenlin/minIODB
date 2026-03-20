@@ -76,7 +76,7 @@ type TableConfig struct {
 	Properties      map[string]string      `yaml:"properties"`
 	IDStrategy      string                 `yaml:"id_strategy" json:"id_strategy"`                     // ID生成策略: uuid, snowflake, custom, user_provided
 	IDPrefix        string                 `yaml:"id_prefix" json:"id_prefix"`                         // ID前缀（用于custom和snowflake策略）
-	AutoGenerateID  bool                   `yaml:"auto_generate_id" json:"auto_generate_id"`           // 是否自动生成ID（未提供时）
+	AutoGenerateID  bool                   `yaml:"auto_generate_id" json:"auto_generate_id"`           // 是否自动生成ID（未提供时）；须与 id_strategy 一致，见 NormalizeAutoGenerateIDFromStrategy
 	IDValidation    IDValidationRules      `yaml:"id_validation" json:"id_validation"`                 // ID验证规则
 	FieldEncryption *FieldEncryptionConfig `yaml:"field_encryption" json:"field_encryption,omitempty"` // 字段加密配置
 }
