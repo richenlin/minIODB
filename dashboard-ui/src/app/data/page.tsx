@@ -131,6 +131,7 @@ export default function DataPage() {
   const [configBackupEnabled, setConfigBackupEnabled] = useState<boolean>(false)
   const [configProperties, setConfigProperties] = useState<{ key: string; value: string }[]>([])
   const [configIdStrategy, setConfigIdStrategy] = useState<string>('')
+  const [configIdPrefix, setConfigIdPrefix] = useState<string>('')
 
   // 加载表列表
   const loadTables = useCallback(async () => {
@@ -570,8 +571,9 @@ export default function DataPage() {
       setConfigRetentionDays(detail.retention_days ?? 30)
       setConfigBackupEnabled(detail.backup_enabled ?? false)
       setConfigIdStrategy(detail.id_strategy ?? 'snowflake')
+      setConfigIdPrefix((detail.config?.id_prefix as string) ?? '')
       
-      const knownKeys = ['buffer_size', 'flush_interval', 'retention_days', 'backup_enabled', 'id_strategy', 'auto_generate_id']
+      const knownKeys = ['buffer_size', 'flush_interval', 'retention_days', 'backup_enabled', 'id_strategy', 'id_prefix', 'auto_generate_id']
       const extraProps: { key: string; value: string }[] = []
       if (detail.config) {
         Object.entries(detail.config).forEach(([k, v]) => {
@@ -1314,20 +1316,51 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
               </select>
               {/* snowflake 可选前缀，custom 必须填前缀 */}
               {(newTableIdStrategy === 'custom' || newTableIdStrategy === 'snowflake') && (
-                <div className="mt-2">
+                <div className="mt-2 space-y-2">
                   <label className="text-sm font-medium text-foreground">
                     ID 前缀{newTableIdStrategy === 'custom' && <span className="text-destructive ml-1">*</span>}
                     <span className="text-muted-foreground font-normal ml-1 text-xs">
-                      {newTableIdStrategy === 'custom' ? '（生成格式：前缀-时间戳-随机）' : '（可选，生成格式：前缀-雪花ID）'}
+                      {newTableIdStrategy === 'custom' ? '（必填）' : '（可选）'}
                     </span>
                   </label>
                   <input
                     type="text"
                     value={newTableIdPrefix}
                     onChange={(e) => setNewTableIdPrefix(e.target.value)}
-                    placeholder={newTableIdStrategy === 'custom' ? '例：order、user...' : '例：node1（留空直接用数字）'}
-                    className="w-full mt-1 px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                    placeholder={newTableIdStrategy === 'custom' ? '例：order、user、event...' : '例：node1（留空则直接用数字）'}
+                    className={`w-full px-3 py-2 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${newTableIdStrategy === 'custom' && !newTableIdPrefix.trim() ? 'border-destructive' : 'border-input'}`}
                   />
+                  {/* 实时格式预览 */}
+                  <div className="rounded-md bg-muted/50 border border-input px-3 py-2 text-xs space-y-1">
+                    <span className="text-muted-foreground">生成格式：</span>
+                    {newTableIdStrategy === 'custom' ? (
+                      <div className="font-mono text-foreground">
+                        {newTableIdPrefix.trim()
+                          ? <><span className="text-primary font-semibold">{newTableIdPrefix.trim()}</span><span className="text-muted-foreground">-20260320145300123-a3f8c2</span></>
+                          : <span className="text-muted-foreground italic">填写前缀后显示示例…</span>
+                        }
+                      </div>
+                    ) : (
+                      <div className="font-mono text-foreground">
+                        {newTableIdPrefix.trim()
+                          ? <><span className="text-primary font-semibold">{newTableIdPrefix.trim()}</span><span className="text-muted-foreground">-8847362819</span></>
+                          : <span className="text-muted-foreground">8847362819</span>
+                        }
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {/* uuid / user_provided 无前缀，展示格式说明 */}
+              {newTableIdStrategy === 'uuid' && (
+                <div className="rounded-md bg-muted/50 border border-input px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">生成示例：</span>
+                  <code className="font-mono text-foreground ml-1">a1b2c3d4-e5f6-7890-abcd-ef1234567890</code>
+                </div>
+              )}
+              {newTableIdStrategy === 'user_provided' && (
+                <div className="rounded-md bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  写入数据时必须手动指定 ID，留空将报错
                 </div>
               )}
             </div>
@@ -1544,22 +1577,52 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">
                   ID 生成策略
+                  <span className="text-muted-foreground font-normal ml-2 text-xs">（创建后不可修改）</span>
                 </label>
-                <p className="text-xs text-muted-foreground">创建后不可修改</p>
-                <input
-                  type="text"
-                  value={(() => {
-                    const strategyLabel: Record<string, string> = {
-                      uuid: 'UUID',
-                      snowflake: 'Snowflake',
-                      custom: '自定义',
-                      user_provided: '用户提供',
-                    }
-                    return strategyLabel[configIdStrategy] ?? configIdStrategy
-                  })()}
-                  disabled
-                  className="w-full px-3 py-2 border border-input rounded-md bg-muted text-muted-foreground cursor-not-allowed"
-                />
+                {(() => {
+                  const strategyMeta: Record<string, { label: string; desc: string; format: (prefix: string) => string }> = {
+                    snowflake: {
+                      label: 'Snowflake',
+                      desc: '分布式递增数字 ID，高并发场景推荐',
+                      format: (p) => p ? `${p}-8847362819` : '8847362819',
+                    },
+                    uuid: {
+                      label: 'UUID',
+                      desc: '随机唯一标识符，全局唯一',
+                      format: () => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+                    },
+                    custom: {
+                      label: 'Custom',
+                      desc: '前缀 + 时间戳 + 随机串，便于分类检索',
+                      format: (p) => `${p || '<prefix>'}-20260320145300123-a3f8c2`,
+                    },
+                    user_provided: {
+                      label: '用户提供',
+                      desc: '写入时必须手动指定 ID',
+                      format: () => '由写入方指定',
+                    },
+                  }
+                  const meta = strategyMeta[configIdStrategy] ?? { label: configIdStrategy, desc: '', format: () => '' }
+                  const exampleId = meta.format(configIdPrefix)
+                  return (
+                    <div className="rounded-md border border-input bg-muted/50 p-3 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-sm font-medium text-foreground">{meta.label}</span>
+                        <span className="text-xs text-muted-foreground">{meta.desc}</span>
+                      </div>
+                      {configIdPrefix && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-muted-foreground">前缀：</span>
+                          <code className="bg-background px-1.5 py-0.5 rounded border border-input font-mono">{configIdPrefix}</code>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-muted-foreground">生成示例：</span>
+                        <code className="bg-background px-1.5 py-0.5 rounded border border-input font-mono text-primary">{exampleId}</code>
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
               
               {/* Buffer Size */}
