@@ -58,9 +58,14 @@ func NewPoolManager(config *PoolManagerConfig, logger *zap.Logger) (*PoolManager
 	if config.Redis != nil {
 		redisPool, err = NewRedisPool(config.Redis, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create Redis pool: %w", err)
+			logger.Warn("Failed to create Redis pool, running in standalone mode without Redis",
+				zap.Error(err),
+			)
+			redisPool = nil
+			err = nil
+		} else {
+			logger.Info("Redis connection pool created")
 		}
-		logger.Info("Redis connection pool created")
 	} else {
 		logger.Info("Redis disabled - running without Redis")
 	}

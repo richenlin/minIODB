@@ -93,15 +93,22 @@ func TestNewRedisPool_Standalone(t *testing.T) {
 }
 
 func TestNewRedisPool_InvalidConfig(t *testing.T) {
-	// 测试无效配置
 	config := &RedisPoolConfig{
-		Mode: RedisModeStandalone,
-		Addr: "invalid:address:port",
+		Mode:        RedisModeStandalone,
+		Addr:        "invalid:address:port",
+		DialTimeout: 100 * time.Millisecond,
 	}
 
 	pool, err := NewRedisPool(config, logger.GetLogger())
-	assert.Error(t, err)
-	assert.Nil(t, pool)
+	assert.NoError(t, err)
+	assert.NotNil(t, pool)
+	if pool != nil {
+		defer pool.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		healthErr := pool.HealthCheck(ctx)
+		assert.Error(t, healthErr)
+	}
 }
 
 func TestNewRedisPool_Sentinel(t *testing.T) {
@@ -113,15 +120,18 @@ func TestNewRedisPool_Sentinel(t *testing.T) {
 		DB:            0,
 		PoolSize:      10,
 		MinIdleConns:  5,
+		DialTimeout:   100 * time.Millisecond,
 	}
 
-	// 由于没有真实的哨兵服务器，这个测试会失败
-	// 但我们可以测试配置是否正确设置
 	pool, err := NewRedisPool(config, logger.GetLogger())
-	if err != nil {
-		// 预期会失败，因为没有真实的哨兵服务器
-		assert.Error(t, err)
-		assert.Nil(t, pool)
+	assert.NoError(t, err)
+	assert.NotNil(t, pool)
+	if pool != nil {
+		defer pool.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		healthErr := pool.HealthCheck(ctx)
+		assert.Error(t, healthErr)
 	}
 }
 
@@ -132,15 +142,18 @@ func TestNewRedisPool_Cluster(t *testing.T) {
 		Password:     "",
 		PoolSize:     10,
 		MinIdleConns: 5,
+		DialTimeout:  100 * time.Millisecond,
 	}
 
-	// 由于没有真实的集群服务器，这个测试会失败
-	// 但我们可以测试配置是否正确设置
 	pool, err := NewRedisPool(config, logger.GetLogger())
-	if err != nil {
-		// 预期会失败，因为没有真实的集群服务器
-		assert.Error(t, err)
-		assert.Nil(t, pool)
+	assert.NoError(t, err)
+	assert.NotNil(t, pool)
+	if pool != nil {
+		defer pool.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		healthErr := pool.HealthCheck(ctx)
+		assert.Error(t, healthErr)
 	}
 }
 

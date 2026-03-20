@@ -193,12 +193,18 @@ func NewRedisPool(config *RedisPoolConfig, logger *zap.Logger) (*RedisPool, erro
 	}
 
 	// 执行健康检查
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	initTimeout := config.DialTimeout
+	if initTimeout <= 0 {
+		initTimeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
 	defer cancel()
 
 	if err := pool.HealthCheck(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("initial health check failed: %w", err)
+		logger.Warn("Redis initial health check failed, will retry in background",
+			zap.Error(err),
+			zap.String("addr", config.Addr),
+		)
 	}
 
 	logger.Sugar().Infof("Redis pool initialized in %s mode", config.Mode)
