@@ -1453,13 +1453,13 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
               />
             </div>
             
-            {/* Backup Enabled */}
+            {/* 自动备份 */}
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <label className="text-sm font-medium text-foreground">
-                  Backup Enabled
+                  自动备份
                 </label>
-                <p className="text-xs text-muted-foreground">是否启用自动备份</p>
+                <p className="text-xs text-muted-foreground">开启后，当存在类型为「表备份」的备份计划时，此表数据将自动纳入备份范围</p>
               </div>
               <button
                 type="button"
@@ -1713,13 +1713,13 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                 />
               </div>
               
-              {/* Backup Enabled */}
+              {/* 自动备份 */}
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
                   <label className="text-sm font-medium text-foreground">
-                    Backup Enabled
+                    自动备份
                   </label>
-                  <p className="text-xs text-muted-foreground">是否启用自动备份</p>
+                  <p className="text-xs text-muted-foreground">开启后，当存在类型为「表备份」的备份计划时，此表数据将自动纳入备份范围</p>
                 </div>
                 <button
                   type="button"

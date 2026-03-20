@@ -5,7 +5,7 @@ import { DashboardLayout } from '@/components/layout/dashboard-layout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { backupApi, VerifyResult, AvailabilityResult, HotBackupStatus, HotBackupAvailability } from '@/lib/api/backup'
+import { backupApi, VerifyResult, AvailabilityResult, HotBackupStatus, BackupSchedule, CreateBackupPlanRequest, UpdateBackupPlanRequest } from '@/lib/api/backup'
 import { dataApi } from '@/lib/api/data'
 import { BackupResult, MetadataStatusResult, TableResult } from '@/lib/api/types'
 import { ReloadIcon, FileIcon, ClockIcon, DownloadIcon, CheckCircledIcon, ExclamationTriangleIcon } from '@radix-ui/react-icons'
@@ -56,6 +56,43 @@ export default function BackupPage() {
   const [tables, setTables] = useState<TableResult[]>([])
   const [selectedTable, setSelectedTable] = useState<string>('')
   const [hotBackupStatus, setHotBackupStatus] = useState<HotBackupStatus | null>(null)
+  const [plans, setPlans] = useState<BackupSchedule[]>([])
+  const [plansLoading, setPlansLoading] = useState(false)
+  const [planDialogOpen, setPlanDialogOpen] = useState(false)
+  const [editingPlan, setEditingPlan] = useState<BackupSchedule | null>(null)
+  const [planForm, setPlanForm] = useState<{
+    id: string
+    name: string
+    enabled: boolean
+    scheduleType: 'cron' | 'interval'
+    cron_expr: string
+    interval: string
+    backup_type: string
+    tables: string[]
+    retention_days: number
+  }>({
+    id: '',
+    name: '',
+    enabled: true,
+    scheduleType: 'cron',
+    cron_expr: '0 2 * * *',
+    interval: '24h',
+    backup_type: 'metadata',
+    tables: [],
+    retention_days: 7,
+  })
+
+  const fetchPlans = async () => {
+    setPlansLoading(true)
+    try {
+      const result = await backupApi.listPlans()
+      setPlans(result.plans || [])
+    } catch {
+      setPlans([])
+    } finally {
+      setPlansLoading(false)
+    }
+  }
 
   const fetchData = async () => {
     setLoading(true)
@@ -67,6 +104,7 @@ export default function BackupPage() {
         setBackups([])
         setSchedule(null)
         setHotBackupStatus(null)
+        setPlans([])
         return
       }
       const [backupsData, scheduleData, hotBackupData] = await Promise.all([
@@ -77,6 +115,7 @@ export default function BackupPage() {
       setBackups(backupsData || [])
       setSchedule(scheduleData)
       setHotBackupStatus(hotBackupData)
+      fetchPlans()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch data')
     } finally {
@@ -206,6 +245,136 @@ export default function BackupPage() {
     }
   }
 
+  const handleOpenPlanDialog = (plan?: BackupSchedule) => {
+    if (plan) {
+      setEditingPlan(plan)
+      setPlanForm({
+        id: plan.id,
+        name: plan.name,
+        enabled: plan.enabled,
+        scheduleType: plan.cron_expr ? 'cron' : 'interval',
+        cron_expr: plan.cron_expr || '0 2 * * *',
+        interval: plan.interval ? formatIntervalFromNs(plan.interval) : '24h',
+        backup_type: plan.backup_type,
+        tables: plan.tables || [],
+        retention_days: plan.retention_days || 7,
+      })
+    } else {
+      setEditingPlan(null)
+      setPlanForm({
+        id: crypto.randomUUID(),
+        name: '',
+        enabled: true,
+        scheduleType: 'cron',
+        cron_expr: '0 2 * * *',
+        interval: '24h',
+        backup_type: 'metadata',
+        tables: [],
+        retention_days: 7,
+      })
+    }
+    setPlanDialogOpen(true)
+  }
+
+  const handleSavePlan = async () => {
+    if (!planForm.name.trim()) {
+      setError('计划名称不能为空')
+      return
+    }
+    if (!editingPlan && !planForm.id.trim()) {
+      setError('计划ID不能为空')
+      return
+    }
+    setActionLoading('save-plan')
+    try {
+      if (editingPlan) {
+        const updateData: UpdateBackupPlanRequest = {
+          name: planForm.name,
+          enabled: planForm.enabled,
+          backup_type: planForm.backup_type,
+          tables: planForm.tables,
+          retention_days: planForm.retention_days,
+          cron_expr: planForm.scheduleType === 'cron' ? planForm.cron_expr : '',
+          interval: planForm.scheduleType === 'interval' ? planForm.interval : undefined,
+        }
+        await backupApi.updatePlan(editingPlan.id, updateData)
+      } else {
+        const createData: CreateBackupPlanRequest = {
+          id: planForm.id,
+          name: planForm.name,
+          enabled: planForm.enabled,
+          backup_type: planForm.backup_type,
+          tables: planForm.tables,
+          retention_days: planForm.retention_days,
+        }
+        if (planForm.scheduleType === 'cron') {
+          createData.cron_expr = planForm.cron_expr
+        } else {
+          createData.interval = planForm.interval
+        }
+        await backupApi.createPlan(createData)
+      }
+      setPlanDialogOpen(false)
+      fetchPlans()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save plan')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleTogglePlan = async (plan: BackupSchedule) => {
+    setActionLoading(`toggle-${plan.id}`)
+    try {
+      await backupApi.updatePlan(plan.id, { enabled: !plan.enabled })
+      fetchPlans()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to toggle plan')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleTriggerPlan = async (plan: BackupSchedule) => {
+    if (!confirm(`确定要立即执行计划 "${plan.name}" 吗？`)) return
+    setActionLoading(`trigger-${plan.id}`)
+    try {
+      await backupApi.triggerPlan(plan.id)
+      await fetchData()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to trigger plan')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleDeletePlan = async (id: string) => {
+    if (!confirm('确定要删除此备份计划吗？')) return
+    setActionLoading(`delete-plan-${id}`)
+    try {
+      await backupApi.deletePlan(id)
+      fetchPlans()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete plan')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  function formatIntervalFromNs(ns: number): string {
+    const seconds = ns / 1e9
+    if (seconds % 86400 === 0) return `${seconds / 86400}d`
+    if (seconds % 3600 === 0) return `${seconds / 3600}h`
+    if (seconds % 60 === 0) return `${seconds / 60}m`
+    return `${seconds}s`
+  }
+
+  function formatSchedule(plan: BackupSchedule): string {
+    if (plan.cron_expr) return `Cron: ${plan.cron_expr}`
+    if (plan.interval) return `间隔: ${formatIntervalFromNs(plan.interval)}`
+    return '-'
+  }
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -286,54 +455,109 @@ export default function BackupPage() {
           </div>
         )}
 
-        <div className="grid gap-4 lg:grid-cols-3">
-          <div className="rounded-lg border border-border bg-card p-5">
-            <h2 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+        <div className="rounded-lg border border-border bg-card overflow-hidden">
+          <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <ClockIcon className="w-4 h-4" />
               备份计划
             </h2>
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">备份功能</span>
-                <Badge variant={schedule?.backup_enabled ? 'default' : 'secondary'}>
-                  {schedule?.backup_enabled ? '已启用' : '未启用'}
-                </Badge>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">备份间隔</span>
-                <span className="font-medium">{schedule?.backup_interval ?? '-'} 秒</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">上次备份</span>
-                <span className="font-medium">{schedule?.last_backup ? formatDateTime(schedule.last_backup) : '从未备份'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">表数量</span>
-                <span className="font-medium">{schedule?.tables_count ?? 0}</span>
-              </div>
-            </div>
+            <Button size="sm" onClick={() => handleOpenPlanDialog()} disabled={!availability?.available}>
+              新建计划
+            </Button>
           </div>
+          {plansLoading ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
+              加载中...
+            </div>
+          ) : plans.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8">
+              <p className="text-foreground font-medium">暂无备份计划</p>
+              <p className="text-sm text-muted-foreground mt-1">点击"新建计划"创建定时备份任务</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">名称</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">类型</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">调度</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">保留天数</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">状态</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">创建时间</th>
+                    <th className="px-4 py-3 text-right font-medium text-muted-foreground">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {plans.map(plan => (
+                    <tr key={plan.id} className="hover:bg-muted/30">
+                      <td className="px-4 py-3 font-medium">{plan.name}</td>
+                      <td className="px-4 py-3">{typeConfig[plan.backup_type] || plan.backup_type}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{formatSchedule(plan)}</td>
+                      <td className="px-4 py-3">{plan.retention_days || 0} 天</td>
+                      <td className="px-4 py-3">
+                        <Badge variant={plan.enabled ? 'default' : 'secondary'}>
+                          {plan.enabled ? '启用' : '停用'}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{formatDateTime(plan.created_at)}</td>
+                      <td className="px-4 py-3 text-right space-x-1">
+                        <Button variant="ghost" size="sm" onClick={() => handleOpenPlanDialog(plan)}>
+                          编辑
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleTogglePlan(plan)}
+                          disabled={actionLoading === `toggle-${plan.id}`}
+                        >
+                          {plan.enabled ? '停用' : '启用'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleTriggerPlan(plan)}
+                          disabled={actionLoading === `trigger-${plan.id}`}
+                        >
+                          {actionLoading === `trigger-${plan.id}` ? <ReloadIcon className="w-4 h-4 animate-spin" /> : '执行'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => handleDeletePlan(plan.id)}
+                          disabled={actionLoading === `delete-plan-${plan.id}`}
+                        >
+                          删除
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
 
-          <div className="rounded-lg border border-border bg-card p-5 lg:col-span-2">
-            <h2 className="text-sm font-semibold text-foreground mb-4">手动备份</h2>
-            <div className="flex flex-wrap gap-3">
-              <Button variant="outline" onClick={handleMetadataBackup} disabled={!availability?.available || actionLoading === 'metadata'}>
-                {actionLoading === 'metadata' && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
-                元数据备份
-              </Button>
-              <Button variant="outline" onClick={handleFullBackup} disabled={!availability?.available || actionLoading === 'full'}>
-                {actionLoading === 'full' && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
-                全量备份
-              </Button>
-              <Button variant="outline" onClick={handleOpenTableBackup} disabled={!availability?.available || actionLoading?.startsWith('table-')}>
-                {actionLoading?.startsWith('table-') && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
-                表备份
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-3">
-              元数据备份保存表结构和配置；全量备份和表备份当前执行元数据备份（全量数据备份尚未实现）。
-            </p>
+        <div className="rounded-lg border border-border bg-card p-5">
+          <h2 className="text-sm font-semibold text-foreground mb-4">手动备份</h2>
+          <div className="flex flex-wrap gap-3">
+            <Button variant="outline" onClick={handleMetadataBackup} disabled={!availability?.available || actionLoading === 'metadata'}>
+              {actionLoading === 'metadata' && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
+              元数据备份
+            </Button>
+            <Button variant="outline" onClick={handleFullBackup} disabled={!availability?.available || actionLoading === 'full'}>
+              {actionLoading === 'full' && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
+              全量备份
+            </Button>
+            <Button variant="outline" onClick={handleOpenTableBackup} disabled={!availability?.available || actionLoading?.startsWith('table-')}>
+              {actionLoading?.startsWith('table-') && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
+              表备份
+            </Button>
           </div>
+          <p className="text-xs text-muted-foreground mt-3">
+            元数据备份保存表结构和配置；全量备份和表备份当前执行元数据备份（全量数据备份尚未实现）。
+          </p>
         </div>
 
         <div className="rounded-lg border border-border bg-card overflow-hidden">
@@ -546,6 +770,135 @@ export default function BackupPage() {
               <Button onClick={handleConfirmTableBackup} disabled={!selectedTable || actionLoading?.startsWith('table-')}>
                 {actionLoading?.startsWith('table-') && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
                 确认备份
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 新建/编辑备份计划对话框 */}
+        <Dialog open={planDialogOpen} onOpenChange={setPlanDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{editingPlan ? '编辑备份计划' : '新建备份计划'}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">计划ID</label>
+                <input
+                  type="text"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={planForm.id}
+                  onChange={(e) => setPlanForm({ ...planForm, id: e.target.value })}
+                  disabled={!!editingPlan}
+                  placeholder="UUID格式"
+                />
+                {editingPlan && <p className="text-xs text-muted-foreground">ID创建后不可修改</p>}
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">计划名称 <span className="text-destructive">*</span></label>
+                <input
+                  type="text"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={planForm.name}
+                  onChange={(e) => setPlanForm({ ...planForm, name: e.target.value })}
+                  placeholder="输入计划名称"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">备份类型</label>
+                <select
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={planForm.backup_type}
+                  onChange={(e) => setPlanForm({ ...planForm, backup_type: e.target.value })}
+                >
+                  <option value="metadata">元数据备份</option>
+                  <option value="full">全量备份</option>
+                  <option value="table">表备份</option>
+                </select>
+              </div>
+              {planForm.backup_type === 'table' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">涉及表（逗号分隔）</label>
+                  <input
+                    type="text"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={planForm.tables.join(', ')}
+                    onChange={(e) => setPlanForm({ ...planForm, tables: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                    placeholder="table1, table2"
+                  />
+                </div>
+              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">调度方式</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={planForm.scheduleType === 'cron'}
+                      onChange={() => setPlanForm({ ...planForm, scheduleType: 'cron' })}
+                    />
+                    <span className="text-sm">Cron表达式</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={planForm.scheduleType === 'interval'}
+                      onChange={() => setPlanForm({ ...planForm, scheduleType: 'interval' })}
+                    />
+                    <span className="text-sm">间隔时间</span>
+                  </label>
+                </div>
+              </div>
+              {planForm.scheduleType === 'cron' ? (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Cron表达式</label>
+                  <input
+                    type="text"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                    value={planForm.cron_expr}
+                    onChange={(e) => setPlanForm({ ...planForm, cron_expr: e.target.value })}
+                    placeholder="0 2 * * *"
+                  />
+                  <p className="text-xs text-muted-foreground">例：0 2 * * * 表示每天凌晨2点</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">间隔时间（Go duration格式）</label>
+                  <input
+                    type="text"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                    value={planForm.interval}
+                    onChange={(e) => setPlanForm({ ...planForm, interval: e.target.value })}
+                    placeholder="24h"
+                  />
+                  <p className="text-xs text-muted-foreground">例：24h、1h、30m、1h30m</p>
+                </div>
+              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">保留天数</label>
+                <input
+                  type="number"
+                  min={1}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={planForm.retention_days}
+                  onChange={(e) => setPlanForm({ ...planForm, retention_days: parseInt(e.target.value) || 7 })}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="plan-enabled"
+                  checked={planForm.enabled}
+                  onChange={(e) => setPlanForm({ ...planForm, enabled: e.target.checked })}
+                />
+                <label htmlFor="plan-enabled" className="text-sm">启用此计划</label>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setPlanDialogOpen(false)}>取消</Button>
+              <Button onClick={handleSavePlan} disabled={actionLoading === 'save-plan'}>
+                {actionLoading === 'save-plan' && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
+                {editingPlan ? '保存' : '创建'}
               </Button>
             </DialogFooter>
           </DialogContent>

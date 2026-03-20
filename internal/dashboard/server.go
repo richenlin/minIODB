@@ -2376,7 +2376,7 @@ func (s *Server) createBackupPlan(c *gin.Context) {
 type updateBackupPlanRequest struct {
 	Name          string   `json:"name"`
 	Enabled       *bool    `json:"enabled"`
-	CronExpr      string   `json:"cron_expr"`
+	CronExpr      *string  `json:"cron_expr"`
 	Interval      string   `json:"interval"`
 	BackupType    string   `json:"backup_type"`
 	Tables        []string `json:"tables"`
@@ -2424,8 +2424,8 @@ func (s *Server) updateBackupPlan(c *gin.Context) {
 	if req.Enabled != nil {
 		existingPlan.Enabled = *req.Enabled
 	}
-	if req.CronExpr != "" {
-		existingPlan.CronExpr = req.CronExpr
+	if req.CronExpr != nil {
+		existingPlan.CronExpr = *req.CronExpr
 	}
 	if req.Interval != "" {
 		interval, err := time.ParseDuration(req.Interval)

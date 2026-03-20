@@ -59,6 +59,45 @@ export interface AvailabilityResult {
   message: string
 }
 
+export interface BackupSchedule {
+  id: string
+  name: string
+  enabled: boolean
+  interval: number
+  cron_expr: string
+  backup_type: string
+  tables: string[]
+  retention_days: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateBackupPlanRequest {
+  id: string
+  name: string
+  enabled: boolean
+  cron_expr?: string
+  interval?: string
+  backup_type: string
+  tables?: string[]
+  retention_days?: number
+}
+
+export interface UpdateBackupPlanRequest {
+  name?: string
+  enabled?: boolean
+  cron_expr?: string
+  interval?: string
+  backup_type?: string
+  tables?: string[]
+  retention_days?: number
+}
+
+export interface ListPlansResult {
+  plans: BackupSchedule[]
+  total: number
+}
+
 export const backupApi = {
   checkAvailability: () =>
     apiClient.get<AvailabilityResult>('/backups/availability'),
@@ -101,4 +140,19 @@ export const backupApi = {
   
   verify: (id: string) =>
     apiClient.post<VerifyResult>(`/backups/${encodeURIComponent(id)}/verify`, {}),
+  
+  listPlans: () =>
+    apiClient.get<ListPlansResult>('/backups/plans').then(r => r ?? { plans: [], total: 0 }),
+  
+  createPlan: (data: CreateBackupPlanRequest) =>
+    apiClient.post<BackupSchedule>('/backups/plans', data),
+  
+  updatePlan: (id: string, data: UpdateBackupPlanRequest) =>
+    apiClient.put<BackupSchedule>(`/backups/plans/${encodeURIComponent(id)}`, data),
+  
+  deletePlan: (id: string) =>
+    apiClient.delete<void>(`/backups/plans/${encodeURIComponent(id)}`),
+  
+  triggerPlan: (id: string) =>
+    apiClient.post<void>(`/backups/plans/${encodeURIComponent(id)}/trigger`, {}),
 }
