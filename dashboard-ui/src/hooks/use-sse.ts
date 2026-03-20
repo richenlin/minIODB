@@ -33,8 +33,11 @@ export function useSSE<T = unknown>(
     
     const stored = localStorage.getItem('miniodb-auth')
     const token = stored ? JSON.parse(stored)?.state?.token : null
-    
-    const baseUrl = `/dashboard/api/v1${options.url}`
+
+    // Next.js rewrites 代理会缓冲响应，导致 SSE 消息无法实时到达客户端。
+    // 直接连后端绝对 URL，完全绕过 Next.js 代理层。
+    const backendOrigin = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'
+    const baseUrl = `${backendOrigin}/dashboard/api/v1${options.url}`
     const fullUrl = token ? `${baseUrl}?token=${token}` : baseUrl
     
     const es = new EventSource(fullUrl)
