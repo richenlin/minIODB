@@ -1268,10 +1268,10 @@ func (q *Querier) removeObjectFromOtherIDIndexes(ctx context.Context, bucket, ta
 		q.logger.Sugar().Warnf("Failed to scan index keys for cleanup: %v", err)
 		return
 	}
-	skipPrefix := fmt.Sprintf("index:table:%s:id:%s:", tableName, skipID)
 	for _, key := range keys {
-		if strings.HasPrefix(key, skipPrefix) {
-			continue // 该 ID 的索引已由调用方删除
+		parts := strings.Split(key, ":")
+		if len(parts) >= 6 && parts[0] == "index" && parts[2] == tableName && parts[4] == skipID {
+			continue
 		}
 		// 从集合中移除该 object name 引用
 		if err := redisClient.SRem(ctx, key, objectName).Err(); err != nil {
