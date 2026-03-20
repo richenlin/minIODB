@@ -425,12 +425,13 @@ export default function DataPage() {
   const handleExport = () => {
     if (!browseData || browseData.rows.length === 0) return
     
-    const columns = Object.keys(browseData.rows[0])
+    const columns = getDisplayColumns(browseData.rows)
     const csvContent = [
       columns.join(','),
-      ...browseData.rows.map(row => 
-        columns.map(col => toCsvCell(row[col])).join(',')
-      )
+      ...browseData.rows.map(row => {
+        const expanded = expandRowPayload(row)
+        return columns.map(col => toCsvCell(expanded[col])).join(',')
+      })
     ].join('\n')
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
@@ -673,7 +674,19 @@ export default function DataPage() {
     ))
   }
 
-  // 格式化字节
+  const expandRowPayload = (row: Record<string, unknown>): Record<string, unknown> => {
+    const { payload, ...rest } = row
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      return { ...rest, ...(payload as Record<string, unknown>) }
+    }
+    return row
+  }
+
+  const getDisplayColumns = (rows: Record<string, unknown>[]): string[] => {
+    if (rows.length === 0) return []
+    return Object.keys(expandRowPayload(rows[0]))
+  }
+
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -927,7 +940,7 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                           <TableRow>
                             <TableHead className="w-12">#</TableHead>
                             {browseData.rows.length > 0 && 
-                              Object.keys(browseData.rows[0]).map(col => (
+                              getDisplayColumns(browseData.rows).map(col => (
                                 <TableHead 
                                   key={col}
                                   className="cursor-pointer hover:bg-muted/50 select-none"
@@ -945,7 +958,7 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                           {browseData.rows.length === 0 ? (
                             <TableRow>
                               <TableCell 
-                                colSpan={browseData.rows.length > 0 ? Object.keys(browseData.rows[0]).length + 2 : 2}
+                                colSpan={browseData.rows.length > 0 ? getDisplayColumns(browseData.rows).length + 2 : 2}
                                 className="text-center text-muted-foreground py-8"
                               >
                                 暂无数据
@@ -957,7 +970,7 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                                 <TableCell className="text-muted-foreground">
                                   {(page - 1) * pageSize + i + 1}
                                 </TableCell>
-                                 {Object.entries(row).map(([key, value]) => {
+                                 {Object.entries(expandRowPayload(row)).map(([key, value]) => {
                                    let display = ''
                                    if (value === null || value === undefined) {
                                      display = ''
@@ -1059,11 +1072,8 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
             </DialogTitle>
           </DialogHeader>
           {editingRow ? (
-            // 编辑模式：显示各字段输入框
-            <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
-              {newRecordError && (
-                <p className="text-sm text-destructive">{newRecordError}</p>
-              )}
+            // 编辑模式：ID 只读 + payload 编辑
+            <div className="space-y-4 py-4">
               {/* 只读头部：表名 + ID */}
               <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-2">
@@ -1085,39 +1095,29 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                   />
                 </div>
               </div>
-              {Object.entries(editFormData).map(([key, value]) => (
-                key !== 'id' && key !== 'timestamp' && key !== 'table' && (
-                  <div key={key} className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">
-                      {key}
-                    </label>
-                    {key === 'payload' ? (
-                      <textarea
-                        value={value}
-                        onChange={(e) => {
-                          setNewRecordError('')
-                          setEditFormData(prev => ({
-                            ...prev,
-                            [key]: e.target.value
-                          }))
-                        }}
-                        rows={8}
-                        className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
-                      />
-                    ) : (
-                      <input
-                        type="text"
-                        value={value}
-                        onChange={(e) => setEditFormData(prev => ({
-                          ...prev,
-                          [key]: e.target.value
-                        }))}
-                        className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                      />
-                    )}
-                  </div>
-                )
-              ))}
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  Payload（JSON格式）
+                </label>
+                <textarea
+                  value={editFormData.payload || ''}
+                  onChange={(e) => {
+                    setEditFormData(prev => ({
+                      ...prev,
+                      payload: e.target.value
+                    }))
+                    setNewRecordError('')
+                  }}
+                  placeholder={'{\n  "name": "张三",\n  "age": 25\n}'}
+                  rows={6}
+                  className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+                />
+                {newRecordError && (
+                  <p className="text-sm text-destructive">{newRecordError}</p>
+                )}
+              </div>
+
               {/* 数据预览 */}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">
