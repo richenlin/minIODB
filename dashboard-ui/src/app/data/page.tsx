@@ -484,6 +484,8 @@ export default function DataPage() {
         retention_days: newTableRetentionDays,
         backup_enabled: newTableBackupEnabled,
         id_strategy: newTableIdStrategy,
+        // user_provided 策略不自动生成，其余策略（snowflake/uuid/custom）默认自动生成
+        auto_generate_id: newTableIdStrategy !== 'user_provided',
       }
       
       newTableProperties.forEach(prop => {
