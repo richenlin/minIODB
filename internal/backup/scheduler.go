@@ -421,9 +421,22 @@ func (s *Scheduler) executePlan(plan *config.BackupSchedule) {
 				zap.String("plan_id", plan.ID))
 		}
 
-		// Run retention cleanup using plan-level RetentionDays when set.
+		// Run retention cleanup asynchronously to avoid blocking the cron goroutine.
+		// Use scheduler-level context (s.ctx) so cleanup is not cancelled when
+		// the per-execution ctx is done, and cap it with a 30-minute timeout.
 		if plan.RetentionDays > 0 {
-			s.executor.CleanupByPlan(ctx, plan.BackupType, plan.Tables, plan.RetentionDays)
+			planID := plan.ID
+			backupType := plan.BackupType
+			tables := append([]string(nil), plan.Tables...)
+			retentionDays := plan.RetentionDays
+			go func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(s.ctx, 30*time.Minute)
+				defer cleanupCancel()
+				s.logger.Info("starting async retention cleanup",
+					zap.String("plan_id", planID),
+					zap.Int("retention_days", retentionDays))
+				s.executor.CleanupByPlan(cleanupCtx, backupType, tables, retentionDays)
+			}()
 		}
 	}
 
