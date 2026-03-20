@@ -60,7 +60,7 @@ func (i *Ingester) IngestData(req *olapv1.WriteRequest) error {
 	row := buffer.DataRow{
 		Table:     tableName,
 		ID:        req.Id,
-		Timestamp: req.Timestamp.AsTime().UnixNano(),
+		Timestamp: req.Timestamp.AsTime().UnixMicro(),
 		Fields:    fields,
 	}
 
@@ -97,7 +97,7 @@ func (i *Ingester) IngestDataWithTableConfig(req *olapv1.WriteRequest, tableEncr
 	row := buffer.DataRow{
 		Table:     tableName,
 		ID:        req.Id,
-		Timestamp: req.Timestamp.AsTime().UnixNano(),
+		Timestamp: req.Timestamp.AsTime().UnixMicro(),
 		Fields:    fields,
 	}
 

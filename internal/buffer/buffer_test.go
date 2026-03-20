@@ -52,7 +52,7 @@ func TestConcurrentBuffer_BasicOperations(t *testing.T) {
 	row := DataRow{
 		Table:     "test",
 		ID:        "test-id",
-		Timestamp: time.Now().UnixNano(),
+		Timestamp: time.Now().UnixMicro(),
 		Fields:    map[string]interface{}{"value": "test-payload"},
 	}
 
@@ -168,7 +168,7 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 	row1 := DataRow{
 		Table:     "test",
 		ID:        "test-id-1",
-		Timestamp: time.Now().UnixNano(),
+		Timestamp: time.Now().UnixMicro(),
 		Fields:    map[string]interface{}{"value": "test-payload-1"},
 	}
 	_ = cb.Add(row1)
@@ -181,7 +181,7 @@ func TestConcurrentBuffer_FlushBehavior(t *testing.T) {
 	row2 := DataRow{
 		Table:     "test",
 		ID:        "test-id-1", // 相同ID，会放到同一个bufferKey
-		Timestamp: time.Now().UnixNano(),
+		Timestamp: time.Now().UnixMicro(),
 		Fields:    map[string]interface{}{"value": "test-payload-2"},
 	}
 
@@ -245,9 +245,9 @@ func TestConcurrentBuffer_WALIntegration(t *testing.T) {
 
 	// 添加多条数据
 	testRows := []DataRow{
-		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload1"}},
-		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Fields: map[string]interface{}{"value": "payload2"}},
-		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload3"}},
+		{Table: "test", ID: "id1", Timestamp: time.Now().UnixMicro(), Fields: map[string]interface{}{"value": "payload1"}},
+		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixMicro(), Fields: map[string]interface{}{"value": "payload2"}},
+		{Table: "test", ID: "id2", Timestamp: time.Now().UnixMicro(), Fields: map[string]interface{}{"value": "payload3"}},
 	}
 
 	for _, row := range testRows {
@@ -319,7 +319,7 @@ func TestConcurrentBuffer_WALDisabled(t *testing.T) {
 	row := DataRow{
 		Table:     "test",
 		ID:        "test-id",
-		Timestamp: time.Now().UnixNano(),
+		Timestamp: time.Now().UnixMicro(),
 		Fields:    map[string]interface{}{"value": "test-payload"},
 	}
 	_ = cb.Add(row)
@@ -354,9 +354,9 @@ func TestConcurrentBuffer_Remove_BasicRemove(t *testing.T) {
 
 	// 添加多条数据
 	rows := []DataRow{
-		{Table: "test", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload1"}},
-		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixNano(), Fields: map[string]interface{}{"value": "payload2"}},
-		{Table: "test", ID: "id2", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "payload3"}},
+		{Table: "test", ID: "id1", Timestamp: time.Now().UnixMicro(), Fields: map[string]interface{}{"value": "payload1"}},
+		{Table: "test", ID: "id1", Timestamp: time.Now().Add(1 * time.Second).UnixMicro(), Fields: map[string]interface{}{"value": "payload2"}},
+		{Table: "test", ID: "id2", Timestamp: time.Now().UnixMicro(), Fields: map[string]interface{}{"value": "payload3"}},
 	}
 	for _, row := range rows {
 		cb.Add(row)
@@ -418,8 +418,8 @@ func TestConcurrentBuffer_Remove_OnlyAffectsTargetTable(t *testing.T) {
 	defer cb.Stop()
 
 	// 添加不同表的数据
-	cb.Add(DataRow{Table: "table1", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "p1"}})
-	cb.Add(DataRow{Table: "table2", ID: "id1", Timestamp: time.Now().UnixNano(), Fields: map[string]interface{}{"value": "p2"}})
+	cb.Add(DataRow{Table: "table1", ID: "id1", Timestamp: time.Now().UnixMicro(), Fields: map[string]interface{}{"value": "p1"}})
+	cb.Add(DataRow{Table: "table2", ID: "id1", Timestamp: time.Now().UnixMicro(), Fields: map[string]interface{}{"value": "p2"}})
 	time.Sleep(50 * time.Millisecond)
 
 	// 移除 table1 中的 id1
@@ -454,7 +454,7 @@ func TestConcurrentBuffer_Remove_PendingWritesCount(t *testing.T) {
 
 	// 添加 5 条记录（同一 ID，不同日期会产生多个 bufferKey）
 	for i := 0; i < 5; i++ {
-		cb.Add(DataRow{Table: "test", ID: "id1", Timestamp: time.Now().Add(time.Duration(i) * time.Second).UnixNano(), Fields: map[string]interface{}{"value": "payload"}})
+		cb.Add(DataRow{Table: "test", ID: "id1", Timestamp: time.Now().Add(time.Duration(i) * time.Second).UnixMicro(), Fields: map[string]interface{}{"value": "payload"}})
 	}
 	time.Sleep(50 * time.Millisecond)
 
@@ -508,9 +508,9 @@ func TestMarshalRowToJSON_SystemColumnsNotOverwritten(t *testing.T) {
 		Timestamp: 999,
 		Table:     "my_table",
 		Fields: map[string]interface{}{
-			"id":         "user-id",        // must NOT overwrite system id
-			"timestamp":  int64(0),         // must NOT overwrite system timestamp
-			"table_name": "user_table",     // must NOT overwrite system table_name
+			"id":         "user-id",    // must NOT overwrite system id
+			"timestamp":  int64(0),     // must NOT overwrite system timestamp
+			"table_name": "user_table", // must NOT overwrite system table_name
 			"normal_col": "value",
 		},
 	}

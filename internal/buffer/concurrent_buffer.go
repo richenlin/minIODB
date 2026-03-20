@@ -668,7 +668,7 @@ func buildParquetSchemaJSON(fields map[string]interface{}) string {
 func buildParquetSchemaJSONFromMapping(mapping map[string]string, fields map[string]interface{}) string {
 	fixedFields := []string{
 		`{"Tag":"name=id, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=REQUIRED"}`,
-		`{"Tag":"name=timestamp, type=INT64, repetitiontype=REQUIRED"}`,
+		`{"Tag":"name=timestamp, type=INT64, convertedtype=TIMESTAMP_MICROS, repetitiontype=REQUIRED"}`,
 		`{"Tag":"name=table_name, type=BYTE_ARRAY, convertedtype=UTF8, repetitiontype=REQUIRED"}`,
 	}
 
@@ -1012,7 +1012,7 @@ func (w *Worker) storeMetadataToMinIOSidecar(ctx context.Context, minioPool *poo
 // Add 添加数据到缓冲区
 // 返回 error 当 WAL 连续失败超过阈值时
 func (cb *ConcurrentBuffer) Add(row DataRow) error {
-	t := time.Unix(0, row.Timestamp)
+	t := time.UnixMicro(row.Timestamp)
 	dayStr := t.Format("2006-01-02")
 
 	// 修复：使用表名/ID/日期格式，确保查询能正确找到缓冲区数据
@@ -1547,7 +1547,7 @@ func (cb *ConcurrentBuffer) AddDataPoint(id string, data []byte, timestamp time.
 	}
 	row := DataRow{
 		ID:        id,
-		Timestamp: timestamp.UnixNano(),
+		Timestamp: timestamp.UnixMicro(),
 		Fields:    fields,
 	}
 	_ = cb.Add(row) // 忽略错误，保持向后兼容

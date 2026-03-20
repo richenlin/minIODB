@@ -134,16 +134,12 @@ func (cp *ColumnPruner) BuildOptimizedViewSQL(tableName string, files []string, 
 		return cp.buildStandardViewSQL(tableName, files)
 	}
 
-	// 构建列列表
 	columnList := strings.Join(requiredColumns, ", ")
-
-	// 读取Parquet文件时只指定需要的列
-	columnsClause := columnList
 
 	filesClause := cp.buildFilesClause(files)
 
 	return fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT %s FROM read_parquet([%s], union_by_name=true)`,
-		tableName, columnsClause, filesClause)
+		tableName, columnList, filesClause)
 }
 
 // buildStandardViewSQL 构建标准视图SQL（不使用列剪枝）

@@ -18,7 +18,7 @@ import (
 // and the compaction write path. The payload column name matches buffer.DataRow.Payload.
 type GenericRecord struct {
 	ID        string `parquet:"name=id, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
-	Timestamp int64  `parquet:"name=timestamp, type=INT64"`
+	Timestamp int64  `parquet:"name=timestamp, type=INT64, convertedtype=TIMESTAMP_MICROS"`
 	Payload   string `parquet:"name=payload, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
 	Table     string `parquet:"name=table, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
 }
@@ -168,11 +168,11 @@ func (p *ParquetWriterImpl) convertToGenericRecord(record map[string]interface{}
 	}
 
 	if ts, ok := record["timestamp"].(time.Time); ok {
-		gr.Timestamp = ts.UnixNano()
+		gr.Timestamp = ts.UnixMicro()
 	} else if tsInt, ok := record["timestamp"].(int64); ok {
-		gr.Timestamp = tsInt
+		gr.Timestamp = tsInt // already in microseconds
 	} else {
-		gr.Timestamp = time.Now().UnixNano()
+		gr.Timestamp = time.Now().UnixMicro()
 	}
 
 	if table, ok := record["table"].(string); ok {
