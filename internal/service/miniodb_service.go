@@ -1449,6 +1449,9 @@ func (s *MinIODBService) ListTables(ctx context.Context, req *miniodb.ListTables
 				RetentionDays:        int32(table.Config.RetentionDays),
 				BackupEnabled:        backupEnabled,
 				Properties:           table.Config.Properties,
+				IdStrategy:           table.Config.IDStrategy,
+				IdPrefix:             table.Config.IDPrefix,
+				AutoGenerateId:       table.Config.AutoGenerateID,
 			}
 		}
 
@@ -1522,6 +1525,9 @@ func (s *MinIODBService) GetTable(ctx context.Context, req *miniodb.GetTableRequ
 			RetentionDays:        int32(tableInfo.Config.RetentionDays),
 			BackupEnabled:        backupEnabled,
 			Properties:           tableInfo.Config.Properties,
+			IdStrategy:           tableInfo.Config.IDStrategy,
+			IdPrefix:             tableInfo.Config.IDPrefix,
+			AutoGenerateId:       tableInfo.Config.AutoGenerateID,
 		}
 	}
 
