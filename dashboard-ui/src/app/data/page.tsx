@@ -267,33 +267,45 @@ export default function DataPage() {
   }
 
   // 打开编辑对话框
+  // 系统字段，不应出现在 payload 编辑区
+  const SYSTEM_FIELDS = new Set(['id', 'timestamp', 'table_name'])
+
+  // 将 payload 对象规范化：null/undefined 值替换为空字符串，过滤系统字段
+  const normalizePayloadForEdit = (obj: Record<string, unknown>): Record<string, unknown> => {
+    const result: Record<string, unknown> = {}
+    Object.entries(obj).forEach(([k, v]) => {
+      if (SYSTEM_FIELDS.has(k)) return
+      result[k] = v === null || v === undefined ? '' : v
+    })
+    return result
+  }
+
   const handleEditRow = (row: Record<string, unknown>) => {
     setEditingRow(row)
 
     // 构建 payload JSON 字符串：
-    // 如果 row 有 payload 字段（对象或字符串），将其 stringify 展示
-    // 否则把 row 中非系统字段（id/timestamp）收集为对象展示
+    // 如果 row 有 payload 字段（对象或字符串），将其规范化后 stringify
+    // 否则把 row 中非系统字段收集为对象展示
     let payloadStr = '{}'
     const payloadValue = row['payload']
     if (payloadValue !== null && payloadValue !== undefined) {
       if (typeof payloadValue === 'string') {
-        // 后端偶发返回字符串，尝试格式化
         try {
-          payloadStr = JSON.stringify(JSON.parse(payloadValue), null, 2)
+          const parsed = JSON.parse(payloadValue)
+          if (typeof parsed === 'object' && !Array.isArray(parsed) && parsed !== null) {
+            payloadStr = JSON.stringify(normalizePayloadForEdit(parsed as Record<string, unknown>), null, 2)
+          } else {
+            payloadStr = payloadValue
+          }
         } catch {
           payloadStr = payloadValue
         }
       } else if (typeof payloadValue === 'object' && !Array.isArray(payloadValue)) {
-        payloadStr = JSON.stringify(payloadValue, null, 2)
+        payloadStr = JSON.stringify(normalizePayloadForEdit(payloadValue as Record<string, unknown>), null, 2)
       }
     } else {
-      // 没有 payload 字段：把除 id/timestamp 以外的字段收集为 payload 内容
-      const collected: Record<string, unknown> = {}
-      Object.entries(row).forEach(([key, value]) => {
-        if (key !== 'id' && key !== 'timestamp') {
-          collected[key] = value
-        }
-      })
+      // 没有 payload 字段：从 row 中收集非系统字段
+      const collected = normalizePayloadForEdit(row)
       if (Object.keys(collected).length > 0) {
         payloadStr = JSON.stringify(collected, null, 2)
       }
