@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RealtimeChart } from '@/components/charts/realtime-chart'
 import { monitorApi } from '@/lib/api/monitor'
-import { SLAResult } from '@/lib/api/types'
+import { MonitorOverviewResult, SLAResult } from '@/lib/api/types'
 import { useSSE } from '@/hooks/use-sse'
 
 // SSE "metrics" 事件的数据结构（与后端 startMetricsPush 对齐）
@@ -20,28 +20,35 @@ interface MetricsPayload {
 }
 
 export default function MonitorPage() {
-  const [metrics, setMetrics] = useState<MetricsPayload | null>(null)
+  const [metrics, setMetrics] = useState<MonitorOverviewResult | null>(null)
   const [sla, setSLA] = useState<SLAResult | null>(null)
   const [slaError, setSlaError] = useState('')
+  const [loading, setLoading] = useState(true)
 
-  // 单条 SSE 连接，卡片和图表共用
+  // SSE 连接：实时更新卡片数据
   const { data, connected } = useSSE<{ data?: MetricsPayload }>('/monitor/stream')
 
-  // 每次 SSE 推送新数据时更新卡片
+  // 初始化：HTTP 拿一次数据立即渲染，不依赖 SSE 首条消息的延迟
   useEffect(() => {
-    if (data?.data) {
-      setMetrics(data.data)
-    }
-  }, [data])
-
-  // SLA 数据只需一次性加载（变化慢，不需要实时刷新）
-  useEffect(() => {
-    monitorApi.getSLA()
-      .then(setSLA)
-      .catch(err => setSlaError(err instanceof Error ? err.message : '加载失败'))
+    Promise.all([
+      monitorApi.getOverview(),
+      monitorApi.getSLA(),
+    ]).then(([overviewData, slaData]) => {
+      setMetrics(overviewData)
+      setSLA(slaData)
+    }).catch(err => {
+      setSlaError(err instanceof Error ? err.message : '加载失败')
+    }).finally(() => {
+      setLoading(false)
+    })
   }, [])
 
-  const loading = metrics === null
+  // SSE 推送时用更新的数据覆盖卡片（SSE payload 与 MonitorOverviewResult 字段一致）
+  useEffect(() => {
+    if (data?.data) {
+      setMetrics(prev => prev ? { ...prev, ...data.data } : data.data as MonitorOverviewResult)
+    }
+  }, [data])
 
   return (
     <DashboardLayout>
