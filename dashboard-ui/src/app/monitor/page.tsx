@@ -27,6 +27,7 @@ export default function MonitorPage() {
         ])
         setOverview(overviewData)
         setSLA(slaData)
+        setError('')
       } catch (err) {
         setError(err instanceof Error ? err.message : '数据加载失败')
       } finally {
@@ -34,6 +35,9 @@ export default function MonitorPage() {
       }
     }
     fetchData()
+    // 每 10 秒轮询一次，保持卡片数据更新
+    const interval = setInterval(fetchData, 10_000)
+    return () => clearInterval(interval)
   }, [])
 
   return (

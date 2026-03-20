@@ -1915,6 +1915,7 @@ func (s *Server) startMetricsPush(ctx context.Context) {
 					s.hub.Publish("metrics", gin.H{
 						"goroutines":   snap.Goroutines,
 						"mem_alloc_mb": snap.HeapAllocMB,
+						"gc_pause_ms":  snap.GCPauseMs,
 						"load_level":   snap.LoadLevel,
 						"uptime_hours": resp.SystemInfo["uptime_seconds"],
 						"cpu_percent":  snap.CPUPercent,
