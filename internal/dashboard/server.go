@@ -1064,7 +1064,14 @@ func (s *Server) createTable(c *gin.Context) {
 		TableName:   req.TableName,
 		IfNotExists: true,
 	}
-	if req.Config.BufferSize > 0 || req.Config.RetentionDays > 0 {
+	// 只要 Config 中有任何字段被设置，就构建 proto Config（避免仅设 IDStrategy 时丢失）
+	hasConfig := req.Config.BufferSize > 0 ||
+		req.Config.RetentionDays > 0 ||
+		req.Config.IDStrategy != "" ||
+		req.Config.IDPrefix != "" ||
+		req.Config.FlushInterval > 0 ||
+		req.Config.BackupEnabled != nil
+	if hasConfig {
 		var backupEnabled bool
 		if req.Config.BackupEnabled != nil {
 			backupEnabled = *req.Config.BackupEnabled
