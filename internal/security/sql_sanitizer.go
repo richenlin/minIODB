@@ -243,7 +243,8 @@ func (s *SQLSanitizer) BuildSafeCreateViewSQL(viewName string, filePaths []strin
 		quotedPaths = append(quotedPaths, s.QuoteLiteral(path))
 	}
 
-	sql := fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet([%s])",
+	// union_by_name=true 允许跨文件 schema 不一致，缺失列补 NULL，实现动态列（类 MongoDB）
+	sql := fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet([%s], union_by_name=true)",
 		s.QuoteIdentifier(viewName),
 		strings.Join(quotedPaths, ", "))
 
