@@ -286,28 +286,13 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 	tableConfig := s.GetTableConfig(ctx, tableName)
 	s.logger.Sugar().Infof("WriteData: table=%s, AutoGenerateID=%v, providedID=%q", tableName, tableConfig.AutoGenerateID, recordID)
 
-	// 处理 ID：根据表配置的 id_strategy 决定行为
-	recordID = req.Data.Id
-	if recordID == "" {
-		if idgen.IDGeneratorStrategy(tableConfig.IDStrategy) == idgen.StrategyUserProvided {
-			// 表明确要求用户提供 ID
-			err := status.Error(codes.InvalidArgument,
-				fmt.Sprintf("table %q requires a user-provided ID (id_strategy=user_provided); please specify an ID when writing data", tableName))
-			s.auditLogger.LogWrite(ctx, tableName, "", false, err, nil)
-			return nil, err
-		}
-		if tableConfig.AutoGenerateID {
-			generatedID, err := s.GenerateID(ctx, tableName, tableConfig)
-			if err != nil {
-				s.logger.Sugar().Errorf("Failed to generate ID for table %s: %v", tableName, err)
-				s.auditLogger.LogWrite(ctx, tableName, "", false, err, nil)
-				return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to generate ID: %v", err))
-			}
-			recordID = generatedID
-			s.logger.Sugar().Infof("Auto-generated ID for table %s: %s (strategy=%s)", tableName, recordID, tableConfig.IDStrategy)
-		}
-		// recordID 仍为空：允许（兼容某些遗留写入行为）
+	resolvedID, err := s.resolveRecordIDForWrite(ctx, tableName, tableConfig, recordID)
+	if err != nil {
+		s.auditLogger.LogWrite(ctx, tableName, recordID, false, err, nil)
+		return nil, err
 	}
+	recordID = resolvedID
+	req.Data.Id = recordID
 
 	// 转换为内部写入请求格式，Timestamp 为空时自动补充当前时间
 	ts := req.Data.Timestamp
@@ -544,6 +529,64 @@ func (s *MinIODBService) GenerateID(ctx context.Context, tableName string, table
 	}
 
 	return s.idGenerator.Generate(tableName, strategy, tableConfig.IDPrefix)
+}
+
+// resolveRecordIDForWrite 根据表配置解析写入 ID，禁止空 ID 入库（防止索引与查询脏数据）。
+// 规则：
+//   - 客户端提供非空 ID：校验格式后原样使用；
+//   - id_strategy=user_provided：必须提供非空 ID；
+//   - id_strategy 为 uuid/snowflake/custom（或未配置则按 GenerateID 默认）：空 ID 时由服务端生成，不依赖 AutoGenerateID 历史错误配置；
+//   - 其他未知策略：仅当 auto_generate_id=true 时生成，否则返回 InvalidArgument。
+func (s *MinIODBService) resolveRecordIDForWrite(ctx context.Context, tableName string, tableConfig config.TableConfig, providedID string) (string, error) {
+	recordID := strings.TrimSpace(providedID)
+	if recordID != "" {
+		if s.idGenerator != nil {
+			if err := s.idGenerator.Validate(recordID, tableConfig.IDValidation.MaxLength, tableConfig.IDValidation.Pattern); err != nil {
+				return "", status.Error(codes.InvalidArgument, fmt.Sprintf("invalid id: %v", err))
+			}
+		}
+		return recordID, nil
+	}
+
+	strategy := idgen.IDGeneratorStrategy(tableConfig.IDStrategy)
+	if strategy == "" {
+		strategy = idgen.StrategyUUID
+	}
+
+	if strategy == idgen.StrategyUserProvided {
+		return "", status.Error(codes.InvalidArgument,
+			fmt.Sprintf("table %q uses id_strategy=user_provided; non-empty id is required when writing data", tableName))
+	}
+
+	// 系统可分配 ID 的策略：空 ID 一律服务端生成（避免 AutoGenerateID=false 的旧配置导致写入无 ID）
+	if strategy == idgen.StrategyUUID || strategy == idgen.StrategySnowflake || strategy == idgen.StrategyCustom {
+		generatedID, err := s.GenerateID(ctx, tableName, tableConfig)
+		if err != nil {
+			s.logger.Sugar().Errorf("Failed to generate ID for table %s: %v", tableName, err)
+			return "", status.Error(codes.Internal, fmt.Sprintf("Failed to generate ID: %v", err))
+		}
+		if strings.TrimSpace(generatedID) == "" {
+			return "", status.Error(codes.Internal, "ID generator returned empty id")
+		}
+		s.logger.Sugar().Infof("Auto-generated ID for table %s: %s (strategy=%s)", tableName, generatedID, tableConfig.IDStrategy)
+		return generatedID, nil
+	}
+
+	if tableConfig.AutoGenerateID {
+		generatedID, err := s.GenerateID(ctx, tableName, tableConfig)
+		if err != nil {
+			s.logger.Sugar().Errorf("Failed to generate ID for table %s: %v", tableName, err)
+			return "", status.Error(codes.Internal, fmt.Sprintf("Failed to generate ID: %v", err))
+		}
+		if strings.TrimSpace(generatedID) == "" {
+			return "", status.Error(codes.Internal, "ID generator returned empty id")
+		}
+		s.logger.Sugar().Infof("Auto-generated ID for table %s: %s (strategy=%s)", tableName, generatedID, tableConfig.IDStrategy)
+		return generatedID, nil
+	}
+
+	return "", status.Error(codes.InvalidArgument,
+		fmt.Sprintf("table %q requires a non-empty id (id_strategy=%s, auto_generate_id=false); enable auto_generate_id or pass id explicitly", tableName, tableConfig.IDStrategy))
 }
 
 // QueryData 查询数据
