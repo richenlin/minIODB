@@ -1026,11 +1026,12 @@ func (s *Server) getTable(c *gin.Context) {
 	}
 
 	if t.Config != nil {
+		backupEnabled := t.Config.BackupEnabled
 		result.Config = config.TableConfig{
 			BufferSize:     int(t.Config.BufferSize),
 			FlushInterval:  time.Duration(t.Config.FlushIntervalSeconds) * time.Second,
 			RetentionDays:  int(t.Config.RetentionDays),
-			BackupEnabled:  t.Config.BackupEnabled,
+			BackupEnabled:  &backupEnabled,
 			IDStrategy:     t.Config.IdStrategy,
 			IDPrefix:       t.Config.IdPrefix,
 			AutoGenerateID: t.Config.AutoGenerateId,
@@ -1064,11 +1065,15 @@ func (s *Server) createTable(c *gin.Context) {
 		IfNotExists: true,
 	}
 	if req.Config.BufferSize > 0 || req.Config.RetentionDays > 0 {
+		var backupEnabled bool
+		if req.Config.BackupEnabled != nil {
+			backupEnabled = *req.Config.BackupEnabled
+		}
 		protoReq.Config = &miniodbv1.TableConfig{
 			BufferSize:           int32(req.Config.BufferSize),
 			FlushIntervalSeconds: int32(req.Config.FlushInterval.Seconds()),
 			RetentionDays:        int32(req.Config.RetentionDays),
-			BackupEnabled:        req.Config.BackupEnabled,
+			BackupEnabled:        backupEnabled,
 			IdStrategy:           req.Config.IDStrategy,
 			IdPrefix:             req.Config.IDPrefix,
 			AutoGenerateId:       req.Config.AutoGenerateID,
@@ -1088,7 +1093,39 @@ func (s *Server) createTable(c *gin.Context) {
 }
 
 func (s *Server) updateTable(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "Table config update is not yet supported"})
+	name := c.Param("name")
+	if !s.cfg.IsValidTableName(name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid table name"})
+		return
+	}
+	var req model.UpdateTableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	tableManager := s.svc.GetTableManager()
+	if tableManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Table manager not available"})
+		return
+	}
+
+	if err := tableManager.UpdateTableConfig(ctx, name, &req.Config); err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		if strings.Contains(err.Error(), "cannot modify immutable field") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Table config updated successfully"})
 }
 
 func (s *Server) deleteTable(c *gin.Context) {

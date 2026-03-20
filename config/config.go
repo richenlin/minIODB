@@ -72,7 +72,7 @@ type TableConfig struct {
 	BufferSize      int                    `yaml:"buffer_size"`
 	FlushInterval   time.Duration          `yaml:"flush_interval"`
 	RetentionDays   int                    `yaml:"retention_days"`
-	BackupEnabled   bool                   `yaml:"backup_enabled"`
+	BackupEnabled   *bool                  `yaml:"backup_enabled" json:"backup_enabled,omitempty"`
 	Properties      map[string]string      `yaml:"properties"`
 	IDStrategy      string                 `yaml:"id_strategy" json:"id_strategy"`                     // ID生成策略: uuid, snowflake, custom, user_provided
 	IDPrefix        string                 `yaml:"id_prefix" json:"id_prefix"`                         // ID前缀（用于custom和snowflake策略）
@@ -1212,7 +1212,7 @@ func (c *Config) setDefaults() {
 			BufferSize:     1000,
 			FlushInterval:  30 * time.Second,
 			RetentionDays:  365,
-			BackupEnabled:  true,
+			BackupEnabled:  ptrBool(true),
 			Properties:     make(map[string]string),
 			IDStrategy:     "user_provided", // 默认要求用户提供ID（向后兼容）
 			IDPrefix:       "",
@@ -2043,4 +2043,9 @@ func fileExists(filename string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+// ptrBool returns a pointer to the given bool value.
+func ptrBool(v bool) *bool {
+	return &v
 }

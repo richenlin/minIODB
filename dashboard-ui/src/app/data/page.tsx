@@ -12,13 +12,6 @@ import {
   TableRow 
 } from '@/components/ui/table'
 import { 
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from '@/components/ui/sheet'
-import { 
   Dialog,
   DialogContent,
   DialogHeader,
@@ -40,6 +33,9 @@ import {
   ReloadIcon,
   ArrowUpIcon,
   ArrowDownIcon,
+  GearIcon,
+  PlusCircledIcon,
+  MinusCircledIcon,
 } from '@radix-ui/react-icons'
 import type { 
   TableResult, 
@@ -48,6 +44,7 @@ import type {
   QueryResult,
   CreateTableRequest,
   WriteRecordRequest,
+  TableConfig,
 } from '@/lib/api/types'
 
 type ViewMode = 'data' | 'sql'
@@ -106,11 +103,33 @@ export default function DataPage() {
   const [newTableName, setNewTableName] = useState('')
   const [createTableLoading, setCreateTableLoading] = useState(false)
   const [createTableError, setCreateTableError] = useState('')
+  // 新建表配置字段
+  const [newTableBufferSize, setNewTableBufferSize] = useState<number>(1000)
+  const [newTableFlushInterval, setNewTableFlushInterval] = useState<number>(60)
+  const [newTableRetentionDays, setNewTableRetentionDays] = useState<number>(30)
+  const [newTableBackupEnabled, setNewTableBackupEnabled] = useState<boolean>(false)
+  const [newTableIdStrategy, setNewTableIdStrategy] = useState<string>('snowflake')
+  const [newTableProperties, setNewTableProperties] = useState<{ key: string; value: string }[]>([])
   
   // 删除表确认对话框状态
   const [deleteTableDialogOpen, setDeleteTableDialogOpen] = useState(false)
   const [deleteTableLoading, setDeleteTableLoading] = useState(false)
   const [deleteTableConfirmName, setDeleteTableConfirmName] = useState('')
+  
+  // 表属性设置对话框状态
+  const [tableConfigDialogOpen, setTableConfigDialogOpen] = useState(false)
+  const [tableConfigTarget, setTableConfigTarget] = useState<string | null>(null)
+  const [tableConfigLoading, setTableConfigLoading] = useState(false)
+  const [tableConfigError, setTableConfigError] = useState('')
+  const [configLoaded, setConfigLoaded] = useState(false)
+  const [configSuccess, setConfigSuccess] = useState('')
+  // 表配置表单字段
+  const [configBufferSize, setConfigBufferSize] = useState<number>(0)
+  const [configFlushInterval, setConfigFlushInterval] = useState<number>(0)
+  const [configRetentionDays, setConfigRetentionDays] = useState<number>(0)
+  const [configBackupEnabled, setConfigBackupEnabled] = useState<boolean>(false)
+  const [configProperties, setConfigProperties] = useState<{ key: string; value: string }[]>([])
+  const [configIdStrategy, setConfigIdStrategy] = useState<string>('')
 
   // 加载表列表
   const loadTables = useCallback(async () => {
@@ -418,10 +437,34 @@ export default function DataPage() {
     URL.revokeObjectURL(link.href)
   }
 
+  const handleExportSql = () => {
+    if (!sqlResult || sqlResult.rows.length === 0) return
+    
+    const csvContent = [
+      sqlResult.columns.join(','),
+      ...sqlResult.rows.map(row => 
+        sqlResult.columns.map(col => toCsvCell(row[col])).join(',')
+      )
+    ].join('\n')
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `sql_export_${new Date().toISOString().split('T')[0]}.csv`
+    link.click()
+    URL.revokeObjectURL(link.href)
+  }
+
   // 打开创建表对话框
   const handleOpenCreateTable = () => {
     setNewTableName('')
     setCreateTableError('')
+    setNewTableBufferSize(1000)
+    setNewTableFlushInterval(60)
+    setNewTableRetentionDays(30)
+    setNewTableBackupEnabled(false)
+    setNewTableIdStrategy('snowflake')
+    setNewTableProperties([])
     setCreateTableDialogOpen(true)
   }
 
@@ -435,9 +478,27 @@ export default function DataPage() {
     setCreateTableLoading(true)
     setCreateTableError('')
     try {
+      const config: TableConfig = {
+        buffer_size: newTableBufferSize,
+        flush_interval: `${newTableFlushInterval}s`,
+        retention_days: newTableRetentionDays,
+        backup_enabled: newTableBackupEnabled,
+        id_strategy: newTableIdStrategy,
+      }
+      
+      newTableProperties.forEach(prop => {
+        if (prop.key.trim()) {
+          try {
+            config[prop.key.trim()] = JSON.parse(prop.value)
+          } catch {
+            config[prop.key.trim()] = prop.value
+          }
+        }
+      })
+      
       const req: CreateTableRequest = {
         table_name: newTableName.trim(),
-        config: {}
+        config
       }
       await dataApi.createTable(req)
       setCreateTableDialogOpen(false)
@@ -480,6 +541,121 @@ export default function DataPage() {
     } finally {
       setDeleteTableLoading(false)
     }
+  }
+  
+  // 打开表属性设置对话框
+  const handleOpenTableConfig = async (tableName: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setTableConfigTarget(tableName)
+    setTableConfigError('')
+    setConfigLoaded(false)
+    setConfigSuccess('')
+    setTableConfigLoading(true)
+    setTableConfigDialogOpen(true)
+    
+    try {
+      const detail = await dataApi.getTable(tableName)
+      setConfigBufferSize(detail.buffer_size ?? 1000)
+      setConfigFlushInterval(detail.flush_interval ?? 60)
+      setConfigRetentionDays(detail.retention_days ?? 30)
+      setConfigBackupEnabled(detail.backup_enabled ?? false)
+      setConfigIdStrategy(detail.id_strategy ?? 'snowflake')
+      
+      const knownKeys = ['buffer_size', 'flush_interval', 'retention_days', 'backup_enabled', 'id_strategy', 'auto_generate_id']
+      const extraProps: { key: string; value: string }[] = []
+      if (detail.config) {
+        Object.entries(detail.config).forEach(([k, v]) => {
+          if (!knownKeys.includes(k) && v !== undefined) {
+            extraProps.push({
+              key: k,
+              value: typeof v === 'string' ? v : JSON.stringify(v)
+            })
+          }
+        })
+      }
+      setConfigProperties(extraProps)
+      setConfigLoaded(true)
+    } catch (err) {
+      setTableConfigError(err instanceof Error ? err.message : '加载表配置失败')
+    } finally {
+      setTableConfigLoading(false)
+    }
+  }
+  
+  // 保存表属性设置
+  const handleSaveTableConfig = async () => {
+    if (!tableConfigTarget) return
+    
+    setTableConfigLoading(true)
+    setTableConfigError('')
+    setConfigSuccess('')
+    
+    try {
+      const config: TableConfig = {
+        buffer_size: configBufferSize,
+        flush_interval: `${configFlushInterval}s`,
+        retention_days: configRetentionDays,
+        backup_enabled: configBackupEnabled,
+      }
+      
+      configProperties.forEach(prop => {
+        if (prop.key.trim()) {
+          try {
+            config[prop.key.trim()] = JSON.parse(prop.value)
+          } catch {
+            config[prop.key.trim()] = prop.value
+          }
+        }
+      })
+      
+      await dataApi.updateTable(tableConfigTarget, { config })
+      
+      if (selectedTable === tableConfigTarget) {
+        const detail = await dataApi.getTable(tableConfigTarget)
+        setTableDetail(detail)
+      }
+      
+      setConfigSuccess('配置保存成功')
+      setTimeout(() => {
+        setTableConfigDialogOpen(false)
+      }, 800)
+    } catch (err) {
+      setTableConfigError(err instanceof Error ? err.message : '保存配置失败')
+    } finally {
+      setTableConfigLoading(false)
+    }
+  }
+  
+  // 添加 property 键值对
+  const handleAddProperty = () => {
+    setConfigProperties(prev => [...prev, { key: '', value: '' }])
+  }
+  
+  // 删除 property 键值对
+  const handleRemoveProperty = (index: number) => {
+    setConfigProperties(prev => prev.filter((_, i) => i !== index))
+  }
+  
+  // 更新 property 键值对
+  const handleUpdateProperty = (index: number, field: 'key' | 'value', newValue: string) => {
+    setConfigProperties(prev => prev.map((prop, i) => 
+      i === index ? { ...prop, [field]: newValue } : prop
+    ))
+  }
+
+  // 新建表 properties 操作
+  const handleAddNewTableProperty = () => {
+    setNewTableProperties(prev => [...prev, { key: '', value: '' }])
+  }
+
+  const handleRemoveNewTableProperty = (index: number) => {
+    setNewTableProperties(prev => prev.filter((_, i) => i !== index))
+  }
+
+  const handleUpdateNewTableProperty = (index: number, field: 'key' | 'value', newValue: string) => {
+    setNewTableProperties(prev => prev.map((prop, i) => 
+      i === index ? { ...prop, [field]: newValue } : prop
+    ))
   }
 
   // 格式化字节
@@ -556,13 +732,29 @@ export default function DataPage() {
                   <button
                     key={table.name}
                     onClick={() => handleTableSelect(table.name)}
-                    className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                    className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors group ${
                       selectedTable === table.name
                         ? 'bg-primary text-primary-foreground'
                         : 'hover:bg-muted text-foreground'
                     }`}
                   >
-                    <div className="font-medium truncate">{table.name}</div>
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium truncate flex-1 min-w-0">{table.name}</div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className={`h-6 w-6 shrink-0 ${
+                          selectedTable === table.name
+                            ? 'text-primary-foreground hover:text-primary-foreground hover:bg-primary/80'
+                            : 'text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100'
+                        }`}
+                        onClick={(e) => handleOpenTableConfig(table.name, e)}
+                        title="表属性设置"
+                      >
+                        <GearIcon className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                     <div className={`text-xs ${
                       selectedTable === table.name 
                         ? 'text-primary-foreground/70' 
@@ -670,7 +862,13 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                   <div className="space-y-2">
                     <div className="flex justify-between items-center text-sm text-muted-foreground">
                       <span>共 {sqlResult.total} 条结果</span>
-                      <span>耗时 {sqlResult.duration_ms}ms</span>
+                      <div className="flex items-center gap-2">
+                        <span>耗时 {sqlResult.duration_ms}ms</span>
+                        <Button variant="outline" size="sm" onClick={handleExportSql} disabled={!sqlResult.rows.length}>
+                          <DownloadIcon className="h-4 w-4 mr-1" />
+                          导出
+                        </Button>
+                      </div>
                     </div>
                     <DataGrid
                       columns={sqlResult.columns}
@@ -1060,14 +1258,19 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
 
       {/* 创建表对话框 */}
       <Dialog open={createTableDialogOpen} onOpenChange={setCreateTableDialogOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>新建数据表</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
+            {createTableError && (
+              <p className="text-sm text-destructive">{createTableError}</p>
+            )}
+            
+            {/* 表名 */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
-                表名
+                表名 <span className="text-destructive">*</span>
               </label>
               <input
                 type="text"
@@ -1081,8 +1284,149 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
                   }
                 }}
               />
-              {createTableError && (
-                <p className="text-sm text-destructive">{createTableError}</p>
+            </div>
+            
+            {/* ID Strategy */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                ID 生成策略
+              </label>
+              <p className="text-xs text-muted-foreground">创建后不可修改</p>
+              <select
+                value={newTableIdStrategy}
+                onChange={(e) => setNewTableIdStrategy(e.target.value)}
+                className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+              >
+                <option value="snowflake">Snowflake（默认）</option>
+                <option value="uuid">UUID</option>
+                <option value="custom">自定义</option>
+                <option value="user_provided">用户提供</option>
+              </select>
+            </div>
+            
+            {/* Buffer Size */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                Buffer Size
+              </label>
+              <p className="text-xs text-muted-foreground">写入缓冲区大小（记录数）</p>
+              <input
+                type="number"
+                min="1"
+                value={newTableBufferSize}
+                onChange={(e) => setNewTableBufferSize(parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            
+            {/* Flush Interval */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                Flush Interval
+              </label>
+              <p className="text-xs text-muted-foreground">刷新间隔（秒）</p>
+              <input
+                type="number"
+                min="1"
+                value={newTableFlushInterval}
+                onChange={(e) => setNewTableFlushInterval(parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            
+            {/* Retention Days */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                Retention Days
+              </label>
+              <p className="text-xs text-muted-foreground">数据保留天数（0 表示永久保留）</p>
+              <input
+                type="number"
+                min="0"
+                value={newTableRetentionDays}
+                onChange={(e) => setNewTableRetentionDays(parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            
+            {/* Backup Enabled */}
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <label className="text-sm font-medium text-foreground">
+                  Backup Enabled
+                </label>
+                <p className="text-xs text-muted-foreground">是否启用自动备份</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={newTableBackupEnabled}
+                onClick={() => setNewTableBackupEnabled(!newTableBackupEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                  newTableBackupEnabled ? 'bg-primary' : 'bg-input'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                    newTableBackupEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+            
+            {/* Properties 键值对编辑器 */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-foreground">
+                  Properties
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAddNewTableProperty}
+                  className="h-7"
+                >
+                  <PlusCircledIcon className="h-3.5 w-3.5 mr-1" />
+                  添加属性
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">自定义键值对属性</p>
+              
+              {newTableProperties.length === 0 ? (
+                <div className="text-sm text-muted-foreground py-4 text-center border border-dashed border-border rounded-md">
+                  暂无自定义属性
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {newTableProperties.map((prop, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder="键"
+                        value={prop.key}
+                        onChange={(e) => handleUpdateNewTableProperty(index, 'key', e.target.value)}
+                        className="flex-1 px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                      <input
+                        type="text"
+                        placeholder="值"
+                        value={prop.value}
+                        onChange={(e) => handleUpdateNewTableProperty(index, 'value', e.target.value)}
+                        className="flex-1 px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleRemoveNewTableProperty(index)}
+                        className="h-9 w-9 text-destructive hover:text-destructive shrink-0"
+                      >
+                        <MinusCircledIcon className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
@@ -1133,6 +1477,197 @@ SELECT * FROM ${selectedTable || 'table_name'} LIMIT 100;`}
               disabled={deleteTableLoading || deleteTableConfirmName !== selectedTable}
             >
               {deleteTableLoading ? '删除中...' : '确认删除'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 表属性设置对话框 */}
+      <Dialog open={tableConfigDialogOpen} onOpenChange={setTableConfigDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <GearIcon className="h-4 w-4" />
+              表属性设置
+              {tableConfigTarget && <span className="text-muted-foreground font-normal">— {tableConfigTarget}</span>}
+            </DialogTitle>
+          </DialogHeader>
+          
+          {tableConfigLoading && !configLoaded ? (
+            <div className="flex items-center justify-center py-8">
+              <ReloadIcon className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
+              {tableConfigError && (
+                <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
+                  <p className="font-medium">配置加载失败</p>
+                  <p className="mt-1">{tableConfigError}</p>
+                  {!configLoaded && <p className="mt-2 text-xs">保存按钮已禁用，请关闭对话框后重试。</p>}
+                </div>
+              )}
+              {configSuccess && (
+                <div className="rounded-md bg-green-500/10 border border-green-500/20 px-4 py-3 text-sm text-green-600">
+                  {configSuccess}
+                </div>
+              )}
+              
+              {/* ID Strategy (Read-only) */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  ID 生成策略
+                </label>
+                <p className="text-xs text-muted-foreground">创建后不可修改</p>
+                <input
+                  type="text"
+                  value={(() => {
+                    const strategyLabel: Record<string, string> = {
+                      uuid: 'UUID',
+                      snowflake: 'Snowflake',
+                      custom: '自定义',
+                      user_provided: '用户提供',
+                    }
+                    return strategyLabel[configIdStrategy] ?? configIdStrategy
+                  })()}
+                  disabled
+                  className="w-full px-3 py-2 border border-input rounded-md bg-muted text-muted-foreground cursor-not-allowed"
+                />
+              </div>
+              
+              {/* Buffer Size */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  Buffer Size
+                </label>
+                <p className="text-xs text-muted-foreground">写入缓冲区大小（记录数）</p>
+                <input
+                  type="number"
+                  min="1"
+                  value={configBufferSize}
+                  onChange={(e) => setConfigBufferSize(parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              
+              {/* Flush Interval */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  Flush Interval
+                </label>
+                <p className="text-xs text-muted-foreground">刷新间隔（秒）</p>
+                <input
+                  type="number"
+                  min="1"
+                  value={configFlushInterval}
+                  onChange={(e) => setConfigFlushInterval(parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              
+              {/* Retention Days */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  Retention Days
+                </label>
+                <p className="text-xs text-muted-foreground">数据保留天数（0 表示永久保留）</p>
+                <input
+                  type="number"
+                  min="0"
+                  value={configRetentionDays}
+                  onChange={(e) => setConfigRetentionDays(parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              
+              {/* Backup Enabled */}
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <label className="text-sm font-medium text-foreground">
+                    Backup Enabled
+                  </label>
+                  <p className="text-xs text-muted-foreground">是否启用自动备份</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={configBackupEnabled}
+                  onClick={() => setConfigBackupEnabled(!configBackupEnabled)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                    configBackupEnabled ? 'bg-primary' : 'bg-input'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                      configBackupEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+              
+              {/* Properties 键值对编辑器 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-foreground">
+                    Properties
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAddProperty}
+                    className="h-7"
+                  >
+                    <PlusCircledIcon className="h-3.5 w-3.5 mr-1" />
+                    添加属性
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">自定义键值对属性</p>
+                
+                {configProperties.length === 0 ? (
+                  <div className="text-sm text-muted-foreground py-4 text-center border border-dashed border-border rounded-md">
+                    暂无自定义属性
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {configProperties.map((prop, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="键"
+                          value={prop.key}
+                          onChange={(e) => handleUpdateProperty(index, 'key', e.target.value)}
+                          className="flex-1 px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                        <input
+                          type="text"
+                          placeholder="值"
+                          value={prop.value}
+                          onChange={(e) => handleUpdateProperty(index, 'value', e.target.value)}
+                          className="flex-1 px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveProperty(index)}
+                          className="h-9 w-9 text-destructive hover:text-destructive shrink-0"
+                        >
+                          <MinusCircledIcon className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTableConfigDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveTableConfig} disabled={tableConfigLoading || !configLoaded}>
+              {tableConfigLoading ? '保存中...' : '保存'}
             </Button>
           </DialogFooter>
         </DialogContent>

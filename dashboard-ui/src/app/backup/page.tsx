@@ -317,7 +317,7 @@ export default function BackupPage() {
           <div className="rounded-lg border border-border bg-card p-5 lg:col-span-2">
             <h2 className="text-sm font-semibold text-foreground mb-4">手动备份</h2>
             <div className="flex flex-wrap gap-3">
-              <Button onClick={handleMetadataBackup} disabled={!availability?.available || actionLoading === 'metadata'}>
+              <Button variant="outline" onClick={handleMetadataBackup} disabled={!availability?.available || actionLoading === 'metadata'}>
                 {actionLoading === 'metadata' && <ReloadIcon className="w-4 h-4 animate-spin mr-2" />}
                 元数据备份
               </Button>

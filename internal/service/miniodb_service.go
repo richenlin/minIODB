@@ -1358,11 +1358,12 @@ func (s *MinIODBService) CreateTable(ctx context.Context, req *miniodb.CreateTab
 			idValidation.AllowedChars = req.Config.IdValidation.AllowedChars
 		}
 
+		backupEnabled := req.Config.BackupEnabled
 		tableConfig = &config.TableConfig{
 			BufferSize:     int(req.Config.BufferSize),
 			FlushInterval:  time.Duration(req.Config.FlushIntervalSeconds) * time.Second,
 			RetentionDays:  int(req.Config.RetentionDays),
-			BackupEnabled:  req.Config.BackupEnabled,
+			BackupEnabled:  &backupEnabled,
 			Properties:     req.Config.Properties,
 			IDStrategy:     req.Config.IdStrategy,
 			IDPrefix:       req.Config.IdPrefix,
@@ -1438,11 +1439,15 @@ func (s *MinIODBService) ListTables(ctx context.Context, req *miniodb.ListTables
 		// 转换配置
 		var config *miniodb.TableConfig
 		if table.Config != nil {
+			var backupEnabled bool
+			if table.Config.BackupEnabled != nil {
+				backupEnabled = *table.Config.BackupEnabled
+			}
 			config = &miniodb.TableConfig{
 				BufferSize:           int32(table.Config.BufferSize),
 				FlushIntervalSeconds: int32(table.Config.FlushInterval.Seconds()),
 				RetentionDays:        int32(table.Config.RetentionDays),
-				BackupEnabled:        table.Config.BackupEnabled,
+				BackupEnabled:        backupEnabled,
 				Properties:           table.Config.Properties,
 			}
 		}
@@ -1507,11 +1512,15 @@ func (s *MinIODBService) GetTable(ctx context.Context, req *miniodb.GetTableRequ
 	// 转换配置
 	var config *miniodb.TableConfig
 	if tableInfo.Config != nil {
+		var backupEnabled bool
+		if tableInfo.Config.BackupEnabled != nil {
+			backupEnabled = *tableInfo.Config.BackupEnabled
+		}
 		config = &miniodb.TableConfig{
 			BufferSize:           int32(tableInfo.Config.BufferSize),
 			FlushIntervalSeconds: int32(tableInfo.Config.FlushInterval.Seconds()),
 			RetentionDays:        int32(tableInfo.Config.RetentionDays),
-			BackupEnabled:        tableInfo.Config.BackupEnabled,
+			BackupEnabled:        backupEnabled,
 			Properties:           tableInfo.Config.Properties,
 		}
 	}
@@ -1892,6 +1901,12 @@ func (s *MinIODBService) HealthCheck(ctx context.Context) error {
 
 func (s *MinIODBService) GetRedisPool() *pool.RedisPool {
 	return s.redisPool
+}
+
+// GetTableManager returns the table manager instance for table configuration operations.
+// Returns nil if table management is not initialized.
+func (s *MinIODBService) GetTableManager() *TableManager {
+	return s.tableManager
 }
 
 // GetStatus 获取状态
