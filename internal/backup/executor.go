@@ -813,6 +813,32 @@ func (e *Executor) collectTableRedisMetadata(ctx context.Context, tableName stri
 	return metadata, nil
 }
 
+// CleanupByPlan runs retention cleanup for the given plan's backup type and tables.
+// If plan.RetentionDays > 0 it takes precedence over the global config value.
+func (e *Executor) CleanupByPlan(ctx context.Context, backupType string, tables []string, retentionDays int) {
+	if retentionDays <= 0 {
+		return
+	}
+	switch backupType {
+	case BackupTypeFull:
+		if err := e.cleanupExpiredBackups(ctx, retentionDays); err != nil {
+			e.logger.Warn("Failed to cleanup expired full backups after plan execution", zap.Error(err))
+		}
+	case BackupTypeTable:
+		for _, tableName := range tables {
+			if err := e.cleanupExpiredTableBackups(ctx, tableName, retentionDays); err != nil {
+				e.logger.Warn("Failed to cleanup expired table backups after plan execution",
+					zap.String("table", tableName),
+					zap.Error(err))
+			}
+		}
+	case BackupTypeMetadata:
+		if err := e.cleanupExpiredBackups(ctx, retentionDays); err != nil {
+			e.logger.Warn("Failed to cleanup expired metadata backups after plan execution", zap.Error(err))
+		}
+	}
+}
+
 func (e *Executor) cleanupExpiredBackups(ctx context.Context, retentionDays int) error {
 	if retentionDays <= 0 {
 		return nil

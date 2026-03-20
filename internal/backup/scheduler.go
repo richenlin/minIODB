@@ -420,6 +420,11 @@ func (s *Scheduler) executePlan(plan *config.BackupSchedule) {
 				zap.String("execution_id", execID),
 				zap.String("plan_id", plan.ID))
 		}
+
+		// Run retention cleanup using plan-level RetentionDays when set.
+		if plan.RetentionDays > 0 {
+			s.executor.CleanupByPlan(ctx, plan.BackupType, plan.Tables, plan.RetentionDays)
+		}
 	}
 
 	now := time.Now()
