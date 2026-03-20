@@ -222,19 +222,21 @@ func (rc *RuntimeCollector) collect() {
 }
 
 func (rc *RuntimeCollector) determineLoadLevel(snap *RuntimeSnapshot) LoadLevel {
-	levels := make([]LoadLevel, 0, 5)
-
-	levels = append(levels, rc.classifyByGoroutines(snap.Goroutines))
-	levels = append(levels, rc.classifyByMemoryRatio(snap.HeapAllocMB, snap.HeapSysMB))
-	levels = append(levels, rc.classifyByPoolUsage(snap.MinIOPoolUsage))
-	levels = append(levels, rc.classifyByGCPause(snap.GCPauseMs))
-	levels = append(levels, rc.classifyByPendingWrites(snap.PendingWrites))
-
 	maxLevel := LoadIdle
-	for _, level := range levels {
-		if level > maxLevel {
-			maxLevel = level
-		}
+	if l := rc.classifyByGoroutines(snap.Goroutines); l > maxLevel {
+		maxLevel = l
+	}
+	if l := rc.classifyByMemoryRatio(snap.HeapAllocMB, snap.HeapSysMB); l > maxLevel {
+		maxLevel = l
+	}
+	if l := rc.classifyByPoolUsage(snap.MinIOPoolUsage); l > maxLevel {
+		maxLevel = l
+	}
+	if l := rc.classifyByGCPause(snap.GCPauseMs); l > maxLevel {
+		maxLevel = l
+	}
+	if l := rc.classifyByPendingWrites(snap.PendingWrites); l > maxLevel {
+		maxLevel = l
 	}
 	return maxLevel
 }

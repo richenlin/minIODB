@@ -216,7 +216,9 @@ func (m *MinioClientWrapper) GetObjectStream(ctx context.Context, bucketName, ob
 		return nil, err
 	}
 
-	minioMetrics.Finish("success")
+	// "stream_acquired" indicates the handle was obtained successfully;
+	// actual read completion is the caller's responsibility.
+	minioMetrics.Finish("stream_acquired")
 	m.logger.Sugar().Info("Successfully retrieved object stream",
 		zap.String("bucket", bucketName),
 		zap.String("object", objectName))

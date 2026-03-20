@@ -482,22 +482,72 @@ func main() {
 		}
 	}()
 
-	replicator, backupScheduler := initBackupSubsystem(
-		ctx,
-		cfg,
-		poolManager,
-		primaryMinio,
-		metadataManager,
-		redisPool,
-		dashSrv,
-		logger.Logger,
-	)
+	replicator := initReplication(ctx, cfg, poolManager, redisPool, logger.Logger)
+
+	var sseHub *sse.Hub
+	if dashSrv != nil {
+		sseHub = dashSrv.GetHub()
+	}
+	backupScheduler, executor := initBackupSubsystem(ctx, cfg, poolManager, primaryMinio, metadataManager, redisPool, sseHub, logger.Logger)
+
+	// Wire dashboard references after subsystem init
+	if dashSrv != nil {
+		if replicator != nil {
+			dashSrv.SetReplicator(replicator)
+		}
+		if backupScheduler != nil {
+			dashSrv.SetBackupScheduler(backupScheduler)
+		}
+		if executor != nil {
+			dashSrv.SetBackupStore(executor.GetPlanStore())
+		}
+	}
 
 	logger.Sugar.Info("MinIODB server started successfully")
 
 	// 等待中断信号
 	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv, replicator, backupScheduler)
 	logger.Sugar.Info("MinIODB server stopped")
+}
+
+func initReplication(
+	ctx context.Context,
+	cfg *config.Config,
+	poolManager *pool.PoolManager,
+	redisPool *pool.RedisPool,
+	zapLogger *zap.Logger,
+) *replication.Replicator {
+	if !cfg.Backup.Replication.Enabled {
+		return nil
+	}
+
+	srcPool := poolManager.GetMinIOPool()
+	dstPool := poolManager.GetBackupMinIOPool()
+	if dstPool == nil {
+		dstPool = srcPool
+	}
+	dstUploader, err := storage.NewMinioClientWrapperFromClient(dstPool.GetClient(), zapLogger)
+	if err != nil {
+		zapLogger.Sugar().Warnf("Failed to create dst uploader: %v, replication disabled", err)
+		return nil
+	}
+
+	replicator, err := replication.NewReplicator(
+		srcPool,
+		dstUploader,
+		&cfg.Backup.Replication,
+		redisPool,
+		zapLogger,
+		replication.WithReplicatorSnapshotProvider(metrics.GetRuntimeSnapshot),
+	)
+	if err != nil {
+		zapLogger.Sugar().Warnf("Failed to create replicator: %v, replication disabled", err)
+		return nil
+	}
+
+	go replicator.Start(ctx)
+	zapLogger.Sugar().Info("Replicator started")
+	return replicator
 }
 
 func initBackupSubsystem(
@@ -507,84 +557,39 @@ func initBackupSubsystem(
 	primaryMinio storage.Uploader,
 	metadataManager *metadata.Manager,
 	redisPool *pool.RedisPool,
-	dashSrv *dashboard.Server,
+	hub *sse.Hub,
 	zapLogger *zap.Logger,
-) (*replication.Replicator, *backup.Scheduler) {
-	var replicator *replication.Replicator
-	var backupScheduler *backup.Scheduler
+) (*backup.Scheduler, *backup.Executor) {
+	if len(cfg.Backup.Schedules) == 0 && !cfg.Backup.Enabled {
+		return nil, nil
+	}
 
-	if cfg.Backup.Replication.Enabled {
-		srcPool := poolManager.GetMinIOPool()
-		dstPool := poolManager.GetBackupMinIOPool()
-		if dstPool == nil {
-			dstPool = srcPool
+	backupTarget := backup.ResolveBackupTarget(cfg, poolManager, zapLogger)
+	if backupTarget == nil {
+		zapLogger.Sugar().Warn("Backup target not available, scheduler disabled")
+		return nil, nil
+	}
+
+	planStore := backup.NewRedisPlanStore(redisPool, zapLogger)
+	executor := backup.NewExecutor(primaryMinio, backupTarget, metadataManager, redisPool, planStore, cfg, zapLogger)
+	backupScheduler := backup.NewScheduler(executor, planStore, hub, zapLogger)
+
+	for i := range cfg.Backup.Schedules {
+		if cfg.Backup.Schedules[i].ID == "" {
+			cfg.Backup.Schedules[i].ID = fmt.Sprintf("schedule-%d", i)
 		}
-		dstUploader, err := storage.NewMinioClientWrapperFromClient(dstPool.GetClient(), zapLogger)
-		if err != nil {
-			zapLogger.Sugar().Warnf("Failed to create dst uploader: %v, replication disabled", err)
-		} else {
-			replicator, err = replication.NewReplicator(
-				srcPool,
-				dstUploader,
-				&cfg.Backup.Replication,
-				redisPool,
-				zapLogger,
-				replication.WithReplicatorSnapshotProvider(metrics.GetRuntimeSnapshot),
-			)
-			if err != nil {
-				zapLogger.Sugar().Warnf("Failed to create replicator: %v, replication disabled", err)
-			} else {
-				go replicator.Start(ctx)
-				zapLogger.Sugar().Info("Replicator started")
-			}
+		if err := backupScheduler.AddPlan(&cfg.Backup.Schedules[i]); err != nil {
+			zapLogger.Sugar().Warnf("Failed to add backup schedule %s: %v", cfg.Backup.Schedules[i].Name, err)
 		}
 	}
 
-	if len(cfg.Backup.Schedules) > 0 || cfg.Backup.Enabled {
-		backupTarget := backup.ResolveBackupTarget(cfg, poolManager, zapLogger)
-		if backupTarget == nil {
-			zapLogger.Sugar().Warn("Backup target not available, scheduler disabled")
-		} else {
-			planStore := backup.NewRedisPlanStore(redisPool, zapLogger)
-			executor := backup.NewExecutor(primaryMinio, backupTarget, metadataManager, redisPool, planStore, cfg, zapLogger)
-
-			var hub *sse.Hub
-			if dashSrv != nil {
-				hub = dashSrv.GetHub()
-			}
-			backupScheduler = backup.NewScheduler(executor, planStore, hub, zapLogger)
-
-			if dashSrv != nil {
-				dashSrv.SetBackupStore(planStore)
-			}
-
-			for i := range cfg.Backup.Schedules {
-				if cfg.Backup.Schedules[i].ID == "" {
-					cfg.Backup.Schedules[i].ID = fmt.Sprintf("schedule-%d", i)
-				}
-				if err := backupScheduler.AddPlan(&cfg.Backup.Schedules[i]); err != nil {
-					zapLogger.Sugar().Warnf("Failed to add backup schedule %s: %v", cfg.Backup.Schedules[i].Name, err)
-				}
-			}
-
-			if err := backupScheduler.Start(ctx); err != nil {
-				zapLogger.Sugar().Warnf("Failed to start backup scheduler: %v", err)
-			} else {
-				zapLogger.Sugar().Infof("Backup scheduler started - plans: %d", len(cfg.Backup.Schedules))
-			}
-		}
+	if err := backupScheduler.Start(ctx); err != nil {
+		zapLogger.Sugar().Warnf("Failed to start backup scheduler: %v", err)
+	} else {
+		zapLogger.Sugar().Infof("Backup scheduler started - plans: %d", len(cfg.Backup.Schedules))
 	}
 
-	if dashSrv != nil {
-		if replicator != nil {
-			dashSrv.SetReplicator(replicator)
-		}
-		if backupScheduler != nil {
-			dashSrv.SetBackupScheduler(backupScheduler)
-		}
-	}
-
-	return replicator, backupScheduler
+	return backupScheduler, executor
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,

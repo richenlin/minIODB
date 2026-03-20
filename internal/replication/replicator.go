@@ -75,6 +75,7 @@ type Replicator struct {
 	snapshotProvider func() *metrics.RuntimeSnapshot
 
 	mu              sync.RWMutex
+	syncMu          sync.Mutex
 	status          ReplicatorStatus
 	lastSyncTime    time.Time
 	lastSyncCount   int64
@@ -253,6 +254,9 @@ func (r *Replicator) syncOnce(ctx context.Context) error {
 		return ErrReplicatorStopped
 	default:
 	}
+
+	r.syncMu.Lock()
+	defer r.syncMu.Unlock()
 
 	r.mu.Lock()
 	r.status = StatusRunning
@@ -511,6 +515,9 @@ type SyncResult struct {
 }
 
 func (r *Replicator) SyncBucket(ctx context.Context, bucket string) (*SyncResult, error) {
+	r.syncMu.Lock()
+	defer r.syncMu.Unlock()
+
 	result := &SyncResult{}
 	startTime := time.Now()
 

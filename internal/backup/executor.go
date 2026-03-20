@@ -117,6 +117,10 @@ func NewExecutor(
 	}
 }
 
+func (e *Executor) GetPlanStore() PlanStore {
+	return e.planStore
+}
+
 func (e *Executor) FullBackup(ctx context.Context, backupID string, planID string) (*BackupResult, error) {
 	startTime := time.Now()
 
@@ -334,7 +338,7 @@ func (e *Executor) TableBackup(ctx context.Context, tableName string, planID str
 				zap.Error(err))
 		} else {
 			tableConfig = tc
-			if tc != nil && !tc.BackupEnabled {
+			if tc != nil && tc.BackupEnabled != nil && !*tc.BackupEnabled {
 				e.logger.Warn("Table backup is disabled in config, proceeding anyway",
 					zap.String("table", tableName))
 			}
