@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { MiniLine } from '@/components/charts/mini-line'
 import { clusterApi } from '@/lib/api/cluster'
+import { analyticsApi } from '@/lib/api/analytics'
 import { HealthResult, ClusterInfo } from '@/lib/api/types'
 
 interface TablesData {
@@ -21,21 +22,26 @@ export default function OverviewPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // Mock trend data for mini charts
-  const [writeTrend, setWriteTrend] = useState<number[]>(Array(12).fill(0).map(() => Math.random() * 100))
-  const [queryTrend, setQueryTrend] = useState<number[]>(Array(12).fill(0).map(() => Math.random() * 50))
+  // Trend data for mini charts (fetched from API)
+  const [writeTrend, setWriteTrend] = useState<number[]>([])
+  const [queryTrend, setQueryTrend] = useState<number[]>([])
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [healthData, clusterData, tablesData] = await Promise.all([
+        const [healthData, clusterData, tablesData, analyticsData] = await Promise.all([
           clusterApi.getHealth(),
           clusterApi.getInfo(),
           apiClient.get<TablesData>('/tables'),
+          analyticsApi.getOverview(),
         ])
         setHealth(healthData)
         setClusterInfo(clusterData)
         setTables(tablesData)
+        const writeValues = (analyticsData.write_trend ?? []).map(p => p.value)
+        const queryValues = (analyticsData.query_trend ?? []).map(p => p.value)
+        setWriteTrend(writeValues.length > 0 ? writeValues : [])
+        setQueryTrend(queryValues.length > 0 ? queryValues : [])
       } catch (err) {
         setError(err instanceof Error ? err.message : '数据加载失败')
       } finally {
@@ -44,13 +50,17 @@ export default function OverviewPage() {
     }
     fetchData()
 
-    // Simulate trend updates
-    const interval = setInterval(() => {
-      setWriteTrend(prev => [...prev.slice(1), Math.random() * 100])
-      setQueryTrend(prev => [...prev.slice(1), Math.random() * 50])
-    }, 2000)
+    const trendInterval = setInterval(async () => {
+      try {
+        const data = await analyticsApi.getOverview()
+        const writeValues = (data.write_trend ?? []).map(p => p.value)
+        const queryValues = (data.query_trend ?? []).map(p => p.value)
+        setWriteTrend(writeValues.length > 0 ? writeValues : [])
+        setQueryTrend(queryValues.length > 0 ? queryValues : [])
+      } catch { /* silent fail */ }
+    }, 60_000)
 
-    return () => clearInterval(interval)
+    return () => clearInterval(trendInterval)
   }, [])
 
   const isHealthy = health?.status === 'healthy'
@@ -117,7 +127,7 @@ export default function OverviewPage() {
             </CardHeader>
             <CardContent className="pt-0">
               <MiniLine data={writeTrend} color="#22c55e" height={80} />
-              <p className="text-xs text-muted-foreground mt-2">操作/秒 (模拟数据)</p>
+              <p className="text-xs text-muted-foreground mt-2">写入量趋势（5 分钟间隔，最近 24h）</p>
             </CardContent>
           </Card>
 
@@ -127,7 +137,7 @@ export default function OverviewPage() {
             </CardHeader>
             <CardContent className="pt-0">
               <MiniLine data={queryTrend} color="#6366f1" height={80} />
-              <p className="text-xs text-muted-foreground mt-2">查询/秒 (模拟数据)</p>
+              <p className="text-xs text-muted-foreground mt-2">查询量趋势（5 分钟间隔，最近 24h）</p>
             </CardContent>
           </Card>
         </div>

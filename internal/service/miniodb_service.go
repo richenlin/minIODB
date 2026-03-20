@@ -2127,6 +2127,8 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 	// 查询引擎性能指标
 	if s.querier != nil {
 		if queryStats := s.querier.GetQueryStats(); queryStats != nil {
+			// 总查询计数（用于 dashboard 时序数据）
+			performanceMetrics["total_queries"] = float64(queryStats.TotalQueries)
 			// 计算查询性能指标
 			if queryStats.TotalQueries > 0 {
 				performanceMetrics["query_success_rate"] = float64(queryStats.TotalQueries-queryStats.ErrorCount) / float64(queryStats.TotalQueries)

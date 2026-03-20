@@ -156,6 +156,18 @@ func (h *QueryMetricsHistory) GetP99() float64 {
 	return h.GetPercentile(0.99)
 }
 
+// Count 返回已记录的延迟数量
+func (h *QueryMetricsHistory) Count() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.latencies)
+}
+
+// GetMetricsHistory 返回查询延迟历史记录
+func (m *SLAMonitor) GetMetricsHistory() *QueryMetricsHistory {
+	return m.metrics
+}
+
 // NewSLAMonitor 创建SLA监控器
 func NewSLAMonitor(config *SLAConfig, logger *zap.Logger) *SLAMonitor {
 	return &SLAMonitor{

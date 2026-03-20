@@ -36,16 +36,29 @@ import (
 // The minimum is 1 minute (to avoid overwhelming the DB with COUNT(*) queries);
 // values below that threshold fall back to 5 minutes.
 
+type metricsSnapshot struct {
+	Timestamp    int64
+	WriteCount   int64
+	QueryCount   int64
+	TotalRecords int64
+}
+
 // statsCache holds pre-computed cluster statistics.
 // All fields are protected by mu; reads return the last-known-good value
 // immediately, even while a refresh is in progress.
 type statsCache struct {
-	mu            sync.RWMutex
-	totalRecords  int64
-	pendingWrites int64
-	tablesCount   int
-	nodesCount    int
-	refreshedAt   time.Time
+	mu              sync.RWMutex
+	totalRecords    int64
+	pendingWrites   int64
+	tablesCount     int
+	nodesCount      int
+	refreshedAt     time.Time
+	snapshots       []metricsSnapshot
+	snapshotHead    int
+	snapshotCount   int
+	snapshotMu      sync.RWMutex
+	prevTotalRecord int64
+	prevQueryCount  int64
 }
 
 type contextKey string
@@ -85,6 +98,7 @@ type Server struct {
 	stats                *statsCache
 	stopStats            context.CancelFunc
 	statsRefreshInterval time.Duration
+	slaMonitor           *metrics.SLAMonitor
 	backupScheduler      interface {
 		ListPlans() []*config.BackupSchedule
 		AddPlan(plan *config.BackupSchedule) error
@@ -129,6 +143,8 @@ func NewServer(svc *service.MinIODBService, cfg *config.Config, logger *zap.Logg
 		statsInterval = 5 * time.Minute
 	}
 
+	slaMonitor := metrics.NewSLAMonitor(metrics.DefaultSLAConfig(), logger)
+
 	srv := &Server{
 		svc:                  svc,
 		cfg:                  cfg,
@@ -136,9 +152,10 @@ func NewServer(svc *service.MinIODBService, cfg *config.Config, logger *zap.Logg
 		authManager:          authManager,
 		hub:                  hub,
 		logBuffer:            logBuffer,
-		stats:                &statsCache{},
+		stats:                &statsCache{snapshots: make([]metricsSnapshot, 288)},
 		stopStats:            cancel,
 		statsRefreshInterval: statsInterval,
+		slaMonitor:           slaMonitor,
 	}
 
 	go srv.runStatsCollector(statsCtx)
@@ -230,14 +247,52 @@ func (s *Server) refreshStats(ctx context.Context) {
 		nodesCount = 1
 	}
 
-	// --- atomically update the cache -----------------------------------------
+	// --- get query count from metrics -----------------------------------------
+	var currentQueryCount int64
+	if metricsResp, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{}); err == nil && metricsResp != nil {
+		if v, ok := metricsResp.PerformanceMetrics["total_queries"]; ok {
+			currentQueryCount = int64(v)
+		}
+	}
+
+	// --- atomically update the cache (all diff calculations under mu) ---------
+	var writeDiff, queryDiff int64
 	s.stats.mu.Lock()
+	prevTotal := s.stats.prevTotalRecord
+	writeDiff = totalRecords - prevTotal
+	if writeDiff < 0 {
+		writeDiff = 0
+	}
+	s.stats.prevTotalRecord = totalRecords
+
+	prevQuery := s.stats.prevQueryCount
+	queryDiff = currentQueryCount - prevQuery
+	if queryDiff < 0 {
+		queryDiff = 0
+	}
+	s.stats.prevQueryCount = currentQueryCount
+
 	s.stats.totalRecords = totalRecords
 	s.stats.pendingWrites = pendingWrites
 	s.stats.tablesCount = tablesCount
 	s.stats.nodesCount = nodesCount
 	s.stats.refreshedAt = time.Now()
 	s.stats.mu.Unlock()
+
+	s.stats.snapshotMu.Lock()
+	snapshot := metricsSnapshot{
+		Timestamp:    time.Now().Unix(),
+		WriteCount:   writeDiff,
+		QueryCount:   queryDiff,
+		TotalRecords: totalRecords,
+	}
+	capacity := len(s.stats.snapshots)
+	s.stats.snapshots[s.stats.snapshotHead] = snapshot
+	s.stats.snapshotHead = (s.stats.snapshotHead + 1) % capacity
+	if s.stats.snapshotCount < capacity {
+		s.stats.snapshotCount++
+	}
+	s.stats.snapshotMu.Unlock()
 
 	s.logger.Debug("stats cache refreshed",
 		zap.Int64("total_records", totalRecords),
@@ -1497,13 +1552,17 @@ func (s *Server) querySQL(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	start := time.Now()
 	resp, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{Sql: req.SQL})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Parse JSON result
+	if s.slaMonitor != nil && err == nil {
+		s.slaMonitor.RecordQueryLatency(time.Since(start))
+	}
+
 	var rows []map[string]interface{}
 	var columns []string
 	if resp.ResultJson != "" {
@@ -1737,6 +1796,17 @@ func (s *Server) monitorStream(c *gin.Context) {
 }
 
 func (s *Server) slaMetrics(c *gin.Context) {
+	if s.slaMonitor != nil && s.slaMonitor.GetMetricsHistory().Count() > 0 {
+		history := s.slaMonitor.GetMetricsHistory()
+		sla := &model.SLAResult{
+			QueryLatencyP50Ms: history.GetP50() * 1000,
+			QueryLatencyP95Ms: history.GetP95() * 1000,
+			QueryLatencyP99Ms: history.GetP99() * 1000,
+		}
+		c.JSON(http.StatusOK, sla)
+		return
+	}
+
 	ctx := c.Request.Context()
 	resp, err := s.svc.GetMetrics(ctx, &miniodbv1.GetMetricsRequest{})
 	if err != nil {
@@ -1770,13 +1840,17 @@ func (s *Server) analyticsQuery(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	start := time.Now()
 	resp, err := s.svc.QueryData(ctx, &miniodbv1.QueryDataRequest{Sql: req.Query})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Parse JSON result
+	if s.slaMonitor != nil && err == nil {
+		s.slaMonitor.RecordQueryLatency(time.Since(start))
+	}
+
 	var rows []map[string]interface{}
 	var columns []string
 	if resp.ResultJson != "" {
@@ -1796,11 +1870,29 @@ func (s *Server) analyticsQuery(c *gin.Context) {
 }
 
 func (s *Server) analyticsOverview(c *gin.Context) {
-	// Return empty analytics overview
+	s.stats.snapshotMu.RLock()
+	snapshots := make([]metricsSnapshot, s.stats.snapshotCount)
+	if s.stats.snapshotCount > 0 {
+		capacity := len(s.stats.snapshots)
+		for i := 0; i < s.stats.snapshotCount; i++ {
+			idx := (s.stats.snapshotHead - s.stats.snapshotCount + i + capacity) % capacity
+			snapshots[i] = s.stats.snapshots[idx]
+		}
+	}
+	s.stats.snapshotMu.RUnlock()
+
+	writeTrend := make([]map[string]interface{}, len(snapshots))
+	queryTrend := make([]map[string]interface{}, len(snapshots))
+	dataVolume := make([]map[string]interface{}, len(snapshots))
+	for i, snap := range snapshots {
+		writeTrend[i] = map[string]interface{}{"timestamp": snap.Timestamp, "value": snap.WriteCount}
+		queryTrend[i] = map[string]interface{}{"timestamp": snap.Timestamp, "value": snap.QueryCount}
+		dataVolume[i] = map[string]interface{}{"timestamp": snap.Timestamp, "value": snap.TotalRecords}
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"write_trend": []interface{}{},
-		"query_trend": []interface{}{},
-		"data_volume": []interface{}{},
+		"write_trend": writeTrend,
+		"query_trend": queryTrend,
+		"data_volume": dataVolume,
 	})
 }
 
