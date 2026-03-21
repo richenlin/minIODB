@@ -62,8 +62,8 @@ func NewStorageFactory(cfg *config.Config, logger *zap.Logger) (StorageFactory, 
 		}
 	}
 
-	// 如果配置了备份MinIO，添加到配置中
-	if cfg.Backup.Enabled && cfg.GetBackupMinIO().Endpoint != "" {
+	// 如果配置了备份MinIO，添加到配置中（不依赖 backup.enabled，replication 等功能也需要备份池）
+	if cfg.GetBackupMinIO().Endpoint != "" {
 		poolConfig.BackupMinIO = getBackupMinIOPoolConfig(cfg)
 	}
 

@@ -211,6 +211,11 @@ func (s *Scheduler) RemovePlan(id string) error {
 		return fmt.Errorf("plan not found: %s", id)
 	}
 
+	// 系统内置计划不可删除，只能停用
+	if plan.System {
+		return fmt.Errorf("cannot remove system plan %q, use disable instead", id)
+	}
+
 	if s.running && plan.Enabled {
 		if entryID, exists := s.entryIDs[id]; exists {
 			s.cron.Remove(entryID)

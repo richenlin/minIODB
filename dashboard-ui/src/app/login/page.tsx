@@ -62,7 +62,7 @@ export default function LoginPage() {
                 type="text"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="来自 config.yaml auth.api_key_pairs 的 key"
+                placeholder="key"
                 required
                 autoFocus
                 autoComplete="username"
@@ -79,7 +79,7 @@ export default function LoginPage() {
                 type="password"
                 value={apiSecret}
                 onChange={(e) => setApiSecret(e.target.value)}
-                placeholder="来自 config.yaml auth.api_key_pairs 的 secret"
+                placeholder="secret"
                 required
                 autoComplete="current-password"
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
@@ -91,8 +91,7 @@ export default function LoginPage() {
               <div className="flex items-start gap-1.5">
                 <InfoCircledIcon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 <p>
-                  凭证来自 <code className="bg-muted rounded px-1">config.yaml → auth.api_key_pairs</code> 的 <code className="bg-muted rounded px-1">key</code> 和 <code className="bg-muted rounded px-1">secret</code>。
-                  Secret 同时作为 JWT 的签名密钥。
+                  凭证来自 <code className="bg-muted rounded px-1">auth.api_key_pairs</code>
                 </p>
               </div>
             </div>

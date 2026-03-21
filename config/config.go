@@ -338,6 +338,7 @@ type BackupSchedule struct {
 	BackupType    string        `yaml:"backup_type" json:"backup_type"`
 	Tables        []string      `yaml:"tables" json:"tables"`
 	RetentionDays int           `yaml:"retention_days" json:"retention_days"`
+	System        bool          `yaml:"system" json:"system"` // true=系统内置计划，不可删除但可停止
 	CreatedAt     time.Time     `yaml:"created_at" json:"created_at"`
 	UpdatedAt     time.Time     `yaml:"updated_at" json:"updated_at"`
 
@@ -1530,8 +1531,11 @@ func (c *Config) syncPoolsMinIOFromLegacy() {
 	}
 }
 
-// migrateBackupSchedule 向后兼容：如果 schedules 为空但有 interval，创建默认计划
+// migrateBackupSchedule 向后兼容：仅在 backup.enabled=true 且 schedules 为空但有 interval 时，创建默认计划
 func (c *Config) migrateBackupSchedule() {
+	if !c.Backup.Enabled {
+		return
+	}
 	if len(c.Backup.Schedules) == 0 && c.Backup.Interval > 0 {
 		c.Backup.Schedules = []BackupSchedule{
 			{

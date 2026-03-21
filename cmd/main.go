@@ -522,15 +522,14 @@ func initReplication(
 	redisPool *pool.RedisPool,
 	zapLogger *zap.Logger,
 ) *replication.Replicator {
-	if !cfg.Backup.Replication.Enabled {
+	backupPool := poolManager.GetBackupMinIOPool()
+	if backupPool == nil {
+		zapLogger.Sugar().Info("Backup MinIO not configured, replication disabled")
 		return nil
 	}
 
 	srcPool := poolManager.GetMinIOPool()
-	dstPool := poolManager.GetBackupMinIOPool()
-	if dstPool == nil {
-		dstPool = srcPool
-	}
+	dstPool := backupPool
 	dstUploader, err := storage.NewMinioClientWrapperFromClient(dstPool.GetClient(), zapLogger)
 	if err != nil {
 		zapLogger.Sugar().Warnf("Failed to create dst uploader: %v, replication disabled", err)
@@ -565,9 +564,13 @@ func initBackupSubsystem(
 	hub *sse.Hub,
 	zapLogger *zap.Logger,
 ) (*backup.Scheduler, *backup.Executor) {
-	if len(cfg.Backup.Schedules) == 0 && !cfg.Backup.Enabled {
+	// 冷备总开关：backup.enabled 控制
+	if !cfg.Backup.Enabled {
 		return nil, nil
 	}
+
+	// backup.enabled=true：注入系统内置备份计划
+	injectSystemPlans(cfg, zapLogger)
 
 	backupTarget := backup.ResolveBackupTarget(cfg, poolManager, zapLogger)
 	if backupTarget == nil {
@@ -595,6 +598,56 @@ func initBackupSubsystem(
 	}
 
 	return backupScheduler, executor
+}
+
+// injectSystemPlans 注入系统内置备份计划（backup.enabled=true 时调用）
+func injectSystemPlans(cfg *config.Config, zapLogger *zap.Logger) {
+	hasMetadataPlan := false
+	hasFullPlan := false
+	for _, s := range cfg.Backup.Schedules {
+		if s.BackupType == "metadata" {
+			hasMetadataPlan = true
+		}
+		if s.BackupType == "full" {
+			hasFullPlan = true
+		}
+	}
+
+	// 自动元数据备份计划
+	if !hasMetadataPlan && cfg.Backup.Metadata.Enabled {
+		interval := cfg.Backup.Metadata.Interval
+		if interval <= 0 {
+			interval = 30 * time.Minute
+		}
+		cfg.Backup.Schedules = append(cfg.Backup.Schedules, config.BackupSchedule{
+			ID:            "system-metadata-backup",
+			Name:          "System Metadata Backup",
+			Enabled:       true,
+			BackupType:    "metadata",
+			Interval:      interval,
+			RetentionDays: 7,
+			System:        true,
+		})
+		zapLogger.Sugar().Infof("Injected system metadata backup plan (interval: %v)", interval)
+	}
+
+	// 自动全量备份计划
+	if !hasFullPlan {
+		interval := time.Duration(cfg.Backup.Interval) * time.Second
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+		cfg.Backup.Schedules = append(cfg.Backup.Schedules, config.BackupSchedule{
+			ID:            "system-full-backup",
+			Name:          "System Full Backup",
+			Enabled:       true,
+			BackupType:    "full",
+			Interval:      interval,
+			RetentionDays: 7,
+			System:        true,
+		})
+		zapLogger.Sugar().Infof("Injected system full backup plan (interval: %v)", interval)
+	}
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
