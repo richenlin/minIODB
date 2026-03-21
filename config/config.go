@@ -312,8 +312,8 @@ type TimeWindow struct {
 }
 
 // ReplicationConfig 热备复制配置
+// 注意：热备是系统行为，存在 backup_minio 连接池则自动开启，无需 Enabled 开关
 type ReplicationConfig struct {
-	Enabled             bool          `yaml:"enabled" json:"enabled"`
 	Interval            int           `yaml:"interval" json:"interval"`                         // 同步间隔（秒）
 	Workers             int           `yaml:"workers" json:"workers"`                           // 并发 worker 数量
 	MaxQPS              int           `yaml:"max_qps" json:"max_qps"`                           // MinIO API QPS 上限
@@ -425,7 +425,6 @@ type MetadataBackupConfig struct {
 // UnmarshalYAML 自定义 YAML 解析以处理 RetryDelay 字段
 func (r *ReplicationConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type ReplicationConfigRaw struct {
-		Enabled             bool        `yaml:"enabled"`
 		Interval            int         `yaml:"interval"`
 		Workers             int         `yaml:"workers"`
 		MaxQPS              int         `yaml:"max_qps"`
@@ -444,7 +443,6 @@ func (r *ReplicationConfig) UnmarshalYAML(unmarshal func(interface{}) error) err
 		return err
 	}
 
-	r.Enabled = raw.Enabled
 	r.Interval = raw.Interval
 	r.Workers = raw.Workers
 	r.MaxQPS = raw.MaxQPS
@@ -1156,7 +1154,6 @@ func (c *Config) setDefaults() {
 			Bucket:        "olap-metadata",  // 默认元数据存储桶
 		},
 		Replication: ReplicationConfig{
-			Enabled:             false,
 			Interval:            3600, // 1小时同步一次
 			Workers:             4,    // 4个并发 worker
 			MaxQPS:              50,   // QPS 上限 50
@@ -1847,7 +1844,7 @@ func (c *Config) validate() error {
 	}
 
 	// 验证热备复制的时间窗口时区
-	if c.Backup.Replication.Enabled && c.Backup.Replication.ActiveWindow != nil {
+	if c.Backup.Replication.ActiveWindow != nil {
 		if err := c.validateTimeWindow(c.Backup.Replication.ActiveWindow); err != nil {
 			return fmt.Errorf("replication active_window validation failed: %w", err)
 		}
