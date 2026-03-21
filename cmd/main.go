@@ -601,19 +601,17 @@ func initBackupSubsystem(
 }
 
 // injectSystemPlans 注入系统内置备份计划（backup.enabled=true 时调用）
+// 策略：默认开启元数据备份计划；全量备份不自动规划，由用户手动发起
 func injectSystemPlans(cfg *config.Config, zapLogger *zap.Logger) {
 	hasMetadataPlan := false
-	hasFullPlan := false
 	for _, s := range cfg.Backup.Schedules {
 		if s.BackupType == "metadata" {
 			hasMetadataPlan = true
-		}
-		if s.BackupType == "full" {
-			hasFullPlan = true
+			break
 		}
 	}
 
-	// 自动元数据备份计划
+	// 自动注入元数据备份计划（默认开启）
 	if !hasMetadataPlan && cfg.Backup.Metadata.Enabled {
 		interval := cfg.Backup.Metadata.Interval
 		if interval <= 0 {
@@ -631,23 +629,7 @@ func injectSystemPlans(cfg *config.Config, zapLogger *zap.Logger) {
 		zapLogger.Sugar().Infof("Injected system metadata backup plan (interval: %v)", interval)
 	}
 
-	// 自动全量备份计划
-	if !hasFullPlan {
-		interval := time.Duration(cfg.Backup.Interval) * time.Second
-		if interval <= 0 {
-			interval = 24 * time.Hour
-		}
-		cfg.Backup.Schedules = append(cfg.Backup.Schedules, config.BackupSchedule{
-			ID:            "system-full-backup",
-			Name:          "System Full Backup",
-			Enabled:       true,
-			BackupType:    "full",
-			Interval:      interval,
-			RetentionDays: 7,
-			System:        true,
-		})
-		zapLogger.Sugar().Infof("Injected system full backup plan (interval: %v)", interval)
-	}
+	// 全量备份不自动规划，由用户通过 Dashboard 手动发起
 }
 
 func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
