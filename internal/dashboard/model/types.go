@@ -323,7 +323,44 @@ type EnableDistributedRequest struct {
 
 // EnableDistributedResult is returned after processing an enable-distributed request.
 type EnableDistributedResult struct {
-	ConfigSnippet   string `json:"config_snippet"`
-	RestartRequired bool   `json:"restart_required"`
-	Message         string `json:"message"`
+	ConfigSnippet     string   `json:"config_snippet"`
+	RestartRequired   bool     `json:"restart_required"`
+	Message           string   `json:"message"`
+	Connected         bool     `json:"connected"`
+	ComponentsUpdated []string `json:"components_updated"`
+}
+
+// NodeMetricsResult 节点指标返回结果
+type NodeMetricsResult struct {
+	NodeID  string      `json:"node_id"`
+	Metrics interface{} `json:"metrics"`
+}
+
+// NodeEventsResult 节点事件返回结果
+type NodeEventsResult struct {
+	NodeID string      `json:"node_id"`
+	Events interface{} `json:"events"`
+	Total  int         `json:"total"`
+}
+
+// NodeOperationResult 节点操作返回结果
+type NodeOperationResult struct {
+	NodeID  string `json:"node_id"`
+	Action  string `json:"action"`
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// NodeDetailResult 节点详情返回结果
+type NodeDetailResult struct {
+	ID        string            `json:"id"`
+	Address   string            `json:"address"`
+	Port      string            `json:"port"`
+	State     string            `json:"state"`
+	Status    string            `json:"status"`
+	LastSeen  time.Time         `json:"last_seen"`
+	StartTime time.Time         `json:"start_time"`
+	Metrics   interface{}       `json:"metrics,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }

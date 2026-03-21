@@ -286,6 +286,10 @@ func (tm *TableManager) ListTables(ctx context.Context, pattern string) ([]*Tabl
 	}
 
 	redisClient := tm.redisPool.GetClient()
+	if redisClient == nil {
+		// Redis client 不可用，降级到 MinIO
+		return tm.listTablesFromMinio(ctx, pattern)
+	}
 
 	// 获取所有表名
 	tableNames, err := redisClient.SMembers(ctx, "tables:list").Result()

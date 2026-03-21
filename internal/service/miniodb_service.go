@@ -2173,35 +2173,37 @@ func (s *MinIODBService) GetMetrics(ctx context.Context, req *miniodb.GetMetrics
 	// Redis资源使用
 	if s.redisPool != nil {
 		redisClient := s.redisPool.GetClient()
-		if poolStats := s.redisPool.GetStats(); poolStats != nil {
-			resourceUsage["redis_total_connections"] = int64(poolStats.TotalConns)
-			resourceUsage["redis_idle_connections"] = int64(poolStats.IdleConns)
-			resourceUsage["redis_active_connections"] = int64(poolStats.TotalConns - poolStats.IdleConns)
-		}
+		if redisClient != nil {
+			if poolStats := s.redisPool.GetStats(); poolStats != nil {
+				resourceUsage["redis_total_connections"] = int64(poolStats.TotalConns)
+				resourceUsage["redis_idle_connections"] = int64(poolStats.IdleConns)
+				resourceUsage["redis_active_connections"] = int64(poolStats.TotalConns - poolStats.IdleConns)
+			}
 
-		// Redis内存使用
-		if info, err := redisClient.Info(ctx, "memory").Result(); err == nil {
-			lines := strings.Split(info, "\r\n")
-			for _, line := range lines {
-				if strings.HasPrefix(line, "used_memory:") {
-					if parts := strings.Split(line, ":"); len(parts) == 2 {
-						if memUsage, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-							resourceUsage["redis_memory_bytes"] = memUsage
+			// Redis内存使用
+			if info, err := redisClient.Info(ctx, "memory").Result(); err == nil {
+				lines := strings.Split(info, "\r\n")
+				for _, line := range lines {
+					if strings.HasPrefix(line, "used_memory:") {
+						if parts := strings.Split(line, ":"); len(parts) == 2 {
+							if memUsage, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+								resourceUsage["redis_memory_bytes"] = memUsage
+							}
 						}
-					}
-				} else if strings.HasPrefix(line, "used_memory_peak:") {
-					if parts := strings.Split(line, ":"); len(parts) == 2 {
-						if memPeak, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-							resourceUsage["redis_memory_peak_bytes"] = memPeak
+					} else if strings.HasPrefix(line, "used_memory_peak:") {
+						if parts := strings.Split(line, ":"); len(parts) == 2 {
+							if memPeak, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+								resourceUsage["redis_memory_peak_bytes"] = memPeak
+							}
 						}
 					}
 				}
 			}
-		}
 
-		// Redis键数量
-		if dbSize, err := redisClient.DBSize(ctx).Result(); err == nil {
-			resourceUsage["redis_total_keys"] = dbSize
+			// Redis键数量
+			if dbSize, err := redisClient.DBSize(ctx).Result(); err == nil {
+				resourceUsage["redis_total_keys"] = dbSize
+			}
 		}
 	}
 

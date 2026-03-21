@@ -21,14 +21,17 @@ import (
 	miniodbv1 "minIODB/api/proto/miniodb/v1"
 	"minIODB/config"
 	"minIODB/internal/backup"
+	"minIODB/internal/coordinator"
 	"minIODB/internal/dashboard/logbuffer"
 	"minIODB/internal/dashboard/model"
 	"minIODB/internal/dashboard/sse"
+	"minIODB/internal/discovery"
 	"minIODB/internal/metrics"
 	"minIODB/internal/replication"
 	"minIODB/internal/security"
 	"minIODB/internal/service"
 	"minIODB/internal/storage"
+	"minIODB/pkg/pool"
 	"minIODB/pkg/version"
 )
 
@@ -109,7 +112,11 @@ type Server struct {
 	backupStore interface {
 		ListExecutions(ctx context.Context, planID string, limit int) ([]*backup.BackupExecution, error)
 	}
-	replicator ReplicatorStatsProvider
+	replicator  ReplicatorStatsProvider
+	poolManager *pool.PoolManager
+	configPath  string
+	registry    *discovery.ServiceRegistry
+	queryCoord  *coordinator.QueryCoordinator
 }
 
 // getMinIOClient returns a MinIO client for backup bucket operations (uses backup pool config when set).
@@ -305,7 +312,8 @@ func (s *Server) refreshStats(ctx context.Context) {
 func (s *Server) getMode() string {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
-	if s.cfg.Network.Pools.Redis.Mode == "cluster" || s.cfg.Network.Pools.Redis.Mode == "sentinel" {
+	// 只要 Redis 启用，就是分布式模式（无论 standalone/cluster/sentinel）
+	if s.cfg.Network.Pools.Redis.Enabled {
 		return "distributed"
 	}
 	return "standalone"
@@ -341,6 +349,11 @@ func (s *Server) MountRoutes(group *gin.RouterGroup) {
 
 		auth.GET("/nodes", s.listNodes)
 		auth.GET("/nodes/:id", s.getNode)
+		auth.POST("/nodes/:id/decommission", s.decommissionNode)
+		auth.POST("/nodes/:id/recommission", s.recommissionNode)
+		auth.DELETE("/nodes/:id", s.removeNode)
+		auth.GET("/nodes/:id/metrics", s.getNodeMetrics)
+		auth.GET("/nodes/:id/events", s.getNodeEvents)
 
 		auth.GET("/tables", s.listTables)
 		auth.GET("/tables/:name", s.getTable)
@@ -931,19 +944,89 @@ func (s *Server) enableDistributed(c *gin.Context) {
 		return
 	}
 
-	// Update config in memory
+	newPoolCfg := &pool.RedisPoolConfig{
+		Mode:             pool.RedisMode(req.RedisMode),
+		Addr:             req.RedisAddr,
+		Password:         req.RedisPassword,
+		DB:               req.RedisDB,
+		MasterName:       req.MasterName,
+		SentinelAddrs:    req.SentinelAddrs,
+		SentinelPassword: req.SentinelPassword,
+		ClusterAddrs:     req.ClusterAddrs,
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	testPool, err := pool.NewRedisPool(newPoolCfg, s.logger)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("Failed to create Redis pool: %v", err),
+		})
+		return
+	}
+	if err := testPool.HealthCheck(ctx); err != nil {
+		testPool.Close()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("Redis connection test failed: %v", err),
+		})
+		return
+	}
+	testPool.Close()
+	var newPool *pool.RedisPool
+	var componentsUpdated []string
+	if s.poolManager != nil {
+		if err := s.poolManager.UpdateRedisPool(newPoolCfg); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		newPool = s.poolManager.GetRedisPool()
+		componentsUpdated = append(componentsUpdated, "PoolManager")
+	}
+	if s.registry != nil && newPool != nil {
+		if err := s.registry.SwitchToDistributed(newPool); err != nil {
+			s.logger.Warn("ServiceRegistry switch failed", zap.Error(err))
+		} else {
+			componentsUpdated = append(componentsUpdated, "ServiceRegistry")
+		}
+	}
+	if s.queryCoord != nil && newPool != nil {
+		s.queryCoord.UpdateRedisPool(newPool)
+		componentsUpdated = append(componentsUpdated, "QueryCoordinator")
+	}
 	s.cfgMu.Lock()
 	cfg := s.cfg
 	cfg.Network.Pools.Redis.Mode = req.RedisMode
 	cfg.Network.Pools.Redis.Addr = req.RedisAddr
 	cfg.Network.Pools.Redis.Password = req.RedisPassword
 	cfg.Network.Pools.Redis.DB = req.RedisDB
+	cfg.Network.Pools.Redis.Enabled = true
 	cfg.Network.Pools.Redis.MasterName = req.MasterName
 	cfg.Network.Pools.Redis.SentinelAddrs = req.SentinelAddrs
+	cfg.Network.Pools.Redis.SentinelPassword = req.SentinelPassword
 	cfg.Network.Pools.Redis.ClusterAddrs = req.ClusterAddrs
 	s.cfgMu.Unlock()
+	restartRequired := true
+	s.depsMu.RLock()
+	configPath := s.configPath
+	s.depsMu.RUnlock()
+	if configPath != "" {
+		if err := config.SaveToFile(s.cfg, configPath); err != nil {
+			s.logger.Warn("Failed to persist config to file", zap.Error(err))
+		} else {
+			restartRequired = false
+			s.logger.Info("Config persisted", zap.String("path", configPath))
+		}
+	}
+	snippet := generateConfigSnippet(req)
+	c.JSON(http.StatusOK, &model.EnableDistributedResult{
+		ConfigSnippet:     snippet,
+		RestartRequired:   restartRequired,
+		Message:           "Distributed mode enabled successfully",
+		Connected:         true,
+		ComponentsUpdated: componentsUpdated,
+	})
+}
 
-	// Generate YAML snippet
+func generateConfigSnippet(req model.EnableDistributedRequest) string {
 	snippet := fmt.Sprintf(`# Add to config.yaml and restart:
 network:
   pools:
@@ -951,19 +1034,13 @@ network:
       mode: %s
       addr: %s
 `, req.RedisMode, req.RedisAddr)
-
 	if req.RedisMode == "sentinel" && len(req.SentinelAddrs) > 0 {
 		snippet += "      sentinel_addrs:\n"
 		for _, addr := range req.SentinelAddrs {
 			snippet += fmt.Sprintf("        - %s\n", addr)
 		}
 	}
-
-	c.JSON(http.StatusOK, &model.EnableDistributedResult{
-		ConfigSnippet:   snippet,
-		RestartRequired: true,
-		Message:         "Distributed mode enabled. Restart required.",
-	})
+	return snippet
 }
 
 func (s *Server) clusterConfig(c *gin.Context) {
@@ -980,55 +1057,6 @@ func (s *Server) clusterConfig(c *gin.Context) {
 		"mode":           s.getMode(),
 	})
 	s.cfgMu.RUnlock()
-}
-
-func (s *Server) getNode(c *gin.Context) {
-	id := c.Param("id")
-	ctx := c.Request.Context()
-
-	st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	for _, n := range st.Nodes {
-		if n.Id == id {
-			c.JSON(http.StatusOK, &model.NodeResult{
-				ID:       n.Id,
-				Address:  n.Address,
-				Port:     "",
-				Status:   n.Status,
-				LastSeen: time.Unix(n.LastSeen, 0),
-				Metadata: map[string]string{"type": n.Type},
-			})
-			return
-		}
-	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
-}
-
-func (s *Server) listNodes(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	var nodes []*model.NodeResult
-	for _, n := range st.Nodes {
-		nodes = append(nodes, &model.NodeResult{
-			ID:       n.Id,
-			Address:  n.Address,
-			Port:     "",
-			Status:   n.Status,
-			LastSeen: time.Unix(n.LastSeen, 0),
-			Metadata: map[string]string{"type": n.Type},
-		})
-	}
-	c.JSON(http.StatusOK, gin.H{"nodes": nodes, "total": len(nodes)})
 }
 
 func (s *Server) listTables(c *gin.Context) {
@@ -2287,6 +2315,30 @@ func (s *Server) SetReplicator(replicator ReplicatorStatsProvider) {
 	s.depsMu.Unlock()
 }
 
+func (s *Server) SetPoolManager(pm *pool.PoolManager) {
+	s.depsMu.Lock()
+	s.poolManager = pm
+	s.depsMu.Unlock()
+}
+
+func (s *Server) SetConfigPath(path string) {
+	s.depsMu.Lock()
+	s.configPath = path
+	s.depsMu.Unlock()
+}
+
+func (s *Server) SetServiceRegistry(reg *discovery.ServiceRegistry) {
+	s.depsMu.Lock()
+	s.registry = reg
+	s.depsMu.Unlock()
+}
+
+func (s *Server) SetQueryCoordinator(qc *coordinator.QueryCoordinator) {
+	s.depsMu.Lock()
+	s.queryCoord = qc
+	s.depsMu.Unlock()
+}
+
 func (s *Server) GetLogBuffer() *logbuffer.LogBuffer {
 	return s.logBuffer
 }
@@ -2638,4 +2690,287 @@ func (s *Server) listBackupPlanExecutions(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"executions": executions, "total": len(executions)})
+}
+
+func (s *Server) listNodes(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	s.depsMu.RLock()
+	registry := s.registry
+	s.depsMu.RUnlock()
+
+	if registry != nil {
+		services, err := registry.DiscoverNodes()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		var nodes []*model.NodeDetailResult
+		for _, svc := range services {
+			node := &model.NodeDetailResult{
+				ID:        svc.NodeID,
+				Address:   svc.Address,
+				Port:      svc.Port,
+				State:     string(svc.State),
+				Status:    svc.Status,
+				LastSeen:  svc.LastSeen,
+				StartTime: svc.StartTime,
+				Labels:    svc.Labels,
+				Metadata:  svc.Metadata,
+			}
+			if svc.Metrics != nil {
+				node.Metrics = svc.Metrics
+			}
+			nodes = append(nodes, node)
+		}
+		c.JSON(http.StatusOK, gin.H{"nodes": nodes, "total": len(nodes)})
+		return
+	}
+
+	st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var nodes []*model.NodeResult
+	for _, n := range st.Nodes {
+		nodes = append(nodes, &model.NodeResult{
+			ID:       n.Id,
+			Address:  n.Address,
+			Port:     "",
+			Status:   n.Status,
+			LastSeen: time.Unix(n.LastSeen, 0),
+			Metadata: map[string]string{"type": n.Type},
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"nodes": nodes, "total": len(nodes)})
+}
+
+func (s *Server) getNode(c *gin.Context) {
+	id := c.Param("id")
+	ctx := c.Request.Context()
+
+	s.depsMu.RLock()
+	registry := s.registry
+	s.depsMu.RUnlock()
+
+	if registry != nil {
+		services, err := registry.DiscoverNodes()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		for _, svc := range services {
+			if svc.NodeID == id {
+				metrics, _ := registry.GetNodeMetrics(ctx, id)
+				node := &model.NodeDetailResult{
+					ID:        svc.NodeID,
+					Address:   svc.Address,
+					Port:      svc.Port,
+					State:     string(svc.State),
+					Status:    svc.Status,
+					LastSeen:  svc.LastSeen,
+					StartTime: svc.StartTime,
+					Labels:    svc.Labels,
+					Metadata:  svc.Metadata,
+				}
+				if metrics != nil {
+					node.Metrics = metrics
+				}
+				c.JSON(http.StatusOK, node)
+				return
+			}
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+		return
+	}
+
+	st, err := s.svc.GetStatus(ctx, &miniodbv1.GetStatusRequest{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, n := range st.Nodes {
+		if n.Id == id {
+			c.JSON(http.StatusOK, &model.NodeResult{
+				ID:       n.Id,
+				Address:  n.Address,
+				Port:     "",
+				Status:   n.Status,
+				LastSeen: time.Unix(n.LastSeen, 0),
+				Metadata: map[string]string{"type": n.Type},
+			})
+			return
+		}
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+}
+
+func (s *Server) decommissionNode(c *gin.Context) {
+	id := c.Param("id")
+	ctx := c.Request.Context()
+
+	s.depsMu.RLock()
+	registry := s.registry
+	s.depsMu.RUnlock()
+
+	if registry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service registry not available"})
+		return
+	}
+
+	if err := registry.DecommissionNode(ctx, id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, &model.NodeOperationResult{
+		NodeID:  id,
+		Action:  "decommission",
+		Success: true,
+		Message: "Node decommissioned successfully",
+	})
+}
+
+func (s *Server) recommissionNode(c *gin.Context) {
+	id := c.Param("id")
+	ctx := c.Request.Context()
+
+	s.depsMu.RLock()
+	registry := s.registry
+	s.depsMu.RUnlock()
+
+	if registry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service registry not available"})
+		return
+	}
+
+	if err := registry.RecommissionNode(ctx, id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, &model.NodeOperationResult{
+		NodeID:  id,
+		Action:  "recommission",
+		Success: true,
+		Message: "Node recommissioned successfully",
+	})
+}
+
+func (s *Server) removeNode(c *gin.Context) {
+	id := c.Param("id")
+	ctx := c.Request.Context()
+
+	s.depsMu.RLock()
+	registry := s.registry
+	s.depsMu.RUnlock()
+
+	if registry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service registry not available"})
+		return
+	}
+
+	if err := registry.RemoveNode(ctx, id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, &model.NodeOperationResult{
+		NodeID:  id,
+		Action:  "remove",
+		Success: true,
+		Message: "Node removed successfully",
+	})
+}
+
+func (s *Server) getNodeMetrics(c *gin.Context) {
+	id := c.Param("id")
+	ctx := c.Request.Context()
+
+	s.depsMu.RLock()
+	registry := s.registry
+	s.depsMu.RUnlock()
+
+	if registry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service registry not available"})
+		return
+	}
+
+	metrics, err := registry.GetNodeMetrics(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if metrics == nil {
+		c.JSON(http.StatusOK, &model.NodeMetricsResult{
+			NodeID:  id,
+			Metrics: nil,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, &model.NodeMetricsResult{
+		NodeID:  id,
+		Metrics: metrics,
+	})
+}
+
+func (s *Server) getNodeEvents(c *gin.Context) {
+	id := c.Param("id")
+	ctx := c.Request.Context()
+
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+
+	s.depsMu.RLock()
+	registry := s.registry
+	s.depsMu.RUnlock()
+
+	if registry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service registry not available"})
+		return
+	}
+
+	events, err := registry.GetNodeEvents(ctx, id, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if events == nil {
+		c.JSON(http.StatusOK, &model.NodeEventsResult{
+			NodeID: id,
+			Events: []interface{}{},
+			Total:  0,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, &model.NodeEventsResult{
+		NodeID: id,
+		Events: events,
+		Total:  len(events),
+	})
 }

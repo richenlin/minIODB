@@ -501,6 +501,11 @@ func main() {
 		if executor != nil {
 			dashSrv.SetBackupStore(executor.GetPlanStore())
 		}
+		// 热切换分布式模式所需依赖
+		dashSrv.SetPoolManager(poolManager)
+		dashSrv.SetConfigPath(configPath)
+		dashSrv.SetServiceRegistry(serviceRegistry)
+		dashSrv.SetQueryCoordinator(queryCoord)
 	}
 
 	logger.Sugar.Info("MinIODB server started successfully")

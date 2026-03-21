@@ -223,6 +223,8 @@ const (
 	DefaultCoordinatorDistributedQueryTimeout = 30 * time.Second
 	DefaultCoordinatorRemoteQueryTimeout      = 10 * time.Second
 	DefaultCoordinatorNodeMonitorInterval     = 30 * time.Second
+	DefaultCoordinatorLoadBalanceStrategy     = "round_robin"
+	DefaultCoordinatorMaxNodeLoad             = 90.0
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

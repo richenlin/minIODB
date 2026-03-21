@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "minIODB/api/proto/miniodb/v1"
@@ -67,14 +70,81 @@ type NodeStatus struct {
 
 // LoadBalancer 负载均衡器
 type LoadBalancer struct {
-	cfg *config.Config
+	strategy string
+	cfg      *config.Config
+	counter  uint64
 }
 
-// NewLoadBalancer 创建负载均衡器
 func NewLoadBalancer(cfg *config.Config) *LoadBalancer {
-	return &LoadBalancer{
-		cfg: cfg,
+	strategy := config.DefaultCoordinatorLoadBalanceStrategy
+	if cfg != nil && cfg.Coordinator.LoadBalanceStrategy != "" {
+		strategy = cfg.Coordinator.LoadBalanceStrategy
 	}
+	return &LoadBalancer{strategy: strategy, cfg: cfg}
+}
+
+func (lb *LoadBalancer) SelectNode(nodes []*discovery.NodeInfo, nodeStatus map[string]*NodeStatus) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+
+	healthyNodes := lb.filterHealthyNodes(nodes, nodeStatus)
+	if len(healthyNodes) == 0 {
+		healthyNodes = nodes
+	}
+
+	switch lb.strategy {
+	case "least_load":
+		var bestNode *discovery.NodeInfo
+		bestLoad := math.MaxFloat64
+		for _, n := range healthyNodes {
+			if st, ok := nodeStatus[n.ID]; ok {
+				if st.Load < bestLoad {
+					bestLoad = st.Load
+					bestNode = n
+				}
+			} else {
+				if 0 < bestLoad {
+					bestLoad = 0
+					bestNode = n
+				}
+			}
+		}
+		if bestNode != nil {
+			return bestNode.ID
+		}
+	case "random":
+		idx := rand.Intn(len(healthyNodes))
+		return healthyNodes[idx].ID
+	default:
+		idx := atomic.AddUint64(&lb.counter, 1) % uint64(len(healthyNodes))
+		return healthyNodes[idx].ID
+	}
+
+	return healthyNodes[0].ID
+}
+
+func (lb *LoadBalancer) filterHealthyNodes(nodes []*discovery.NodeInfo, nodeStatus map[string]*NodeStatus) []*discovery.NodeInfo {
+	if lb.cfg == nil {
+		return nodes
+	}
+
+	maxLoad := lb.cfg.Coordinator.MaxNodeLoad
+	if maxLoad <= 0 {
+		maxLoad = config.DefaultCoordinatorMaxNodeLoad
+	}
+
+	var healthy []*discovery.NodeInfo
+	for _, n := range nodes {
+		if st, ok := nodeStatus[n.ID]; ok {
+			if st.Load < maxLoad {
+				healthy = append(healthy, n)
+			}
+		} else {
+			healthy = append(healthy, n)
+		}
+	}
+	return healthy
 }
 
 // HealthChecker 健康检查器
@@ -87,6 +157,20 @@ func NewHealthChecker(cfg *config.Config) *HealthChecker {
 	return &HealthChecker{
 		cfg: cfg,
 	}
+}
+
+func (hc *HealthChecker) IsNodeHealthy(nodeID string, nodeStatus map[string]*NodeStatus) bool {
+	st, exists := nodeStatus[nodeID]
+	if !exists {
+		return false
+	}
+
+	maxLoad := config.DefaultCoordinatorMaxNodeLoad
+	if hc.cfg != nil && hc.cfg.Coordinator.MaxNodeLoad > 0 {
+		maxLoad = hc.cfg.Coordinator.MaxNodeLoad
+	}
+
+	return st.Load < maxLoad
 }
 
 // CoordinatorMetrics 协调器指标
@@ -176,6 +260,14 @@ func NewQueryCoordinator(redisPool *pool.RedisPool, registry *discovery.ServiceR
 	go qc.monitorNodes()
 
 	return qc
+}
+
+// UpdateRedisPool 热更新 Redis 连接池（用于分布式模式热切换）
+func (qc *QueryCoordinator) UpdateRedisPool(newPool *pool.RedisPool) {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+	qc.redisPool = newPool
+	qc.logger.Info("QueryCoordinator Redis pool updated")
 }
 
 // RouteWrite 路由写入请求到对应的节点
@@ -332,10 +424,23 @@ func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
 	dataDistribution, err := qc.getDataDistribution(tables)
 	if err != nil {
 		logger.LogWarn(context.Background(), "Failed to get data distribution, falling back to broadcast", zap.Error(err))
-		// 回退到广播模式
+		// 回退到广播模式：使用 HealthChecker 过滤不健康节点
+		qc.mu.RLock()
+		nodeStatusCopy := qc.nodeStatus
+		qc.mu.RUnlock()
+
 		for _, node := range nodes {
 			nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
-			plan.TargetNodes = append(plan.TargetNodes, nodeAddr)
+			if qc.healthChecker.IsNodeHealthy(node.ID, nodeStatusCopy) {
+				plan.TargetNodes = append(plan.TargetNodes, nodeAddr)
+			}
+		}
+		// 如果所有节点都不健康，回退到使用所有节点
+		if len(plan.TargetNodes) == 0 {
+			for _, node := range nodes {
+				nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
+				plan.TargetNodes = append(plan.TargetNodes, nodeAddr)
+			}
 		}
 		plan.IsDistributed = true
 		return plan, nil
@@ -350,7 +455,37 @@ func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
 	}
 
 	plan.IsDistributed = len(plan.TargetNodes) > 1
+
+	// 数据分布成功后，使用 HealthChecker 过滤不健康节点
+	// 注意：LoadBalancer 不应覆盖数据分布决策，仅在广播模式下使用
+	qc.mu.RLock()
+	nodeStatusCopy := qc.nodeStatus
+	qc.mu.RUnlock()
+
+	// 使用 HealthChecker 过滤不健康节点
+	var healthyNodes []string
+	for _, nodeAddr := range plan.TargetNodes {
+		nodeID := qc.extractNodeIDFromAddr(nodeAddr, nodes)
+		if nodeID != "" && qc.healthChecker.IsNodeHealthy(nodeID, nodeStatusCopy) {
+			healthyNodes = append(healthyNodes, nodeAddr)
+		}
+	}
+	if len(healthyNodes) > 0 {
+		plan.TargetNodes = healthyNodes
+	}
+
 	return plan, nil
+}
+
+// extractNodeIDFromAddr 从节点地址提取节点ID
+func (qc *QueryCoordinator) extractNodeIDFromAddr(addr string, nodes []*discovery.NodeInfo) string {
+	for _, node := range nodes {
+		nodeAddr := fmt.Sprintf("%s:%s", node.Address, node.Port)
+		if nodeAddr == addr {
+			return node.ID
+		}
+	}
+	return ""
 }
 
 // executeDistributedPlan 执行分布式查询计划
@@ -662,8 +797,47 @@ func (qc *QueryCoordinator) monitorNodes() {
 		case <-qc.ctx.Done():
 			return
 		case <-ticker.C:
-			// 监控节点状态
-			logger.LogDebug(context.Background(), "Monitoring nodes")
+			qc.refreshNodeStatus()
+		}
+	}
+}
+
+func (qc *QueryCoordinator) refreshNodeStatus() {
+	if qc.registry == nil {
+		return
+	}
+
+	nodes, err := qc.registry.DiscoverNodes()
+	if err != nil {
+		qc.logger.Debug("Failed to discover nodes", zap.Error(err))
+		return
+	}
+
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+
+	activeIDs := make(map[string]bool)
+	for _, node := range nodes {
+		activeIDs[node.NodeID] = true
+		status, exists := qc.nodeStatus[node.NodeID]
+		if !exists {
+			status = &NodeStatus{
+				ID:      node.NodeID,
+				Address: node.Address,
+				Status:  string(node.State),
+			}
+			qc.nodeStatus[node.NodeID] = status
+		}
+		status.LastSeen = node.LastSeen
+		if node.Metrics != nil {
+			status.ActiveQueries = int(node.Metrics.ActiveQueries)
+			status.Load = node.Metrics.CPUPercent
+		}
+	}
+
+	for id := range qc.nodeStatus {
+		if !activeIDs[id] {
+			delete(qc.nodeStatus, id)
 		}
 	}
 }

@@ -863,6 +863,8 @@ type CoordinatorConfig struct {
 	DistributedQueryTimeout time.Duration `yaml:"distributed_query_timeout"` // 分布式查询超时
 	RemoteQueryTimeout      time.Duration `yaml:"remote_query_timeout"`      // 远程查询超时
 	NodeMonitorInterval     time.Duration `yaml:"node_monitor_interval"`     // 节点监控间隔
+	LoadBalanceStrategy     string        `yaml:"load_balance_strategy"`     // 负载均衡策略: round_robin | least_load | random
+	MaxNodeLoad             float64       `yaml:"max_node_load"`             // 节点最大 CPU 负载百分比，默认 90
 }
 
 // SubscriptionConfig 数据订阅配置
@@ -1451,6 +1453,8 @@ func (c *Config) setDefaults() {
 		DistributedQueryTimeout: DefaultCoordinatorDistributedQueryTimeout,
 		RemoteQueryTimeout:      DefaultCoordinatorRemoteQueryTimeout,
 		NodeMonitorInterval:     DefaultCoordinatorNodeMonitorInterval,
+		LoadBalanceStrategy:     DefaultCoordinatorLoadBalanceStrategy,
+		MaxNodeLoad:             DefaultCoordinatorMaxNodeLoad,
 	}
 
 	// 数据订阅配置默认值
@@ -2048,4 +2052,13 @@ func fileExists(filename string) bool {
 // ptrBool returns a pointer to the given bool value.
 func ptrBool(v bool) *bool {
 	return &v
+}
+
+// SaveToFile 将配置持久化到 YAML 文件
+func SaveToFile(cfg *Config, path string) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
 }
