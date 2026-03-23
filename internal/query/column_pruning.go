@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"minIODB/internal/security"
 )
 
 // ColumnPruner 列剪枝优化器
@@ -135,26 +137,27 @@ func (cp *ColumnPruner) BuildOptimizedViewSQL(tableName string, files []string, 
 	}
 
 	columnList := strings.Join(requiredColumns, ", ")
-
+	safeTableName := security.DefaultSanitizer.QuoteIdentifier(tableName)
 	filesClause := cp.buildFilesClause(files)
 
 	return fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT %s FROM read_parquet([%s], union_by_name=true)`,
-		tableName, columnList, filesClause)
+		safeTableName, columnList, filesClause)
 }
 
 // buildStandardViewSQL 构建标准视图SQL（不使用列剪枝）
 func (cp *ColumnPruner) buildStandardViewSQL(tableName string, files []string) string {
+	safeTableName := security.DefaultSanitizer.QuoteIdentifier(tableName)
 	filesClause := cp.buildFilesClause(files)
 
 	return fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT * FROM read_parquet([%s], union_by_name=true)`,
-		tableName, filesClause)
+		safeTableName, filesClause)
 }
 
 // buildFilesClause 构建文件列表子句
 func (cp *ColumnPruner) buildFilesClause(files []string) string {
 	var fileNames []string
 	for _, file := range files {
-		fileNames = append(fileNames, "'"+file+"'")
+		fileNames = append(fileNames, security.DefaultSanitizer.QuoteLiteral(file))
 	}
 	return strings.Join(fileNames, ",")
 }

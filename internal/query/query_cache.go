@@ -408,12 +408,47 @@ func (qc *QueryCache) generateCacheKey(query string, tables []string) string {
 	return qc.cacheKeyPrefix + hash
 }
 
-// normalizeQuery 标准化查询语句
+// normalizeQuery 标准化查询语句（保留字符串字面量的大小写）
 func (qc *QueryCache) normalizeQuery(query string) string {
-	// 移除多余空格
 	normalized := strings.Join(strings.Fields(strings.TrimSpace(query)), " ")
-	// 转换为小写（除了字符串字面量）
-	return strings.ToLower(normalized)
+
+	var result strings.Builder
+	inSingleQuote := false
+	escaped := false
+
+	for i := 0; i < len(normalized); i++ {
+		ch := normalized[i]
+
+		if escaped {
+			result.WriteByte(ch)
+			escaped = false
+			continue
+		}
+
+		if ch == '\\' {
+			result.WriteByte(ch)
+			escaped = true
+			continue
+		}
+
+		if ch == '\'' {
+			inSingleQuote = !inSingleQuote
+			result.WriteByte(ch)
+			continue
+		}
+
+		if inSingleQuote {
+			result.WriteByte(ch)
+		} else {
+			if ch >= 'A' && ch <= 'Z' {
+				result.WriteByte(ch + 32)
+			} else {
+				result.WriteByte(ch)
+			}
+		}
+	}
+
+	return result.String()
 }
 
 // hashQuery 生成查询哈希

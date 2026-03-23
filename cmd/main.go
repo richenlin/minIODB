@@ -40,7 +40,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -90,9 +89,6 @@ func main() {
 		fmt.Println(string(hash))
 		os.Exit(0)
 	}
-
-	// 创建全局WaitGroup用于等待所有goroutine
-	var wg sync.WaitGroup
 
 	// 解析命令行参数，支持多个默认配置文件路径
 	configPath := ""
@@ -160,6 +156,9 @@ func main() {
 	// 创建上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// fatalCh 用于接收后台服务的致命错误
+	fatalCh := make(chan error, 3)
 
 	// 创建恢复处理器
 	recoveryHandler := recovery.NewRecoveryHandler("main", logger.Logger)
@@ -439,7 +438,7 @@ func main() {
 
 	go func() {
 		if err := grpcService.Start(cfg.Server.GrpcPort); err != nil {
-			logger.Sugar.Fatalf("Failed to start gRPC server: %v", err)
+			fatalCh <- fmt.Errorf("gRPC server failed: %w", err)
 		}
 	}()
 
@@ -478,7 +477,7 @@ func main() {
 
 	go func() {
 		if err := restServer.Start(cfg.Server.RestPort); err != nil {
-			logger.Sugar.Fatalf("Failed to start REST server: %v", err)
+			fatalCh <- fmt.Errorf("REST server failed: %w", err)
 		}
 	}()
 
@@ -511,7 +510,7 @@ func main() {
 	logger.Sugar.Info("MinIODB server started successfully")
 
 	// 等待中断信号
-	waitForShutdown(ctx, cancel, &wg, grpcService, restServer, metricsServer, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv, replicator, backupScheduler)
+	waitForShutdown(ctx, cancel, fatalCh, grpcService, restServer, metricsServer, metadataManager, redisPool, compactionManager, subscriptionManager, dashSrv, replicator, backupScheduler)
 	logger.Sugar.Info("MinIODB server stopped")
 }
 
@@ -632,7 +631,7 @@ func injectSystemPlans(cfg *config.Config, zapLogger *zap.Logger) {
 	// 全量备份不自动规划，由用户通过 Dashboard 手动发起
 }
 
-func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, fatalCh <-chan error,
 	grpcService *grpcTransport.Server, restServer *restTransport.Server,
 	metricsServer *http.Server, metadataManager *metadata.Manager, redisPool *pool.RedisPool,
 	compactionManager *compaction.Manager, subscriptionManager *subscription.Manager,
@@ -640,8 +639,12 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	<-sigChan
-	logger.Sugar.Info("Received shutdown signal")
+	select {
+	case sig := <-sigChan:
+		logger.Sugar.Infof("Received shutdown signal: %v", sig)
+	case err := <-fatalCh:
+		logger.Sugar.Errorf("Fatal error from background service: %v", err)
+	}
 
 	// 1. 首先取消Context，通知所有goroutine停止
 	logger.Sugar.Info("Canceling all contexts...")
@@ -708,23 +711,7 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, wg *sync.Wa
 		logger.Sugar.Info("Compaction manager stopped")
 	}
 
-	// 4. 等待所有goroutine完成（带超时）
-	logger.Sugar.Info("Waiting for background tasks to complete...")
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		logger.Sugar.Info("All goroutines stopped gracefully")
-	case <-time.After(30 * time.Second):
-		logger.Sugar.Warn("Timeout waiting for goroutines, forcing shutdown")
-	}
-
 	logger.Sugar.Info("Shutdown complete")
-	os.Exit(0)
 }
 
 func getMetricsHandler(cfg *config.Config) http.HandlerFunc {
@@ -755,7 +742,7 @@ func startMetricsServer(cfg *config.Config) *http.Server {
 	go func() {
 		logger.Sugar.Infof("Starting metrics server"+": %s", "port", cfg.Metrics.Port)
 		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Sugar.Fatalf("Failed to start metrics server: %v", err)
+			logger.Sugar.Errorf("Metrics server error (non-fatal): %v", err)
 		}
 	}()
 	return metricsServer

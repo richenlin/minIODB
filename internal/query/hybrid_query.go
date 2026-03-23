@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"minIODB/internal/buffer"
+	"minIODB/internal/security"
 
 	"go.uber.org/zap"
 )
@@ -172,8 +173,9 @@ func (hq *HybridQueryExecutor) queryBuffer(ctx context.Context, tableName, sqlQu
 	defer hq.querier.returnDBConnection(db)
 
 	// 使用安全的SQL构建器创建视图
-	createViewSQL := fmt.Sprintf(`CREATE OR REPLACE VIEW buffer_view AS SELECT * FROM read_parquet('%s')`, tempFile)
-	dropViewSQL := fmt.Sprintf(`DROP VIEW IF EXISTS buffer_view`)
+	safeTempFile := security.DefaultSanitizer.QuoteLiteral(tempFile)
+	createViewSQL := fmt.Sprintf(`CREATE OR REPLACE VIEW buffer_view AS SELECT * FROM read_parquet(%s)`, safeTempFile)
+	dropViewSQL := `DROP VIEW IF EXISTS buffer_view`
 
 	db.Exec(dropViewSQL)
 	if _, err := db.Exec(createViewSQL); err != nil {

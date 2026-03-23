@@ -402,11 +402,15 @@ func getBackupMinIOPoolConfig(cfg *config.Config) *pool.MinIOPoolConfig {
 
 // getHealthCheckInterval 获取健康检查间隔
 func getHealthCheckInterval(cfg *config.Config) time.Duration {
-	// 检查是否有新的网络配置
 	if cfg.Network.Pools.HealthCheckInterval > 0 {
 		return cfg.Network.Pools.HealthCheckInterval
 	}
 
-	// 返回默认值
-	return 15 * time.Second // 优化的默认值，比原来的30s更频繁
+	return 15 * time.Second
+}
+
+// NewStorage 创建新的存储实例（从 storage.go 迁移）
+func NewStorage(cfg *config.Config, logger *zap.Logger) (Storage, error) {
+	logger.Info("Warning: NewStorage is deprecated, consider using NewStorageFactory for better architecture")
+	return NewUnifiedStorage(cfg, logger)
 }
