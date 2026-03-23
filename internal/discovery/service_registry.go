@@ -40,6 +40,7 @@ const (
 type NodeState string
 
 const (
+	NodeStateUnknown         NodeState = "unknown"         // 未知状态（节点首次加入时）
 	NodeStateOnline          NodeState = "online"          // 正常运行
 	NodeStateSuspicious      NodeState = "suspicious"      // 心跳超时1个周期
 	NodeStateOffline         NodeState = "offline"         // 心跳超时2个周期
@@ -596,7 +597,7 @@ func (sr *ServiceRegistry) updateServiceList() error {
 			service.State = NodeStateOnline
 			events = append(events, pendingEvent{
 				nodeID: nodeID, event: "joined", message: "Node joined the cluster",
-				prevState: "", newState: NodeStateOnline,
+				prevState: NodeStateUnknown, newState: NodeStateOnline,
 			})
 		} else {
 			prevState := prevService.State

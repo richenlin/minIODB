@@ -2724,6 +2724,18 @@ func (s *Server) listNodes(c *gin.Context) {
 			}
 			nodes = append(nodes, node)
 		}
+
+		stateFilter := c.Query("state")
+		if stateFilter != "" {
+			var filtered []*model.NodeDetailResult
+			for _, node := range nodes {
+				if node.State == stateFilter {
+					filtered = append(filtered, node)
+				}
+			}
+			nodes = filtered
+		}
+
 		c.JSON(http.StatusOK, gin.H{"nodes": nodes, "total": len(nodes)})
 		return
 	}

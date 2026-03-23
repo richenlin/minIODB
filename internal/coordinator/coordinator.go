@@ -426,7 +426,10 @@ func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
 		logger.LogWarn(context.Background(), "Failed to get data distribution, falling back to broadcast", zap.Error(err))
 		// 回退到广播模式：使用 HealthChecker 过滤不健康节点
 		qc.mu.RLock()
-		nodeStatusCopy := qc.nodeStatus
+		nodeStatusCopy := make(map[string]*NodeStatus, len(qc.nodeStatus))
+		for k, v := range qc.nodeStatus {
+			nodeStatusCopy[k] = v
+		}
 		qc.mu.RUnlock()
 
 		for _, node := range nodes {
@@ -459,7 +462,10 @@ func (qc *QueryCoordinator) createQueryPlan(sql string) (*QueryPlan, error) {
 	// 数据分布成功后，使用 HealthChecker 过滤不健康节点
 	// 注意：LoadBalancer 不应覆盖数据分布决策，仅在广播模式下使用
 	qc.mu.RLock()
-	nodeStatusCopy := qc.nodeStatus
+	nodeStatusCopy := make(map[string]*NodeStatus, len(qc.nodeStatus))
+	for k, v := range qc.nodeStatus {
+		nodeStatusCopy[k] = v
+	}
 	qc.mu.RUnlock()
 
 	// 使用 HealthChecker 过滤不健康节点
