@@ -29,6 +29,7 @@ type Hub struct {
 	register   chan subscription
 	unregister chan subscription
 	done       chan struct{}
+	drainWg    sync.WaitGroup // 追踪 drain goroutine
 }
 
 func NewHub() *Hub {
@@ -57,7 +58,9 @@ func (h *Hub) Unsubscribe(topic string, ch chan Event) {
 	select {
 	case h.unregister <- subscription{topic: topic, ch: ch}:
 	case <-ctx.Done():
+		h.drainWg.Add(1)
 		go func() {
+			defer h.drainWg.Done()
 			defer func() { recover() }()
 			for range ch {
 			}
@@ -148,6 +151,7 @@ func (h *Hub) safeClose(ch chan Event) {
 
 func (h *Hub) Close() {
 	close(h.done)
+	h.drainWg.Wait()
 }
 
 func ServeSSE(c *gin.Context, hub *Hub, topics []string) {

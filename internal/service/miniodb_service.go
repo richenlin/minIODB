@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"minIODB/api/proto/miniodb/v1"
@@ -106,6 +107,7 @@ type MinIODBService struct {
 	encryptionManager   *security.FieldEncryptionManager // 字段加密管理器
 	logger              *zap.Logger
 	startTime           time.Time
+	asyncWg             sync.WaitGroup // 追踪异步 goroutine
 }
 
 // NewMinIODBService 创建新的MinIODBService实例。
@@ -329,7 +331,11 @@ func (s *MinIODBService) WriteData(ctx context.Context, req *miniodb.WriteDataRe
 
 	// 发布写入事件到订阅通道（异步，不影响主流程）
 	if s.subscriptionManager != nil && s.subscriptionManager.IsRunning() {
-		go s.publishWriteEvent(ctx, tableName, req.Data)
+		s.asyncWg.Add(1)
+		go func() {
+			defer s.asyncWg.Done()
+			s.publishWriteEvent(ctx, tableName, req.Data)
+		}()
 	}
 
 	// 记录成功的审计日志
@@ -2288,6 +2294,9 @@ func (s *MinIODBService) Close() error {
 	if s.querier != nil {
 		s.querier.Close()
 	}
+
+	// 等待所有异步 goroutine 完成
+	s.asyncWg.Wait()
 
 	// 连接池会由池管理器关闭，这里不需要手动关闭
 

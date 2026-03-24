@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,14 +165,33 @@ type Querier struct {
 	// 统计信息
 	queryStats *QueryStats
 	statsLock  sync.RWMutex
+
+	// 临时文件清理
+	stopCleanup chan struct{}
+
+	// View 缓存：key = "连接地址:表名", value = 文件列表的 hash
+	viewCache   map[string]string
+	viewCacheMu sync.RWMutex
 }
 
 // NewQuerier 创建查询器
 func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *config.Config, buf *buffer.ConcurrentBuffer, logger *zap.Logger) (*Querier, error) {
-	// 初始化DuckDB连接池
+	// 初始化DuckDB单连接（回退用）
 	duckdbPool, err := sql.Open("duckdb", ":memory:")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DuckDB connection pool: %w", err)
+	}
+
+	// 初始化 DuckDB 连接池（如果配置启用）
+	var dbPool *DuckDBPool
+	duckdbCfg := cfg.QueryOptimization.DuckDB
+	if duckdbCfg.Enabled && duckdbCfg.PoolSize > 0 {
+		dbPool, err = NewDuckDBPool(duckdbCfg.PoolSize, logger)
+		if err != nil {
+			logger.Warn("Failed to create DuckDB pool, fallback to single connection", zap.Error(err))
+		} else {
+			logger.Info("DuckDB pool initialized", zap.Int("pool_size", duckdbCfg.PoolSize))
+		}
 	}
 
 	// 初始化查询缓存和文件缓存（只有在Redis连接池可用时）
@@ -231,6 +252,7 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		redisPool:          redisPool,
 		minioClient:        minioClient,
 		db:                 duckdbPool,
+		dbPool:             dbPool,
 		queryCache:         queryCache,
 		fileCache:          fileCache,
 		config:             cfg,
@@ -238,12 +260,16 @@ func NewQuerier(redisPool *pool.RedisPool, minioClient storage.Uploader, cfg *co
 		logger:             logger,
 		tempDir:            tempDir,
 		tableExtractor:     NewTableExtractor(),
-		stmtCache:          newStmtCache(1000), // 预编译语句LRU缓存，maxSize=1000
+		stmtCache:          newStmtCache(1000),
 		queryStats:         queryStats,
-		queryOptimizer:     NewQueryOptimizer(logger),                                     // 查询优化器（文件剪枝、谓词下推）
-		columnPruner:       NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy), // 列剪枝优化器
-		slowQueryThreshold: cfg.QueryOptimization.DuckDB.SlowQueryThreshold,               // 慢查询阈值（从配置读取）
+		queryOptimizer:     NewQueryOptimizer(logger),
+		columnPruner:       NewColumnPruner(cfg.StorageEngine.Parquet.AutoSelectStrategy),
+		slowQueryThreshold: cfg.QueryOptimization.DuckDB.SlowQueryThreshold,
+		viewCache:          make(map[string]string),
 	}
+
+	querier.stopCleanup = make(chan struct{})
+	go querier.tempFileCleanupLoop()
 
 	return querier, nil
 }
@@ -449,9 +475,49 @@ func (q *Querier) createTableView(tableName string, files []string) error {
 	return q.createTableViewWithDB(q.db, tableName, files)
 }
 
+// viewCacheKey 生成 View 缓存键
+func viewCacheKey(db *sql.DB, tableName string) string {
+	return fmt.Sprintf("%p:%s", db, tableName)
+}
+
+// filesHash 计算文件列表的 hash
+func filesHash(files []string) string {
+	sorted := make([]string, len(files))
+	copy(sorted, files)
+	sort.Strings(sorted)
+	h := sha256.Sum256([]byte(strings.Join(sorted, "|")))
+	return hex.EncodeToString(h[:8])
+}
+
+// isViewCurrent 检查 View 是否已是最新
+func (q *Querier) isViewCurrent(db *sql.DB, tableName string, files []string) bool {
+	key := viewCacheKey(db, tableName)
+	hash := filesHash(files)
+	q.viewCacheMu.RLock()
+	defer q.viewCacheMu.RUnlock()
+	return q.viewCache[key] == hash
+}
+
+// updateViewCache 更新 View 缓存
+func (q *Querier) updateViewCache(db *sql.DB, tableName string, files []string) {
+	key := viewCacheKey(db, tableName)
+	hash := filesHash(files)
+	q.viewCacheMu.Lock()
+	q.viewCache[key] = hash
+	q.viewCacheMu.Unlock()
+}
+
 // createTableViewWithDB 在指定的DuckDB连接中创建表视图
 func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []string) error {
 	if len(files) == 0 {
+		return nil
+	}
+
+	// 检查 View 是否已是最新（文件列表未变则跳过重建）
+	if q.isViewCurrent(db, tableName, files) {
+		q.logger.Debug("View cache hit, skipping recreation",
+			zap.String("table", tableName),
+			zap.Int("files", len(files)))
 		return nil
 	}
 
@@ -498,6 +564,8 @@ func (q *Querier) createTableViewWithDB(db *sql.DB, tableName string, files []st
 	}
 
 	q.logger.Sugar().Infof("View verification successful for table %s", tableName)
+
+	q.updateViewCache(db, tableName, files)
 	return nil
 }
 
@@ -552,7 +620,9 @@ func (q *Querier) createTableViewWithDBWithColumnPruning(db *sql.DB, tableName s
 
 // downloadToTemp 下载文件到临时目录，并进行完整性校验
 func (q *Querier) downloadToTemp(ctx context.Context, objectName string) (string, error) {
-	localPath := filepath.Join(q.tempDir, filepath.Base(objectName))
+	hash := md5.Sum([]byte(objectName))
+	safePrefix := hex.EncodeToString(hash[:4])
+	localPath := filepath.Join(q.tempDir, safePrefix+"_"+filepath.Base(objectName))
 
 	// 检查文件是否已存在
 	if _, err := os.Stat(localPath); err == nil {
@@ -738,6 +808,10 @@ func (q *Querier) Stop() error {
 
 // Close 关闭查询处理器
 func (q *Querier) Close() error {
+	if q.stopCleanup != nil {
+		close(q.stopCleanup)
+	}
+
 	if q.db != nil {
 		q.db.Close()
 	}
@@ -757,10 +831,64 @@ func (q *Querier) Close() error {
 		q.fileCache.Clear()
 	}
 
+	// 清空 View 缓存
+	q.viewCacheMu.Lock()
+	q.viewCache = nil
+	q.viewCacheMu.Unlock()
+
 	// 清理临时文件
 	os.RemoveAll(q.tempDir)
 
 	return nil
+}
+
+// tempFileCleanupLoop 周期性清理过期的临时文件
+func (q *Querier) tempFileCleanupLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	maxAge := 30 * time.Minute
+
+	for {
+		select {
+		case <-q.stopCleanup:
+			return
+		case <-ticker.C:
+			q.cleanExpiredTempFiles(maxAge)
+		}
+	}
+}
+
+// cleanExpiredTempFiles 清理超过 maxAge 的临时文件
+func (q *Querier) cleanExpiredTempFiles(maxAge time.Duration) {
+	entries, err := os.ReadDir(q.tempDir)
+	if err != nil {
+		return
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	cleaned := 0
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.Remove(filepath.Join(q.tempDir, entry.Name())); err == nil {
+				cleaned++
+			}
+		}
+	}
+
+	if cleaned > 0 {
+		q.logger.Info("Cleaned expired temp files",
+			zap.Int("count", cleaned),
+			zap.Duration("max_age", maxAge))
+	}
 }
 
 // =============================================================================
@@ -1744,7 +1872,11 @@ func (q *Querier) getStorageFilesMetadataFromMinIO(ctx context.Context, tableNam
 				loaded = true
 				// 如果 Redis 可用，缓存到 Redis
 				if redisClient != nil {
-					go q.cacheMetadataToRedis(context.Background(), redisClient, object.Key, metadata)
+					go func() {
+						cacheCtx, cacheCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cacheCancel()
+						q.cacheMetadataToRedis(cacheCtx, redisClient, object.Key, metadata)
+					}()
 				}
 			}
 		}

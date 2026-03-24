@@ -9,6 +9,9 @@ import (
 	"minIODB/internal/security"
 )
 
+// 预编译正则表达式，避免每次调用时重新编译
+var reSelectColumns = regexp.MustCompile(`(?i)SELECT\s+(.*?)\s+FROM`)
+
 // ColumnPruner 列剪枝优化器
 type ColumnPruner struct {
 	cache   map[string][]string
@@ -48,9 +51,8 @@ func (cp *ColumnPruner) ExtractRequiredColumns(sql string) []string {
 		return []string{"*"}
 	}
 
-	// 提取 SELECT 和 FROM 之间的部分
-	selectPattern := regexp.MustCompile(`(?i)SELECT\s+(.*?)\s+FROM`)
-	matches := selectPattern.FindStringSubmatch(sql)
+	// 使用预编译正则提取 SELECT 和 FROM 之间的部分
+	matches := reSelectColumns.FindStringSubmatch(sql)
 	if len(matches) < 2 {
 		return []string{"*"}
 	}
@@ -96,6 +98,9 @@ func (cp *ColumnPruner) ExtractRequiredColumns(sql string) []string {
 	}
 
 	cp.cacheMu.Lock()
+	if len(cp.cache) >= 10000 {
+		cp.cache = make(map[string][]string)
+	}
 	cp.cache[sql] = requiredColumns
 	cp.cacheMu.Unlock()
 
@@ -136,7 +141,12 @@ func (cp *ColumnPruner) BuildOptimizedViewSQL(tableName string, files []string, 
 		return cp.buildStandardViewSQL(tableName, files)
 	}
 
-	columnList := strings.Join(requiredColumns, ", ")
+	// 对每个列名进行转义，防止 SQL 注入
+	var quotedColumns []string
+	for _, col := range requiredColumns {
+		quotedColumns = append(quotedColumns, security.DefaultSanitizer.QuoteIdentifier(col))
+	}
+	columnList := strings.Join(quotedColumns, ", ")
 	safeTableName := security.DefaultSanitizer.QuoteIdentifier(tableName)
 	filesClause := cp.buildFilesClause(files)
 

@@ -96,6 +96,16 @@ tables:
     flush_interval: 15s
     retention_days: 365
 
+# === 查询优化 ===
+query_optimization:
+  duckdb:
+    enabled: true
+    pool_size: 4
+    performance:
+      memory_limit: "1GB"
+      threads: 4
+      enable_object_cache: true
+
 # === 调试 ===
 debug:
   enabled: false

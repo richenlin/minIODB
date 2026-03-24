@@ -31,7 +31,9 @@ type HybridQueryConfig struct {
 	StorageTimeout     time.Duration
 }
 
-// HybridQueryExecutor 混合查询执行器
+// Deprecated: HybridQueryExecutor 已废弃。Buffer 数据合并已在 Querier.ExecuteQuery 的
+// prepareTableDataWithPruning → getBufferFilesForTable 路径中实现。
+// 此组件仅保留用于接口兼容，将在未来版本中移除。
 type HybridQueryExecutor struct {
 	buffer  *buffer.ConcurrentBuffer
 	querier *Querier
@@ -74,43 +76,20 @@ func NewHybridQueryExecutor(buf *buffer.ConcurrentBuffer, querier *Querier, conf
 func (hq *HybridQueryExecutor) ExecuteQuery(ctx context.Context, tableName, sqlQuery string) (*HybridQueryResult, error) {
 	startTime := time.Now()
 
-	if !hq.config.Enabled {
-		data, err := hq.querier.ExecuteQuery(sqlQuery)
-		return &HybridQueryResult{
-			Source:      "storage",
-			Data:        data,
-			Duration:    time.Since(startTime),
-			CompletedAt: time.Now(),
-			Error:       err,
-		}, nil
+	data, err := hq.querier.ExecuteQuery(sqlQuery)
+
+	source := "storage"
+	if hq.checkBufferHasData(tableName) {
+		source = "hybrid"
 	}
 
-	hasBufferData := hq.checkBufferHasData(tableName)
-
-	if !hasBufferData {
-		data, err := hq.querier.ExecuteQuery(sqlQuery)
-		return &HybridQueryResult{
-			Source:      "storage",
-			Data:        data,
-			Duration:    time.Since(startTime),
-			CompletedAt: time.Now(),
-			Error:       err,
-		}, nil
-	}
-
-	// 缓冲区和存储都有数据，执行混合查询
-	bufferResult := hq.queryBuffer(ctx, tableName, sqlQuery)
-	storageResult := hq.queryStorage(ctx, tableName, sqlQuery)
-
-	duration := time.Since(startTime)
-	mergedResult := hq.mergeResults(bufferResult, storageResult, sqlQuery)
-
-	mergedResult.Duration = duration
-	mergedResult.CompletedAt = time.Now()
-
-	hq.updateStats("hybrid", duration, mergedResult.Error, 0)
-
-	return mergedResult, nil
+	return &HybridQueryResult{
+		Source:      source,
+		Data:        data,
+		Duration:    time.Since(startTime),
+		CompletedAt: time.Now(),
+		Error:       err,
+	}, nil
 }
 
 // checkBufferHasData 检查缓冲区是否有数据

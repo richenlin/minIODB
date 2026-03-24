@@ -711,6 +711,15 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, fatalCh <-c
 		logger.Sugar.Info("Compaction manager stopped")
 	}
 
+	if metadataManager != nil {
+		logger.Sugar.Info("Stopping metadata manager...")
+		if err := metadataManager.Stop(); err != nil {
+			logger.Sugar.Errorf("Error stopping metadata manager: %v", err)
+		} else {
+			logger.Sugar.Info("Metadata manager stopped")
+		}
+	}
+
 	logger.Sugar.Info("Shutdown complete")
 }
 
