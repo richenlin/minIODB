@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"minIODB/config"
@@ -76,9 +77,13 @@ type App struct {
 	captureWriter *logger.CaptureWriter
 
 	// Lifecycle
-	ctx     context.Context
-	cancel  context.CancelFunc
-	fatalCh chan error
+	ctx       context.Context
+	cancel    context.CancelFunc
+	fatalCh   chan error
+	startTime time.Time // 记录启动时间，用于 metrics
+
+	// Background goroutine tracking
+	wg sync.WaitGroup // 追踪后台 goroutine（如 Dashboard）
 }
 
 // NewApp 创建新的 App 实例
@@ -91,6 +96,7 @@ func NewApp(cfg *config.Config, logger *zap.Logger, configPath string) *App {
 		ctx:        ctx,
 		cancel:     cancel,
 		fatalCh:    make(chan error, 3),
+		startTime:  time.Now(),
 	}
 }
 
@@ -482,7 +488,11 @@ func (a *App) WireDashboard() {
 	a.dashSrv.SetServiceRegistry(a.serviceRegistry)
 	a.dashSrv.SetQueryCoordinator(a.queryCoord)
 
-	go a.dashSrv.Start(a.ctx)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.dashSrv.Start(a.ctx)
+	}()
 	a.logger.Sugar().Infof("Dashboard mounted at %s on port %s", a.cfg.Dashboard.BasePath, a.cfg.Server.RestPort)
 }
 
@@ -571,6 +581,25 @@ func (a *App) Shutdown(shutdownCtx context.Context) {
 			a.logger.Sugar().Errorf("Error stopping metadata manager: %v", err)
 		} else {
 			a.logger.Sugar().Info("Metadata manager stopped")
+		}
+	}
+
+	// 4. 等待 Dashboard goroutine 退出
+	a.wg.Wait()
+
+	// 5. 清理核心服务
+	if a.buffer != nil {
+		a.logger.Sugar().Info("Stopping buffer...")
+		a.buffer.Stop()
+		a.logger.Sugar().Info("Buffer stopped")
+	}
+
+	if a.querier != nil {
+		a.logger.Sugar().Info("Closing querier...")
+		if err := a.querier.Close(); err != nil {
+			a.logger.Sugar().Errorf("Error closing querier: %v", err)
+		} else {
+			a.logger.Sugar().Info("Querier closed")
 		}
 	}
 
@@ -698,7 +727,7 @@ func (a *App) getMetricsHandler() http.HandlerFunc {
 		lines = append(lines, fmt.Sprintf(`miniodb_info{version="%s",node_id="%s"} 1`, version.Get(), a.cfg.Server.NodeID))
 		lines = append(lines, "# HELP miniodb_start_time_seconds MinIODB start time in unix timestamp")
 		lines = append(lines, "# TYPE miniodb_start_time_seconds gauge")
-		lines = append(lines, fmt.Sprintf("miniodb_start_time_seconds %d", time.Now().Unix()))
+		lines = append(lines, fmt.Sprintf("miniodb_start_time_seconds %d", a.startTime.Unix()))
 		for _, line := range lines {
 			w.Write([]byte(line + "\n"))
 		}

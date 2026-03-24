@@ -432,6 +432,16 @@ func (qc *QueryCache) normalizeQuery(query string) string {
 		}
 
 		if ch == '\'' {
+			// P3-3: 处理 SQL 标准转义单引号 ''
+			// 如果在字符串字面量内且下一个字符也是单引号，则是转义单引号（保持字面量状态）
+			if inSingleQuote && i+1 < len(normalized) && normalized[i+1] == '\'' {
+				result.WriteByte(ch)              // 写入第一个单引号
+				result.WriteByte(normalized[i+1]) // 写入第二个单引号
+				i++                               // 跳过下一个字符
+				// 保持 inSingleQuote = true，字面量未结束
+				continue
+			}
+			// 普通单引号：切换字面量状态
 			inSingleQuote = !inSingleQuote
 			result.WriteByte(ch)
 			continue

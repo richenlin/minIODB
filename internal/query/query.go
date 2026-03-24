@@ -503,6 +503,10 @@ func (q *Querier) updateViewCache(db *sql.DB, tableName string, files []string) 
 	key := viewCacheKey(db, tableName)
 	hash := filesHash(files)
 	q.viewCacheMu.Lock()
+	// P3-1: 避免内存无限增长，达到上限时清空缓存
+	if len(q.viewCache) >= 10000 {
+		q.viewCache = make(map[string]string)
+	}
 	q.viewCache[key] = hash
 	q.viewCacheMu.Unlock()
 }
