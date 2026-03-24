@@ -8,6 +8,8 @@
 
 MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象存储与OLAP查询分析系统。采用存算分离架构，以MinIO作为分布式存储底座，DuckDB作为高性能OLAP查询引擎，Redis作为元数据中心，提供企业级的数据分析能力。
 
+![Dashboard截图](docs/screenshot.png)
+
 ## 核心特性
 
 - **🖥️ Dashboard控制台** - Web管理界面，支持实时监控、表管理、节点管理
