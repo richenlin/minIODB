@@ -1118,3 +1118,236 @@ message NodeInfo {
   int32 active_queries = 5;
 }
 ```
+
+## 5. 备份体系设计
+
+### 5.1 备份类型
+
+MinIODB 提供完整的备份能力用于灾难恢复：
+
+#### a. 热备（主从复制）
+
+**机制**：独立数据库 MinIOPool 实例，定期增量同步 Primary MinIO → Backup MinIO
+
+**性能隔离**：
+- 独立 http.Transport（MaxConnsPerHost=10）
+- QPS 限流 + 自适应退让
+- 对主业务 P99 延迟影响 ≤ 2%
+
+**数据完整性**：
+- 增量同步 + 定期全量校验
+- Checkpoint 存储在 Redis
+- 与 `EnqueueSync` 互补（实时副本 + 定期校验）
+
+**配置示例**：
+```yaml
+backup:
+  replication:
+    enabled: true
+    interval: 3600
+    workers: 4
+    max_qps: 50
+    max_conns_to_source: 10
+    full_verify_interval: 24
+```
+
+#### b. 冷备（备份计划）
+
+**元数据备份**：`metadata.Manager` 支持定时/手动备份到 MinIO
+
+**全量数据备份**：复制所有表的 Parquet 文件到备份目标
+
+**表级数据备份**：按表粒度备份，支持选择性恢复
+
+**多计划调度**：cron 表达式驱动，多计划并行
+
+#### c. 优雅降级
+
+- Backup MinIO 未配置时：热备停止，冷备回退到 Primary MinIO 的独立桶（`{bucket}-backups`）
+- Dashboard 备份功能始终可用，降级模式下给出明确提示
+
+### 5.2 Standalone 模式元数据降级
+
+当系统以 standalone 模式运行（`redisPool == nil`）时：
+
+| 场景 | 降级行为 |
+|------|---------|
+| 表配置存储 | 写入 MinIO `_system/table_configs/{tableName}.json` |
+| 元数据操作 | 返回"standalone mode"提示，不panic |
+| 备份功能 | 使用 Primary MinIO 的独立桶 |
+
+**元数据存储三级链路**：
+```
+Level 1（优先）→ Redis metadata:table_config:{name}
+Level 2（降级）→ MinIO _system/table_configs/{name}.json
+Level 3（兜底）→ 系统默认配置（snowflake + auto_generate=true）
+```
+
+## 6. 权限体系设计
+
+### 6.1 两级权限体系
+
+| 层级 | 名称 | 粒度 | 控制对象 |
+|------|------|------|----------|
+| Tier 1 | 功能权限 | API 端点级 | 控制用户能否访问某个 API |
+| Tier 2 | 数据权限 | 表级 | 控制用户能否对某个表执行 CRUD |
+
+### 6.2 角色定义
+
+| 角色 | 标识符 | 说明 |
+|------|--------|------|
+| 管理员 | `admin` | 全部权限，可管理系统配置、表结构、备份等 |
+| 普通用户 | `viewer` | 只读为主，可查看数据和监控信息，对特定表可配置写入权限 |
+
+### 6.3 功能权限映射（部分）
+
+| 端点 | Method | 资源 | 操作 | 最低角色 |
+|------|--------|------|------|----------|
+| `/tables` | POST | dashboard.tables | create | **admin** |
+| `/tables/:name` | DELETE | dashboard.tables | delete | **admin** |
+| `/tables/:name/data` | GET | dashboard.data | read | viewer |
+| `/query` | POST | dashboard.query | execute | viewer |
+| `/backups/metadata` | POST | dashboard.backups | create | **admin** |
+| `/cluster/config` | PUT | dashboard.config | update | **admin** |
+
+### 6.4 数据权限（表级别）
+
+**权限判定流程**：
+```
+请求到达
+│
+├─ Tier 1: 功能权限检查 (中间件)
+│   └─ admin → 通过 (bypass)
+│   └─ viewer → 检查 是否在白名单
+│
+└─ Tier 2: 数据权限检查 (服务层)
+    ├─ admin → 通过 (bypass)
+    └─ 非 admin →
+        ├─ 提取表名（URL参数/请求体/SQL解析）
+        ├─ 查找权限配置（显式配置 > 角色默认）
+        └─ 检查操作是否在 allowed_actions 中
+```
+
+### 6.5 配置示例
+
+```yaml
+auth:
+  token_expiry: "24h"
+  api_key_pairs:
+    - key: "admin"
+      secret: "$2a$10$..."
+      role: "admin"
+      display_name: "管理员"
+    - key: "reader"
+      secret: "$2a$10$..."
+      role: "viewer"
+      display_name: "只读用户"
+
+  roles:
+    admin:
+      description: "管理员 - 全部权限"
+      table_default: ["create", "read", "update", "delete"]
+    viewer:
+      description: "普通用户 - 默认只读"
+      table_default: ["read"]
+
+  table_permissions:
+    - table: "events"
+      permissions:
+        viewer: ["create", "read"]
+    - table: "metrics"
+      permissions:
+        viewer: ["create", "read"]
+```
+
+## 7. 常见问题 (FAQ)
+
+### 安装与配置
+
+**Q: 如何安装 MinIODB？**
+
+A: 支持三种方式：
+1. Docker Compose（推荐快速启动）
+2. 从源码编译：`go build -o bin/miniodb cmd/main.go`
+3. Docker 镜像：`docker pull miniodb/miniodb:latest`
+
+**Q: 系统要求？**
+
+A: 
+- 最小配置（开发）：2 核 CPU，4GB 内存，100GB SSD
+- 推荐配置（生产）：8+ 核 CPU，16GB+ 内存，500GB+ NVMe SSD
+
+### 数据操作
+
+**Q: 支持的 SQL 方言？**
+
+A: 使用 DuckDB，支持 PostgreSQL SQL 子集，包括：
+- SELECT, FROM, WHERE, GROUP BY, HAVING, ORDER BY
+- JOINs（INNER, LEFT, RIGHT, FULL）
+- 窗口函数
+- 聚合函数（COUNT, SUM, AVG, MIN, MAX 等）
+- 时间函数（DATE_TRUNC, NOW, INTERVAL 等）
+
+**Q: 如何更新已有记录？**
+
+A: MinIODB 针对 OLAP 优化，不支持传统 UPDATE。使用 DELETE + INSERT 模式。
+
+### 性能
+
+**Q: 写入吞吐量？**
+
+A: 典型性能：
+- 单条写入延迟 <10ms
+- 批量写入 10,000+ records/second
+- 可通过调整 buffer_size 和 flush_interval 优化
+
+**Q: 查询延迟？**
+
+A: 典型性能：
+- 缓存命中 <10ms
+- 缓存未命中 100ms - 1s（取决于查询复杂度）
+- 大数据扫描 1s - 10s
+
+**Q: 如何提升查询性能？**
+
+A: 
+1. 使用缓存（默认启用）
+2. 在时间戳字段上过滤（分区键）
+3. 使用 LIMIT 限制结果集
+4. 选择合适的数据类型
+5. 使用物化视图预聚合
+
+### 分布式部署
+
+**Q: 何时使用分布式部署？**
+
+A: 当以下情况时考虑分布式：
+- 单节点无法处理负载（查询延迟 >5s）
+- 需要高可用（HA）
+- 需要水平扩展
+- 需要多数据中心复制
+
+**Q: 节点如何通信？**
+
+A: 通过：
+- Redis：共享状态、协调、缓存
+- 负载均衡器：分发请求
+- Gossip 协议：节点发现和健康检查
+
+### 故障排除
+
+**Q: 服务无法启动？**
+
+A: 检查：
+1. 端口占用：`lsof -i :8080`
+2. MinIO 连接：`curl http://localhost:9000/minio/health/live`
+3. Redis 连接：`redis-cli ping`
+4. 查看日志：`docker-compose logs -f miniodb`
+
+**Q: 查询慢？**
+
+A: 优化步骤：
+1. 检查是否使用分区键（timestamp）
+2. 添加 LIMIT 子句
+3. 检查缓存命中率
+4. 预聚合数据

@@ -835,4 +835,438 @@ curl http://localhost:9090/metrics
 
 ---
 
+---
+
+## 详细部署指南
+
+以下内容提供更详细的部署配置和高级场景。
+
+### 单节点详细配置
+
+#### 硬件要求
+
+| 组件 | 最低配置 | 推荐配置 |
+|------|----------|----------|
+| CPU | 2 核 | 4+ 核 |
+| RAM | 4GB | 16GB+ |
+| 磁盘 | 100GB SSD | 500GB+ NVMe SSD |
+| 网络 | 1Gbps | 10Gbps |
+
+#### 完整 Docker Compose 配置
+
+```yaml
+version: '3.8'
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: miniodb-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: miniodb-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass redispass
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  miniodb:
+    image: miniodb/miniodb:latest
+    container_name: miniodb
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+      - "9090:9090"
+    environment:
+      - MINIODB_SERVER_NODE_ID=node-1
+      - MINIODB_SERVER_GRPC_PORT=8080
+      - MINIODB_SERVER_REST_PORT=8081
+      - MINIODB_SERVER_METRICS_PORT=9090
+      - MINIODB_STORAGE_MINIO_ENDPOINT=minio:9000
+      - MINIODB_STORAGE_MINIO_ACCESS_KEY=minioadmin
+      - MINIODB_STORAGE_MINIO_SECRET_KEY=minioadmin
+      - MINIODB_STORAGE_MINIO_BUCKET=miniodb-data
+      - MINIODB_STORAGE_MINIO_USE_SSL=false
+      - MINIODB_REDIS_HOST=redis
+      - MINIODB_REDIS_PORT=6379
+      - MINIODB_REDIS_PASSWORD=redispass
+      - MINIODB_QUERY_CACHE_ENABLED=true
+      - MINIODB_QUERY_CACHE_TTL=3600
+      - MINIODB_BUFFER_SIZE=10000
+      - MINIODB_BUFFER_FLUSH_INTERVAL=60
+      - MINIODB_METADATA_BACKUP_ENABLED=true
+      - MINIODB_METADATA_BACKUP_INTERVAL=3600
+    depends_on:
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - miniodb_config:/app/config
+      - miniodb_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  minio_data:
+  redis_data:
+  miniodb_config:
+  miniodb_data:
+```
+
+#### 完整配置文件 (config.yaml)
+
+```yaml
+server:
+  node_id: "node-1"
+  grpc_port: ":8080"
+  rest_port: ":8081"
+  metrics_port: ":9090"
+
+storage:
+  minio:
+    endpoint: "localhost:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+    bucket: "miniodb-data"
+    use_ssl: false
+    region: "us-east-1"
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 10
+
+query:
+  cache_enabled: true
+  cache_ttl: 3600
+  max_open_files: 1000
+
+buffer:
+  size: 10000
+  flush_interval: 60
+  worker_count: 4
+
+metadata:
+  backup_enabled: true
+  backup_interval: 3600
+  backup_retention_days: 30
+
+table_management:
+  default_table: "default"
+  auto_create_tables: false
+
+tables:
+  default_config:
+    buffer_size: 1000
+    flush_interval_seconds: 60
+    retention_days: 90
+    backup_enabled: true
+    id_strategy: "uuid"
+    auto_generate_id: true
+
+subscription:
+  enabled: true
+  redis:
+    enabled: true
+    stream_prefix: "miniodb:stream:"
+    consumer_group: "miniodb-workers"
+```
+
+#### Systemd 服务配置
+
+创建 `/etc/systemd/system/miniodb.service`:
+
+```ini
+[Unit]
+Description=MinIODB OLAP Database
+After=network.target redis.service minio.service
+
+[Service]
+Type=simple
+User=miniodb
+Group=miniodb
+WorkingDirectory=/var/lib/miniodb
+ExecStart=/usr/local/bin/miniodb -config /etc/miniodb/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用服务:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable miniodb
+sudo systemctl start miniodb
+```
+
+### 分布式详细配置
+
+#### 硬件要求
+
+| 角色 | 最低配置 | 推荐配置 |
+|------|----------|----------|
+| MinIODB 节点 (每个) | 4 核, 8GB RAM | 8+ 核, 32GB RAM |
+| 负载均衡器 | 2 核, 4GB RAM | 4+ 核, 8GB RAM |
+| Redis Master | 2 核, 4GB RAM | 4+ 核, 8GB RAM |
+| Redis Sentinel (每个) | 1 核, 1GB RAM | 2 核, 2GB RAM |
+| MinIO Gateway | 4 核, 8GB RAM | 8+ 核, 16GB RAM |
+
+#### 网络拓扑
+
+```
+192.168.1.0/24
+├── 192.168.1.10  - 负载均衡器
+├── 192.168.1.20-50 - MinIODB 节点 (Node 1-N)
+├── 192.168.1.60-70 - Redis 集群
+└── 192.168.1.80-90 - MinIO 集群
+```
+
+#### HAProxy 配置
+
+`deploy/haproxy/haproxy.cfg`:
+
+```
+defaults
+  mode http
+  timeout connect 5000ms
+  timeout client 50000ms
+  timeout server 50000ms
+
+frontend miniodb-grpc
+  bind *:8080
+  mode tcp
+  default_backend miniodb-grpc-backend
+
+frontend miniodb-rest
+  bind *:8081
+  default_backend miniodb-rest-backend
+
+frontend miniodb-metrics
+  bind *:9090
+  default_backend miniodb-metrics-backend
+
+backend miniodb-grpc-backend
+  mode tcp
+  balance roundrobin
+  option httpchk GET /api/v1/health
+  server miniodb-1 miniodb-1:8080 check
+  server miniodb-2 miniodb-2:8080 check
+  server miniodb-3 miniodb-3:8080 check
+
+backend miniodb-rest-backend
+  balance roundrobin
+  option httpchk GET /api/v1/health
+  server miniodb-1 miniodb-1:8081 check
+  server miniodb-2 miniodb-2:8081 check
+  server miniodb-3 miniodb-3:8081 check
+
+backend miniodb-metrics-backend
+  balance roundrobin
+  server miniodb-1 miniodb-1:9090 check
+  server miniodb-2 miniodb-2:9090 check
+  server miniodb-3 miniodb-3:9090 check
+```
+
+#### Redis Sentinel 配置
+
+`deploy/redis/sentinel.conf`:
+
+```
+port 26379
+sentinel monitor mymaster redis-master 6379 2
+sentinel down-after-milliseconds mymaster 30000
+sentinel parallel-syncs mymaster 1
+sentinel failover-timeout mymaster 180000
+sentinel auth-pass mymaster mypassword
+sentinel announce-ip redis-sentinel
+sentinel announce-port 26379
+```
+
+### 高可用性
+
+#### 故障转移场景
+
+1. **Redis Master 故障**
+   - Sentinel 将 replica 提升为 master
+   - MinIODB 节点自动重连到新 master
+   - 无数据丢失（复制已激活）
+
+2. **MinIO Gateway 故障**
+   - MinIO 存储节点继续服务数据
+   - Gateway 自动重启 (Swarm/K8s)
+   - 影响最小
+
+3. **MinIODB 节点故障**
+   - 负载均衡器路由到健康节点
+   - 故障节点自动移除
+   - 健康检查使其重新上线
+
+#### 数据一致性
+
+- **写入路径**: WAL + Buffer → Parquet → MinIO
+- **复制**: Redis master-replica
+- **一致性**: 分布式读取的最终一致性
+
+### 灾难恢复
+
+#### 备份策略
+
+1. **每日元数据备份**
+   - 自动备份到 MinIO
+   - 保留期: 30 天
+
+2. **每周全量备份**
+   - MinIO 数据复制
+   - 异地备份
+
+#### 恢复流程
+
+```bash
+# 1. 恢复元数据
+curl -X POST http://loadbalancer:8081/api/v1/metadata/restore \
+  -H "Content-Type: application/json" \
+  -d '{"from_latest": false, "backup_file": "backup_20240118.json"}'
+
+# 2. 恢复 MinIO 数据
+# 使用 MinIO mc 客户端从备份恢复
+
+# 3. 重启服务
+docker stack deploy miniodb
+```
+
+### 性能调优
+
+#### 高写入吞吐量配置
+
+```yaml
+buffer:
+  size: 50000           # 更大的缓冲区
+  flush_interval: 120   # 更少的刷新频率
+  worker_count: 8       # 更多的工作线程
+```
+
+#### 快速查询配置
+
+```yaml
+query:
+  cache_enabled: true
+  cache_ttl: 7200       # 2 小时
+  cache_size: 1000      # 缓存查询数量
+```
+
+#### 大数据量内存配置
+
+```yaml
+# 适用于 10M+ 记录
+buffer:
+  size: 100000
+
+query:
+  max_open_files: 5000
+```
+
+### 数据维护
+
+#### 数据保留
+
+配置自动清理:
+
+```yaml
+tables:
+  default_config:
+    retention_days: 30  # 删除 30 天前的数据
+```
+
+#### 压缩
+
+启用自动压缩:
+
+```yaml
+metadata:
+  compaction_enabled: true
+  compaction_interval: 86400  # 每日
+  min_file_size: 10485760     # 10MB
+```
+
+### 版本升级
+
+```bash
+# 先备份元数据
+curl -X POST http://localhost:8081/api/v1/metadata/backup
+
+# 停止服务
+docker-compose down
+
+# 拉取新镜像
+docker-compose pull
+
+# 启动服务
+docker-compose up -d
+```
+
+### 卸载
+
+#### Docker Compose
+
+```bash
+# 停止并移除容器
+docker-compose down
+
+# 移除卷
+docker-compose down -v
+
+# 移除镜像
+docker rmi minio/minio redis:7-alpine miniodb/miniodb
+```
+
+#### 手动安装
+
+```bash
+# 停止服务
+sudo systemctl stop miniodb
+
+# 禁用服务
+sudo systemctl disable miniodb
+
+# 移除二进制
+sudo rm /usr/local/bin/miniodb
+
+# 移除配置
+sudo rm -rf /etc/miniodb
+
+# 移除数据
+sudo rm -rf /var/lib/miniodb
+```
+
+---
+
 📝 **注意**: 本文档会随着项目更新而更新，请定期查看最新版本。
