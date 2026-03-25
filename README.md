@@ -25,25 +25,55 @@ MinIODB是一个极致轻量化、高性能、可水平扩展的分布式对象�
 ## 架构设计
 
 ```
-┌─────────────┐     ┌──────────────────────────────────┐
-│   Client    │────▶│       API Gateway/Coordinator    │
-└─────────────┘     │  - JWT Auth  - Query Optimization │
-                    │  - Rate Limit  - Load Balancing   │
-                    └──────┬───────────────────┬────────┘
-                           │                   │
-              ┌────────────▼──────┐   ┌──────▼────────────┐
-              │   Redis Cluster    │   │   WorkerNodes     │
-              │   - Metadata       │◀─▶│   - DuckDB       │
-              │   - Service Reg.   │   │   - DataBuffer   │
-              │   - Cache          │   │   - QueryCache   │
-              └────────────────────┘   └──────┬────────────┘
-                                               │
-                                      ┌────────▼────────────┐
-                                      │   MinIO Cluster     │
-                                      │  - Primary Pool     │
-                                      │  - Backup Pool       │
-                                      │  - Parquet Files     │
-                                      └─────────────────────┘
++----------------+      +----------------+      +----------------+
+|   gRPC Client  |      |  RESTful Client|      |  Browser       |
++----------------+      +----------------+      +----------------+
+        |                      |                       |
+        v                      v                       v
++---------------------------------------------------------------+
+|     API Gateway / Query Node (Go) - :8081                     |
+|                                                               |
+|  - Request Parsing & Validation    - Dashboard Server (新增)  |
+|  - Query Coordination              - SSE Real-time Events     |
+|  - Result Aggregation              - Static SPA (embedded)    |
+|  - Metadata Manager                                           |
++---------------------------------------------------------------+
+      ^   |                    ^   |                    ^   |
+      |   |                    |   |                    |   | 
+      |   v                    |   v                    |   v
++---------------------------------------------------------------+
+|        Connection Pool Manager                                |
+|                                                               |
+|  Redis Pool      |    MinIO Pool         |   Dashboard Config|
+|  ├─ Standalone   |    ├─ Primary Pool    |   ├─ All-in-One   |
+|  ├─ Sentinel     |    ├─ Backup Pool     |   └─ Standalone   |
+|  ├─ Cluster      |    ├─ Health Check    |                    |
+|  └─ Health Check |    └─ Auto Failover   |                    |
++---------------------------------------------------------------+
+      |                              ｜
+      v (Service Discovery)          v  (Query Planning)
++----------------+      +---------------------------------+
+| Redis          |      | Worker Nodes (Go Service)       |
+| -------------- |      |---------------------------------|
+| - Service Reg. |<-----| - Heartbeat & Registration      |
+| - Data Index   |----->| - DuckDB Instance (embedded)    |
+| - Hash Ring    |      | - Data Ingestion & Buffering    |
+| - Table Meta   |      | - Parquet File Generation       |
+| - Metadata Ver |      | - Read/Write to MinIO           |
+| - Backup Index |      | - Table-level Processing        |
++----------------+      | - Connection Pool Client        |
+                        +---------------------------------+
+                                 ^         |
+                                 |         | (S3 API via Pool)
+                                 v         v
+                       +-------------------------+
+                       |   MinIO Cluster         |
+                       | (Distributed Object     |
+                       |      Storage)           |
+                       | ├─ Primary Storage      |
+                       | ├─ Backup Storage       |
+                       | └─ TABLE/ID/YYYY-MM-DD/ |
+                       +-------------------------+
 ```
 
 **详细架构设计**：[docs/SOLUTION.md](docs/SOLUTION.md)
